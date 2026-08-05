@@ -1,0 +1,779 @@
+<?php
+/**
+ * Matter to Loxone - gemeinsame Bibliothek
+ *
+ * Liegt unter webfrontend/html/, weil der Miniserver-Endpunkt sie ebenso
+ * braucht wie die Oberflaeche. So gibt es EINE Datei statt zweier Kopien.
+ *
+ * Dieses Plugin ist die BRUECKE, nicht der Matter-Controller. Der Controller
+ * ist der zertifizierte python-matter-server; er laeuft in einem eigenen
+ * Container. Diese Bibliothek spricht ihn nie selbst an - sie liest den
+ * Zwischenspeicher, den bin/matter_dienst.py schreibt, verwaltet den Container
+ * ueber die Docker-Kommandozeile und legt Befehle in einer Warteschlange ab.
+ *
+ * Praefix 'mt_', weil LBWeb::lbheader() SDK-Globale setzt.
+ * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
+ */
+
+if (!function_exists('mt_e')) {
+    function mt_e($s)
+    {
+        return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
+    }
+}
+
+function mt_paths()
+{
+    static $p = null;
+    if ($p !== null) {
+        return $p;
+    }
+    $home = getenv('LBHOMEDIR');
+    if (!$home || !is_dir($home)) {
+        foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+            if (is_dir($k)) {
+                $home = $k;
+                break;
+            }
+        }
+    }
+    // Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
+    // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
+    // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
+    // sich bei jedem Fork.
+    $dir = basename(dirname(__FILE__));
+    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
+        foreach (array(getenv('LBPPLUGINDIR'), 'matter2lox') as $kand) {
+            if ($kand && is_dir($home . '/config/plugins/' . $kand)) {
+                $dir = $kand;
+                break;
+            }
+        }
+    }
+    if ($home) {
+        $p = array(
+            'home'      => $home,
+            'plugin'    => $dir,
+            'configdir' => $home . '/config/plugins/' . $dir,
+            'config'    => $home . '/config/plugins/' . $dir . '/matter2lox.json',
+            'sicherung' => $home . '/config/plugins/' . $dir . '.backup.json',
+            'datadir'   => $home . '/data/plugins/' . $dir,
+            'bindir'    => $home . '/bin/plugins/' . $dir,
+            'logdir'    => $home . '/log/plugins/' . $dir,
+            'log'       => $home . '/log/plugins/' . $dir . '/matter2lox.log',
+            'tabelle'   => $home . '/templates/plugins/' . $dir . '/matter_cluster.json',
+        );
+    } else {
+        $basis = dirname(dirname(__DIR__));
+        $p = array(
+            'home' => '', 'plugin' => $dir,
+            'configdir' => $basis . '/config',
+            'config'    => $basis . '/config/matter2lox.json',
+            'sicherung' => $basis . '/config/matter2lox.backup.json',
+            'datadir'   => $basis . '/data',
+            'bindir'    => $basis . '/bin',
+            'logdir'    => $basis . '/log',
+            'log'       => $basis . '/log/matter2lox.log',
+            'tabelle'   => $basis . '/templates/matter_cluster.json',
+        );
+    }
+    return $p;
+}
+
+/** Voreinstellungen. Muessen zu VORGABEN in bin/matter_dienst.py passen. */
+function mt_vorgaben()
+{
+    return array(
+        'server_host'       => '127.0.0.1',
+        'server_port'       => 5580,
+        'eigener_container' => 1,
+        'container_name'    => 'matter-server',
+        'container_abbild'  => 'ghcr.io/matter-js/python-matter-server:stable',
+        'bluetooth_adapter' => 0,
+        'mqtt_ein'          => 1,
+        'mqtt_topic'        => 'matter',
+        'roh_ein'           => 0,
+        'steuerung_ein'     => 0,
+        'aktionstoken'      => '',
+        'wartezeit'         => 8,
+        'wlan_ssid'         => '',
+        'wlan_passwort'     => '',
+        'thread_dataset'    => '',
+    );
+}
+
+function mt_json_lesen($pfad)
+{
+    if (!is_file($pfad)) {
+        return array();
+    }
+    $d = json_decode((string) @file_get_contents($pfad), true);
+    return is_array($d) ? $d : array();
+}
+
+/** Erst in eine Nebendatei, dann umbenennen. */
+function mt_json_schreiben($pfad, $daten, $rechte = null)
+{
+    $ordner = dirname($pfad);
+    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
+        return false;
+    }
+    $tmp = $pfad . '.tmp';
+    $json = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false || @file_put_contents($tmp, $json) === false) {
+        @unlink($tmp);
+        return false;
+    }
+    if ($rechte !== null) {
+        @chmod($tmp, $rechte);
+    }
+    return @rename($tmp, $pfad);
+}
+
+function mt_config()
+{
+    $p = mt_paths();
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
+        @mkdir($p['configdir'], 0775, true);
+        @copy($p['sicherung'], $p['config']);
+    }
+    return array_merge(mt_vorgaben(), mt_json_lesen($p['config']));
+}
+
+function mt_config_speichern($cfg)
+{
+    $p = mt_paths();
+    // Die Konfiguration enthaelt WLAN-Passwort und Thread-Dataset - beides
+    // sind Netzzugangsdaten. Deshalb 0600, nicht 0644.
+    if (!mt_json_schreiben($p['config'], $cfg, 0600)) {
+        return false;
+    }
+    @copy($p['config'], $p['sicherung']);
+    @chmod($p['sicherung'], 0600);
+    return true;
+}
+
+/** Die Cluster-Tabelle: EINE Datei fuer Dienst und Oberflaeche. */
+function mt_tabelle()
+{
+    static $t = null;
+    if ($t !== null) {
+        return $t;
+    }
+    $p = mt_paths();
+    foreach (array($p['tabelle'], dirname(dirname(__DIR__)) . '/templates/matter_cluster.json') as $kand) {
+        $d = mt_json_lesen($kand);
+        if (!empty($d['cluster'])) {
+            $t = $d;
+            return $t;
+        }
+    }
+    $t = array('cluster' => array(), 'geraetetyp' => array());
+    return $t;
+}
+
+/** Zufallstoken fuer den unangemeldeten Endpunkt. */
+function mt_token_erzeugen($laenge = 24)
+{
+    $zeichen = 'abcdefghijkmnpqrstuvwxyz23456789';
+    $t = '';
+    for ($i = 0; $i < $laenge; $i++) {
+        $t .= $zeichen[random_int(0, strlen($zeichen) - 1)];
+    }
+    return $t;
+}
+
+function mt_token()
+{
+    $cfg = mt_config();
+    if (trim((string) $cfg['aktionstoken']) === '') {
+        $cfg['aktionstoken'] = mt_token_erzeugen();
+        mt_config_speichern($cfg);
+    }
+    return (string) $cfg['aktionstoken'];
+}
+
+/* ---------------- Zwischenspeicher ---------------- */
+
+function mt_loxone()
+{
+    return mt_json_lesen(mt_paths()['datadir'] . '/loxone.json');
+}
+
+function mt_zustand()
+{
+    return mt_json_lesen(mt_paths()['datadir'] . '/zustand.json');
+}
+
+function mt_cache()
+{
+    return mt_json_lesen(mt_paths()['datadir'] . '/cache.json');
+}
+
+function mt_geraete()
+{
+    $l = mt_loxone();
+    return isset($l['geraete']) && is_array($l['geraete']) ? $l['geraete'] : array();
+}
+
+function mt_serverinfo()
+{
+    $l = mt_loxone();
+    return isset($l['server']) && is_array($l['server']) ? $l['server'] : array();
+}
+
+/** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
+function mt_alter()
+{
+    $l = mt_loxone();
+    return isset($l['ts']) ? max(0, time() - (int) $l['ts']) : -1;
+}
+
+/* ---------------- Protokollierung ---------------- */
+
+function mt_log($text)
+{
+    $p = mt_paths();
+    if (!is_dir($p['logdir'])) {
+        @mkdir($p['logdir'], 0775, true);
+    }
+    if (is_file($p['log']) && filesize($p['log']) > 512000) {
+        // Rotation: die letzten 400 Zeilen behalten
+        $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -400);
+        @file_put_contents($p['log'], implode("\n", $rest) . "\n");
+    }
+    @file_put_contents($p['log'], '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n", FILE_APPEND);
+}
+
+/** Dieselbe Meldung hoechstens einmal je Zeitfenster - sonst wird die
+ *  Logdatei durch eine Dauerstoerung unlesbar. */
+function mt_log_gebremst($schluessel, $text, $sekunden = 3600)
+{
+    $f = mt_paths()['datadir'] . '/.meld_' . preg_replace('/[^a-z0-9_]/i', '', $schluessel);
+    $letzte = is_file($f) ? (int) @file_get_contents($f) : 0;
+    if (time() - $letzte >= $sekunden) {
+        @file_put_contents($f, (string) time());
+        mt_log($text);
+    }
+}
+
+/* ---------------- Dienst ---------------- */
+
+function mt_dienst_pid()
+{
+    $f = mt_paths()['datadir'] . '/dienst.pid';
+    if (!is_file($f)) {
+        return 0;
+    }
+    $pid = (int) trim((string) @file_get_contents($f));
+    if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
+        return 0;
+    }
+    $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+    return strpos($cmd, 'matter_dienst.py') !== false ? $pid : 0;
+}
+
+function mt_dienst_soll()
+{
+    return is_file(mt_paths()['datadir'] . '/soll_laufen') ? 1 : 0;
+}
+
+/** $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe) */
+function mt_dienst($befehl)
+{
+    if (!in_array($befehl, array('start', 'stop', 'restart'), true)) {
+        return array(0, 'Unbekannter Befehl.');
+    }
+    $skript = mt_paths()['bindir'] . '/dienst.sh';
+    if (!is_file($skript)) {
+        return array(0, 'dienst.sh nicht gefunden: ' . $skript);
+    }
+    $ausgabe = array();
+    $code = 0;
+    @exec(escapeshellcmd($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
+    return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
+}
+
+/* ---------------- Befehlswarteschlange ----------------
+ *
+ * Sowohl der Miniserver-Endpunkt als auch der Reiter Test setzen Befehle ueber
+ * diese eine Funktion ab. Zwei Kopien derselben Logik laufen zwangslaeufig
+ * auseinander.
+ *
+ * Rueckgabe: array(ok, Meldung). ok = 1 erledigt, 0 abgelehnt,
+ * 2 eingereiht, aber ohne Antwort in der Wartezeit - Ergebnis unbekannt.
+ * Es wird nie ein Erfolg gemeldet, den niemand geprueft hat.
+ */
+function mt_befehl_absetzen($befehl, $wartezeit = null)
+{
+    $p = mt_paths();
+    $cfg = mt_config();
+    if ($wartezeit === null) {
+        $wartezeit = (int) $cfg['wartezeit'];
+    }
+    $wartezeit = max(0, min(20, (int) $wartezeit));
+
+    $ordner = $p['datadir'] . '/befehle';
+    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
+        return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
+    }
+    $kennung = bin2hex(random_bytes(8));
+    $datei = $ordner . '/' . $kennung . '.json';
+    $tmp = $datei . '.tmp';
+    if (@file_put_contents($tmp, json_encode($befehl)) === false || !@rename($tmp, $datei)) {
+        @unlink($tmp);
+        return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
+    }
+    $antwort = $p['datadir'] . '/antworten/' . $kennung . '.json';
+    for ($i = 0; $i < $wartezeit * 10; $i++) {
+        if (is_file($antwort)) {
+            $a = mt_json_lesen($antwort);
+            return array((int) (isset($a['ok']) ? $a['ok'] : 0),
+                         (string) (isset($a['meldung']) ? $a['meldung'] : ''));
+        }
+        usleep(100000);
+    }
+    return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht geantwortet.');
+}
+
+/* ---------------- MQTT-Gateway des LoxBerry ----------------
+ *
+ * Das MQTT-Gateway ist seit LoxBerry 3 Bestandteil des Systems, kein Plugin.
+ * Es wird nicht nachinstalliert, sondern unter System -> MQTT Gateway
+ * eingeschaltet.
+ *
+ * Mqtt.Brokerhost ist ab Werk auf 'localhost' gesetzt. Eine Pruefung darauf
+ * beantwortet also NICHT die Frage, ob Nachrichten ankommen koennen -
+ * massgeblich ist Gatewayautostart.
+ */
+function mt_mqtt_zustand()
+{
+    $p = mt_paths();
+    $leer = array('gefunden' => 0, 'autostart' => 0, 'udpport' => 0, 'broker' => '',
+                  'brokerport' => '', 'user' => '', 'pw' => '', 'lokal' => 0);
+    if ($p['home'] === '') {
+        return $leer;
+    }
+    $gen = mt_json_lesen($p['home'] . '/config/system/general.json');
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) {
+        $m = $gen['Mqtt'];
+    } elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) {
+        $m = $gen['mqtt'];
+    }
+    if (!$m) {
+        return $leer;
+    }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) {
+            return $m[$gross];
+        }
+        return isset($m[$klein]) ? $m[$klein] : '';
+    };
+    return array(
+        'gefunden'   => 1,
+        'autostart'  => in_array((string) $hol('Gatewayautostart', 'gatewayautostart'), array('1', 'true'), true) ? 1 : 0,
+        'udpport'    => (int) $hol('Udpinport', 'udpinport'),
+        'broker'     => (string) $hol('Brokerhost', 'brokerhost'),
+        'brokerport' => (string) $hol('Brokerport', 'brokerport'),
+        'user'       => (string) $hol('Brokeruser', 'brokeruser'),
+        'pw'         => (string) $hol('Brokerpass', 'brokerpass'),
+        'lokal'      => in_array((string) $hol('Uselocalbroker', 'uselocalbroker'), array('1', 'true'), true) ? 1 : 0,
+    );
+}
+
+/**
+ * Werte ueber das LoxBerry-Gateway veroeffentlichen.
+ *
+ * Bewusst ueber den UDP-Eingang des Gateways und nicht mit einem eigenen
+ * MQTT-Client: so muss das Plugin ueberhaupt keine Broker-Zugangsdaten
+ * kennen, um zu senden. Das Gateway hat sie ohnehin.
+ */
+function mt_mqtt_senden(array $paare, $praefix)
+{
+    $z = mt_mqtt_zustand();
+    if (!$z['udpport']) {
+        mt_log_gebremst('mqtt_kein_port', 'MQTT: kein UDP-Eingangsport in der general.json gefunden - nichts gesendet.');
+        return false;
+    }
+    if (!$z['autostart']) {
+        mt_log_gebremst('mqtt_aus', 'MQTT: das Gateway ist nicht auf Autostart gestellt '
+            . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
+    }
+    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+    if (!$s) {
+        mt_log_gebremst('mqtt_socket', 'MQTT: Socket nicht moeglich.');
+        return false;
+    }
+    foreach ($paare as $k => $v) {
+        if ($v === null || $v === '') {
+            continue;   // fehlender Wert: nichts senden statt eine erfundene 0
+        }
+        $msg = 'publish ' . $praefix . '/' . $k . ' ' . $v;
+        @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
+    }
+    socket_close($s);
+    return true;
+}
+
+/* ==================================================================
+ * Loxone-Vorlagen
+ *
+ * Nachbau der Bausteine aus LoxBerry::LoxoneTemplateBuilder; das Modul gibt es
+ * nur in Perl. Attributreihenfolge, CRLF als Zeilenende und der Tabulator vor
+ * den Kindelementen entsprechen dem Original. Wortgleich uebernommen aus
+ * LoxBerry-Plugin-APC-UPS-1.0.0 (ap_xml_virtual_in_http) - nicht neu
+ * geschrieben, weil die Fassung dort geprueft ist.
+ * ================================================================== */
+
+function mt_x($s)
+{
+    return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
+function mt_xml_virtual_in_http($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualInHttp ';
+    $o .= 'Title="' . mt_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . mt_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . mt_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'PollingTime="' . mt_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
+    $o .= '>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualInHttpCmd ';
+        $o .= 'Title="' . mt_x($c['title']) . '" ';
+        $o .= 'Comment="' . mt_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'Check="' . mt_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
+        $o .= 'Signed="true" ';
+        $o .= 'Analog="true" ';
+        $o .= 'SourceValLow="0" ';
+        $o .= 'DestValLow="0" ';
+        $o .= 'SourceValHigh="100" ';
+        $o .= 'DestValHigh="100" ';
+        $o .= 'DefVal="0" ';
+        $o .= 'MinVal="-2147483647" ';
+        $o .= 'MaxVal="2147483647"';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}
+
+/* ==================================================================
+ * Sprache (Pflicht: Deutsch und Englisch)
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini immer
+ * vollstaendig sein.
+ *
+ * Die Funktion setzt kein mt_paths() voraus, damit derselbe Block in jedes
+ * Plugin passt. Der Pfad wird zweistufig gesucht:
+ *   installiert: <home>/templates/plugins/<ordner>/lang
+ *   Archiv:      <pluginwurzel>/templates/lang
+ * ================================================================== */
+
+function mt_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+function mt_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        $home = getenv('LBHOMEDIR');
+        if (!$home || !is_dir($home)) {
+            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+                if (is_dir($k)) {
+                    $home = $k;
+                    break;
+                }
+            }
+        }
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        if (!is_dir($pfad)) {
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . mt_sprache() . '.ini', true, INI_SCANNER_RAW);
+        if (!is_array($texte)) {
+            $texte = array();
+        }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) {
+            $texte = array_replace_recursive($rueck, $texte);
+        }
+        // INI_SCANNER_RAW liefert die Werte samt der Anfuehrungszeichen
+        // zurueck, in die sie in der Datei stehen muessen. Die gehoeren nicht
+        // in die Ausgabe.
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) {
+                continue;
+            }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    $teile = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$teile[0]][$teile[1]]) ? $texte[$teile[0]][$teile[1]] : $schluessel;
+}
+
+/* ==================================================================
+ * Der Matter-Server im Container
+ *
+ * Das Plugin startet und ueberwacht den Container, es baut ihn aber nicht
+ * nach. Die Aufrufzeile folgt der Anleitung des Matter-Servers:
+ *   --network=host                  mDNS braucht das Wirtsnetz
+ *   --security-opt apparmor=unconfined   Bluetooth ueber D-Bus
+ *   -v <daten>/matter:/data         Fabric und Zertifikate
+ *   -v /run/dbus:/run/dbus:ro       Bluetooth
+ * Der DATENORDNER wird nie mitgeloescht: darin liegt die Fabric. Wer ihn
+ * loescht, muss jedes Geraet neu anlernen.
+ * ================================================================== */
+
+function mt_docker_da()
+{
+    $a = array();
+    @exec('command -v docker 2>/dev/null', $a);
+    return count($a) > 0 ? 1 : 0;
+}
+
+/** Rueckgabe: array(ok, Ausgabe) */
+function mt_docker($argumente)
+{
+    if (!mt_docker_da()) {
+        return array(0, 'Docker ist auf diesem LoxBerry nicht installiert.');
+    }
+    $ausgabe = array();
+    $code = 0;
+    @exec('docker ' . $argumente . ' 2>&1', $ausgabe, $code);
+    return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
+}
+
+/** 'laeuft', 'gestoppt', 'fehlt' oder 'kein_docker' */
+function mt_container_zustand()
+{
+    $cfg = mt_config();
+    $name = mt_container_name($cfg);
+    if (!mt_docker_da()) {
+        return 'kein_docker';
+    }
+    list($ok, $aus) = mt_docker('inspect -f {{.State.Running}} ' . escapeshellarg($name));
+    if (!$ok) {
+        return 'fehlt';
+    }
+    return trim($aus) === 'true' ? 'laeuft' : 'gestoppt';
+}
+
+/** Der Containername, auf ein unbedenkliches Muster begrenzt. */
+function mt_container_name($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $n = trim((string) $cfg['container_name']);
+    return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/', $n) ? $n : 'matter-server';
+}
+
+/** Die vollstaendige Aufrufzeile - auch fuer die Anzeige in der Oberflaeche. */
+function mt_container_befehl($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $p = mt_paths();
+    $name = mt_container_name($cfg);
+    $abbild = trim((string) $cfg['container_abbild']);
+    if (!preg_match('#^[A-Za-z0-9][A-Za-z0-9_./\-]{2,120}(:[A-Za-z0-9_.\-]{1,40})?$#', $abbild)) {
+        $abbild = 'ghcr.io/matter-js/python-matter-server:stable';
+    }
+    $bt = (int) $cfg['bluetooth_adapter'];
+    $bt = ($bt >= 0 && $bt <= 9) ? $bt : 0;
+    $daten = $p['datadir'] . '/matter';
+
+    $zeile = 'run -d'
+        . ' --name ' . escapeshellarg($name)
+        . ' --restart=unless-stopped'
+        . ' --security-opt apparmor=unconfined'
+        . ' --network=host'
+        . ' -v ' . escapeshellarg($daten . ':/data');
+    if (is_dir('/run/dbus')) {
+        $zeile .= ' -v /run/dbus:/run/dbus:ro';
+    }
+    $zeile .= ' ' . escapeshellarg($abbild)
+        . ' --storage-path /data --paa-root-cert-dir /data/credentials';
+    if (is_dir('/run/dbus')) {
+        // Die Vorgabe-Befehlszeile des Abbilds muss vollstaendig wiederholt
+        // werden, sobald man etwas anhaengt - so steht es in der Anleitung.
+        $zeile .= ' --bluetooth-adapter ' . $bt;
+    }
+    return $zeile;
+}
+
+/** $was ist 'anlegen', 'start', 'stop', 'restart', 'entfernen' oder 'holen'. */
+function mt_container($was)
+{
+    $cfg = mt_config();
+    $name = mt_container_name($cfg);
+    $p = mt_paths();
+    switch ($was) {
+        case 'holen':
+            $abbild = trim((string) $cfg['container_abbild']);
+            return mt_docker('pull ' . escapeshellarg($abbild));
+        case 'anlegen':
+            if (!is_dir($p['datadir'] . '/matter')) {
+                @mkdir($p['datadir'] . '/matter', 0700, true);
+            }
+            if (mt_container_zustand() !== 'fehlt') {
+                return array(0, 'Es gibt bereits einen Container mit dem Namen ' . $name
+                              . '. Erst entfernen oder einen anderen Namen waehlen.');
+            }
+            return mt_docker(mt_container_befehl($cfg));
+        case 'start':
+            return mt_docker('start ' . escapeshellarg($name));
+        case 'stop':
+            return mt_docker('stop ' . escapeshellarg($name));
+        case 'restart':
+            return mt_docker('restart ' . escapeshellarg($name));
+        case 'entfernen':
+            // Nur der Container, NIE der Datenordner: darin liegt die Fabric.
+            return mt_docker('rm -f ' . escapeshellarg($name));
+    }
+    return array(0, 'Unbekannter Containerbefehl.');
+}
+
+/** Die letzten Zeilen des Containerprotokolls. */
+function mt_container_log($zeilen = 200)
+{
+    $name = mt_container_name();
+    list($ok, $aus) = mt_docker('logs --tail ' . (int) $zeilen . ' ' . escapeshellarg($name));
+    // Programmprotokolle vor dem Auswerten von Farbcodes befreien - sonst
+    // steht mitten im Text eine ANSI-Sequenz.
+    return preg_replace('/\x1B\[[0-9;]*[A-Za-z]/', '', (string) $aus);
+}
+
+/* ---------------- Voraussetzungen des Wirtssystems ---------------- */
+
+/**
+ * Matter beruht auf IPv6-Link-Local-Multicast. Das ist keine Feinheit:
+ * ohne IPv6 laeuft gar nichts, auch nicht teilweise.
+ */
+function mt_ipv6_zustand()
+{
+    if (!is_file('/proc/net/if_inet6')) {
+        return array('ok' => 0, 'text' => 'IPv6 ist im Kern nicht vorhanden.');
+    }
+    $aus = trim((string) @file_get_contents('/proc/sys/net/ipv6/conf/all/disable_ipv6'));
+    if ($aus === '1') {
+        return array('ok' => 0, 'text' => 'IPv6 ist abgeschaltet (disable_ipv6 = 1).');
+    }
+    $zeilen = file('/proc/net/if_inet6', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array();
+    return array('ok' => 1, 'text' => count($zeilen) . ' IPv6-Adressen auf diesem Rechner');
+}
+
+function mt_architektur()
+{
+    $b = trim((string) @php_uname('m'));
+    return array('bogen' => $b, 'ok' => in_array($b, array('x86_64', 'aarch64', 'arm64'), true) ? 1 : 0);
+}
+
+/** Ausgabe von matter_dienst.py --selbsttest. */
+function mt_selbsttest_ausgabe()
+{
+    $p = mt_paths();
+    $py = $p['bindir'] . '/venv/bin/python3';
+    $skript = $p['bindir'] . '/matter_dienst.py';
+    if (!is_file($py) || !is_file($skript)) {
+        return "[FEHL] Die virtuelle Python-Umgebung oder matter_dienst.py fehlt.\n"
+             . '       Erwartet: ' . $py . "\n                 " . $skript . "\n"
+             . '       Abhilfe: Plugin neu installieren.';
+    }
+    $ausgabe = array();
+    @exec(escapeshellcmd($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1', $ausgabe);
+    return implode("\n", $ausgabe);
+}
+
+/** Die Werte des Status-Endpunkts: Einheit und Sprachschluessel. */
+function mt_status_felder()
+{
+    return array(
+        'OK'      => array('',  'MT_FELD.OK'),
+        'ERREICH' => array('',  'MT_FELD.ERREICH'),
+        'ALTER'   => array('s', 'MT_FELD.ALTER'),
+    );
+}
+
+/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
+function mt_vorlage($nummer = 1)
+{
+    $p = mt_paths();
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $token = mt_token();
+    $geraete = mt_geraete();
+    $g = isset($geraete[(string) $nummer]) ? $geraete[(string) $nummer] : null;
+    $tab = mt_tabelle();
+
+    $cmds = array();
+    foreach (mt_status_felder() as $feld => $info) {
+        $cmds[] = array(
+            'title'   => 'MATTER_' . $nummer . '_' . $feld,
+            'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8')))
+                       . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
+            'check'   => '\i' . $feld . '=\i\v',
+        );
+    }
+    // Je erkanntem Endpunkt und Thema ein Befehl - die Titel je erkanntem
+    // Geraet ausgeben, nicht als Platzhalter.
+    if ($g !== null && !empty($g['endpunkte'])) {
+        foreach ($g['endpunkte'] as $ep => $felder) {
+            foreach ($felder as $thema => $wert) {
+                $marke = strtoupper($ep . '_' . $thema);
+                $cmds[] = array(
+                    'title'   => 'MATTER_' . $nummer . '_' . $marke,
+                    'comment' => mt_thema_text($thema, $tab),
+                    'check'   => '\i' . $marke . '=\i\v',
+                );
+            }
+        }
+    }
+    $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
+             . '/index.php?token=' . $token . '&aktion=status&geraet=' . (int) $nummer;
+    return array(
+        'matter_geraet' . (int) $nummer . '.xml',
+        mt_xml_virtual_in_http(array(
+            'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : ''),
+            'address' => $adresse,
+            'polling' => '60',
+            'comment' => 'Erzeugt vom LoxBerry-Plugin Matter to Loxone (' . date('d.m.Y') . ')',
+        ), $cmds),
+    );
+}
+
+/** Klartext zu einem uebersetzten Thema, aus der Cluster-Tabelle. */
+function mt_thema_text($thema, $tab = null)
+{
+    if ($tab === null) {
+        $tab = mt_tabelle();
+    }
+    foreach ($tab['cluster'] as $cl) {
+        foreach ((array) (isset($cl['attribute']) ? $cl['attribute'] : array()) as $a) {
+            if (isset($a['thema']) && $a['thema'] === $thema) {
+                return trim(strip_tags(html_entity_decode(mt_t($a['text']), ENT_QUOTES, 'UTF-8')));
+            }
+        }
+    }
+    return (string) $thema;
+}

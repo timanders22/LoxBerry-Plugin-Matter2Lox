@@ -1,0 +1,108 @@
+{
+  "_hinweis": [
+    "Zuordnung der Matter-Cluster auf sprechende Themen samt Umrechnung.",
+    "EINE Datei fuer Dienst und Oberflaeche - zwei Kopien liefen zwangslaeufig",
+    "auseinander. Cluster- und Attributnummern sowie die Umrechnungen stammen",
+    "aus der Matter-Spezifikation (die Zahlenwerte sind aus der ZCL uebernommen",
+    "und seit Matter 1.0 unveraendert).",
+    "",
+    "typ = wie der Rohwert in einen brauchbaren Wert umgerechnet wird:",
+    "  bool        0/1 unveraendert",
+    "  bit0        unterstes Bit einer Bitmaske als 0/1",
+    "  zahl        unveraendert",
+    "  hundertstel Rohwert durch 100 (Matter zaehlt Hundertstel)",
+    "  zehntel     Rohwert durch 10",
+    "  milli       Rohwert durch 1000 (Matter zaehlt Milliwatt, Millivolt ...)",
+    "  halbprozent Rohwert durch 2 (Matter zaehlt halbe Prozent)",
+    "  prozent254  Rohwert 0..254 als Prozent 0..100",
+    "  lux         10 hoch ((Rohwert minus 1) durch 10000), siehe Spezifikation"
+  ],
+  "cluster": {
+    "6": { "name": "OnOff", "attribute": {
+      "0":  { "thema": "schalter", "typ": "bool", "text": "MT_ATTR.ONOFF" } } },
+
+    "8": { "name": "LevelControl", "attribute": {
+      "0":  { "thema": "helligkeit", "typ": "prozent254", "text": "MT_ATTR.LEVEL" } } },
+
+    "768": { "name": "ColorControl", "attribute": {
+      "0":  { "thema": "farbton_roh", "typ": "zahl", "text": "MT_ATTR.HUE" },
+      "1":  { "thema": "saettigung", "typ": "prozent254", "text": "MT_ATTR.SAT" },
+      "7":  { "thema": "farbtemperatur_mired", "typ": "zahl", "text": "MT_ATTR.CT" },
+      "8":  { "thema": "farbmodus", "typ": "zahl", "text": "MT_ATTR.COLORMODE" } } },
+
+    "1026": { "name": "TemperatureMeasurement", "attribute": {
+      "0":  { "thema": "temperatur", "typ": "hundertstel", "text": "MT_ATTR.TEMP" } } },
+
+    "1029": { "name": "RelativeHumidityMeasurement", "attribute": {
+      "0":  { "thema": "feuchte", "typ": "hundertstel", "text": "MT_ATTR.HUM" } } },
+
+    "1027": { "name": "PressureMeasurement", "attribute": {
+      "0":  { "thema": "luftdruck", "typ": "zehntel", "text": "MT_ATTR.PRESS" } } },
+
+    "1024": { "name": "IlluminanceMeasurement", "attribute": {
+      "0":  { "thema": "helligkeit_lux", "typ": "lux", "text": "MT_ATTR.LUX" } } },
+
+    "1030": { "name": "OccupancySensing", "attribute": {
+      "0":  { "thema": "bewegung", "typ": "bit0", "text": "MT_ATTR.OCC" } } },
+
+    "69": { "name": "BooleanState", "attribute": {
+      "0":  { "thema": "kontakt", "typ": "bool", "text": "MT_ATTR.BOOL" } } },
+
+    "513": { "name": "Thermostat", "attribute": {
+      "0":  { "thema": "ist_temperatur", "typ": "hundertstel", "text": "MT_ATTR.LOCALTEMP" },
+      "8":  { "thema": "heizanforderung", "typ": "zahl", "text": "MT_ATTR.HEATDEMAND" },
+      "17": { "thema": "soll_kuehlen", "typ": "hundertstel", "text": "MT_ATTR.COOLSET" },
+      "18": { "thema": "soll_heizen", "typ": "hundertstel", "text": "MT_ATTR.HEATSET" },
+      "28": { "thema": "betriebsart", "typ": "zahl", "text": "MT_ATTR.SYSMODE" } } },
+
+    "257": { "name": "DoorLock", "attribute": {
+      "0":  { "thema": "schloss", "typ": "zahl", "text": "MT_ATTR.LOCK" } } },
+
+    "258": { "name": "WindowCovering", "attribute": {
+      "10": { "thema": "betriebszustand", "typ": "zahl", "text": "MT_ATTR.OPSTATE" },
+      "14": { "thema": "position", "typ": "hundertstel", "text": "MT_ATTR.LIFT" } } },
+
+    "47": { "name": "PowerSource", "attribute": {
+      "12": { "thema": "batterie", "typ": "halbprozent", "text": "MT_ATTR.BAT" },
+      "14": { "thema": "batterie_stufe", "typ": "zahl", "text": "MT_ATTR.BATLEVEL" } } },
+
+    "144": { "name": "ElectricalPowerMeasurement", "attribute": {
+      "5":  { "thema": "spannung", "typ": "milli", "text": "MT_ATTR.VOLT" },
+      "6":  { "thema": "strom", "typ": "milli", "text": "MT_ATTR.CURRENT" },
+      "8":  { "thema": "leistung", "typ": "milli", "text": "MT_ATTR.POWER" } } },
+
+    "514": { "name": "FanControl", "attribute": {
+      "0":  { "thema": "luefter_modus", "typ": "zahl", "text": "MT_ATTR.FANMODE" },
+      "2":  { "thema": "luefter_prozent", "typ": "zahl", "text": "MT_ATTR.FANPCT" } } },
+
+    "91": { "name": "AirQuality", "attribute": {
+      "0":  { "thema": "luftguete", "typ": "zahl", "text": "MT_ATTR.AIRQ" } } },
+
+    "40": { "name": "BasicInformation", "nur_info": 1, "attribute": {
+      "1":  { "thema": "hersteller", "typ": "text", "text": "MT_ATTR.VENDOR" },
+      "3":  { "thema": "produkt", "typ": "text", "text": "MT_ATTR.PRODUCT" },
+      "5":  { "thema": "bezeichnung", "typ": "text", "text": "MT_ATTR.LABEL" },
+      "10": { "thema": "firmware", "typ": "text", "text": "MT_ATTR.SWSTRING" } } }
+  },
+
+  "_geraetetypen_hinweis": [
+    "Nur fuer die ANZEIGE. Die Uebersetzung selbst arbeitet ausschliesslich",
+    "ueber die Cluster - ein unbekannter oder falscher Geraetetyp aendert am",
+    "Ergebnis nichts."
+  ],
+  "geraetetyp": {
+    "10":  "MT_TYP.SCHLOSS",
+    "21":  "MT_TYP.KONTAKT",
+    "256": "MT_TYP.LICHT",
+    "257": "MT_TYP.LICHT_DIMM",
+    "262": "MT_TYP.HELLIGKEIT",
+    "263": "MT_TYP.BEWEGUNG",
+    "266": "MT_TYP.STECKDOSE",
+    "268": "MT_TYP.LICHT_CT",
+    "269": "MT_TYP.LICHT_FARBE",
+    "514": "MT_TYP.ROLLO",
+    "769": "MT_TYP.THERMOSTAT",
+    "770": "MT_TYP.TEMPERATUR",
+    "775": "MT_TYP.FEUCHTE"
+  }
+}

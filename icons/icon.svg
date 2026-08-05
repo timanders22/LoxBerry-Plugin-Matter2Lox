@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Matter to Loxone - Plugin-Symbol.
+     Hausstandard: runde Scheibe in LoxBerry-Gruen #6dac20. Motiv: drei Knoten,
+     die sich zu einem Netz verbinden - Matter ist kein Geraet, sondern ein
+     Verbund. Bewusst KEINE fremden Wortmarken oder Logos, auch nicht
+     angedeutet, und ausdruecklich nicht das Matter-Zeichen selbst. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
+  <g stroke="#ffffff" stroke-width="20" stroke-linecap="round" fill="none">
+    <path d="M256 150 L150 330"/>
+    <path d="M256 150 L362 330"/>
+    <path d="M150 330 L362 330"/>
+  </g>
+  <g fill="#ffffff" stroke="#3d6412" stroke-width="12">
+    <circle cx="256" cy="150" r="46"/>
+    <circle cx="150" cy="330" r="46"/>
+    <circle cx="362" cy="330" r="46"/>
+  </g>
+  <g fill="#3d6412">
+    <circle cx="256" cy="150" r="15"/>
+    <circle cx="150" cy="330" r="15"/>
+    <circle cx="362" cy="330" r="15"/>
+  </g>
+</svg>

@@ -1,0 +1,72 @@
+<h2>Matter to Loxone</h2>
+
+<p><b>Dieses Plugin ist die Br&uuml;cke, nicht der Matter-Controller.</b> Matter
+verlangt einen zertifizierten Controller mit eigener Fabric, Zertifikaten,
+Inbetriebnahme &uuml;ber Bluetooth und IPv6-Multicast. Den gibt es fertig: den
+<i>Matter-Server</i> der Open Home Foundation, dasselbe St&uuml;ck, das auch
+Home Assistant benutzt. Er l&auml;uft in einem Container; das Plugin spricht
+seine Schnittstelle an, &uuml;bersetzt die Werte und reicht sie an Loxone
+weiter.</p>
+
+<h3>Drei Voraussetzungen, die das Plugin nicht herstellen kann</h3>
+<ul>
+<li><b>IPv6.</b> Matter beruht auf IPv6-Link-Local-Multicast. Ohne IPv6 l&auml;uft
+gar nichts.</li>
+<li><b>Ein flaches Netz.</b> Multicast-Filter, mDNS-Weiterleitungen und VLANs
+zwischen Ger&auml;t, Border-Router und LoxBerry machen Matter kaputt &mdash; und
+zwar so, dass alles richtig eingerichtet aussieht.</li>
+<li><b>64 Bit.</b> Der Matter-Server l&auml;uft ausdr&uuml;cklich nur auf
+64-Bit-Systemen.</li>
+</ul>
+<p>Thread-Ger&auml;te brauchen zus&auml;tzlich einen Thread-Border-Router im
+Haus. Der LoxBerry ist keiner.</p>
+
+<h3>So gehen Sie vor</h3>
+<ol>
+<li><b>Einstellungen:</b> Container anlegen und starten (oder die Adresse eines
+vorhandenen Matter-Servers eintragen), dann den Br&uuml;ckendienst starten.</li>
+<li><b>Test:</b> Die Selbstpr&uuml;fung geht die Voraussetzungen der Reihe nach
+durch. Jedes Kreuz nennt die Abhilfe mit.</li>
+<li><b>Ger&auml;te anlernen:</b> WLAN-Zugangsdaten hinterlegen und
+&uuml;bergeben, dann den Code vom Ger&auml;t eintippen.</li>
+<li><b>MQTT:</b> Das Abo im MQTT-Gateway eintragen. Ohne diesen Eintrag kommt am
+Miniserver nichts an.</li>
+<li><b>Einbindung in Loxone:</b> Schritt f&uuml;r Schritt, mit Baustein-Liste.</li>
+</ol>
+
+<h3>Wie &uuml;bersetzt wird</h3>
+<p>Matter liefert Zahlen ohne Einheit: eine Temperatur kommt als 2347, eine
+Helligkeit als 178 von 254, eine Leistung in Milliwatt. Die Zuordnung samt
+Umrechnung steht in einer einzigen Datei
+(<span class="sm-mono">matter_cluster.json</span>), die Dienst und
+Oberfl&auml;che gemeinsam lesen. Der Reiter MQTT zeigt sie vollst&auml;ndig an.
+Was das Plugin nicht kennt, l&auml;sst sich auf Wunsch roh mitver&ouml;ffentlichen
+&mdash; verloren geht nichts.</p>
+
+<h3>Was ungepr&uuml;ft ist</h3>
+<p>Dieses Plugin wurde ohne Matter-Ger&auml;t und ohne laufenden Matter-Server
+gebaut. Gepr&uuml;ft wurde es gegen eine Attrappe, die das dokumentierte
+Protokoll nachbildet. Ob die Anmeldung, die Inbetriebnahme und die
+Cluster-Befehle am echten Ger&auml;t tragen, muss sich erst zeigen.</p>
+
+<h3>Grundlage</h3>
+<p>Alle Protokollangaben stammen aus der Schnittstellenbeschreibung und dem
+Quelltext des Open-Home-Foundation-Matter-Servers
+(matter-js/python-matter-server, Apache&nbsp;2.0).</p>
+
+<h3>Der Matter-Server ist archiviert</h3>
+<p>Nachgesehen am 06.08.2026: Das Projekt ist von <i>home-assistant-libs</i> in
+die Organisation <i>matter-js</i> umgezogen und wurde dort am
+<b>23.06.2026 archiviert</b> &mdash; es ist schreibgesch&uuml;tzt. Das
+Container-Abbild <span class="sm-mono">ghcr.io/matter-js/python-matter-server:stable</span>
+<b>gibt es weiterhin</b> (Fassung 8.1.2, ver&ouml;ffentlicht vor rund acht
+Monaten, &uuml;ber 1,1&nbsp;Millionen Abrufe). Dieses Plugin l&auml;uft
+also.</p>
+<p>Praktisch hei&szlig;t das: Neue Ger&auml;tetypen und Fehlerbehebungen
+entstehen nicht mehr hier, sondern im Nachfolger <i>matterjs-server</i>
+derselben Organisation. Bestehende Installationen laufen weiter, solange das
+Abbild abrufbar bleibt.</p>
+<p><b>Nicht gepr&uuml;ft</b> ist, ob der Nachfolger dieselbe
+WebSocket-Schnittstelle spricht. Tut er es nicht, w&auml;re f&uuml;r einen
+Umstieg eine Anpassung des Br&uuml;ckendienstes n&ouml;tig. Das ist eine offene
+Frage &mdash; keine Vermutung in die eine oder andere Richtung.</p>
