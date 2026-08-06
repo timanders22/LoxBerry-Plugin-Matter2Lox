@@ -61,8 +61,16 @@ $mt_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
 
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($mt_post && isset($_POST['vorlage'])) {
-    $mt_nr = preg_match('/^[0-9]{1,3}$/', (string) $_POST['vorlage']) ? (int) $_POST['vorlage'] : 1;
-    list($mt_name, $mt_inhalt) = mt_vorlage($mt_nr);
+    // 'alle' = Sammelvorlage, 'aus<N>' = virtuelle Ausgaenge, '<N>' = Eingaenge
+    $mt_wunsch = (string) $_POST['vorlage'];
+    if ($mt_wunsch === 'alle') {
+        list($mt_name, $mt_inhalt) = mt_vorlage_alle();
+    } elseif (preg_match('/^aus([0-9]{1,3})$/', $mt_wunsch, $mt_tr)) {
+        list($mt_name, $mt_inhalt) = mt_vorlage_out((int) $mt_tr[1]);
+    } else {
+        $mt_nr = preg_match('/^[0-9]{1,3}$/', $mt_wunsch) ? (int) $mt_wunsch : 1;
+        list($mt_name, $mt_inhalt) = mt_vorlage($mt_nr);
+    }
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $mt_name . '"');
     echo $mt_inhalt;
@@ -715,12 +723,27 @@ foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
     <td><?= mt_e(mt_thema_text($mt_thema, $mt_tabelle)) ?></td></tr>
 <?php } } ?>
 </table>
-<form action="index.php" method="post" style="margin-bottom:10px;">
+<div class="sm-knopfreihe" style="margin-bottom:10px;">
+<form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="<?= mt_e($mt_nr) ?>">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE')) ?> <?= mt_e($mt_g['name']) ?></button>
 </form>
+<form action="index.php" method="post">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage" value="aus<?= mt_e($mt_nr) ?>">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_AUS')) ?> <?= mt_e($mt_g['name']) ?></button>
+</form>
+</div>
 <?php } } ?>
+
+<h3 class="sm-h3"><?= mt_e(mt_t('LOX.H_SAMMEL')) ?></h3>
+<div class="sm-hinweis"><?= mt_t('LOX.S_SAMMEL') ?></div>
+<form action="index.php" method="post" style="margin-bottom:10px;">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage" value="alle">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_ALLE')) ?></button>
+</form>
 <div class="sm-hinweis"><?= mt_t('LOX.S3_EINZELN') ?></div>
 <div class="sm-warnung"><?= mt_t('LOX.S3_STRICH') ?></div>
 <div class="sm-legende">

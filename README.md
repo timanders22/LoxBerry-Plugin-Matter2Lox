@@ -4,9 +4,40 @@ Bindet **Matter-Geräte** an Loxone an — Lampen, Steckdosen, Sensoren,
 Thermostate, Behänge. Übersetzt Matter-Attribute in sprechende MQTT-Themen und
 nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 
-> **Fassung 0.9.0 — ungeprüft am echten Gerät.** Gebaut ohne Matter-Hardware
+> **Fassung 0.9.1 — ungeprüft am echten Gerät.** Gebaut ohne Matter-Hardware
 > und ohne laufenden Matter-Server; geprüft gegen eine Attrappe, die das
-> dokumentierte Protokoll nachbildet. Deshalb 0.9.0 und nicht 1.0.0.
+> dokumentierte Protokoll nachbildet. Deshalb 0.9.1 und nicht 1.0.0.
+
+## Neu in 0.9.1
+
+**Fünf weitere Cluster** — damit sind es 22 statt 17:
+
+| Cluster | Nummer | Wofür |
+|---|---|---|
+| `OperationalState` | 0x0060 | Betriebszustand, laufende Phase, Restzeit |
+| `LaundryWasherMode` | 0x0051 | Waschprogramm |
+| `ElectricalEnergyMeasurement` | 0x0091 | Energie, Bezug und Einspeisung getrennt |
+| `WaterHeaterManagement` | 0x0094 | Warmwasser: Heizanforderung, Füllstand, Boost |
+| `EnergyEvse` | 0x0099 | Wallbox: Zustand, Fehler, Ladestand, Strom, Dauer, Energie |
+
+**Bessere Grenzen im Virtuellen Eingang.** Bis 0.9.0 bekam *jeder* Wert
+`Analog="true"` und `MinVal`/`MaxVal` auf Anschlag (±2 147 483 647). Loxone
+zieht aus diesen Grenzen aber die Reglerbereiche und die
+Plausibilitätsprüfung — wer alles offen lässt, verschenkt beides, und ein
+Schalter wird zum Analogwert über vier Milliarden Stufen. Jetzt leiten sich
+Analog/Digital und die Grenzen aus dem Attributtyp ab; die Cluster-Tabelle darf
+je Attribut genauere mitgeben.
+
+**Eine Vorlage für den Virtuellen Ausgang.** Bis 0.9.0 gab es dafür keine — der
+Anwender baute jeden Ausgang samt Adresse von Hand, und das ist die
+aufwendigere Hälfte der Arbeit.
+
+**Ehrlich bei der Energiestruktur.** `ElectricalEnergyMeasurement` liefert
+keine blanke Zahl, sondern eine Struktur. Wie der Matter-Server sie über die
+WebSocket-Schnittstelle benennt, ließ sich ohne ein solches Gerät nicht
+nachmessen. Das Plugin nimmt deshalb beide gängigen Formen an — Feldname und
+Feldnummer aus der Spezifikation — und gibt **nichts** zurück, wenn keine
+passt, statt eine erfundene Zahl.
 
 ## Das Plugin ist die Brücke, nicht der Controller
 

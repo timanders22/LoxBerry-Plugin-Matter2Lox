@@ -1,108 +1,548 @@
 {
-  "_hinweis": [
-    "Zuordnung der Matter-Cluster auf sprechende Themen samt Umrechnung.",
-    "EINE Datei fuer Dienst und Oberflaeche - zwei Kopien liefen zwangslaeufig",
-    "auseinander. Cluster- und Attributnummern sowie die Umrechnungen stammen",
-    "aus der Matter-Spezifikation (die Zahlenwerte sind aus der ZCL uebernommen",
-    "und seit Matter 1.0 unveraendert).",
-    "",
-    "typ = wie der Rohwert in einen brauchbaren Wert umgerechnet wird:",
-    "  bool        0/1 unveraendert",
-    "  bit0        unterstes Bit einer Bitmaske als 0/1",
-    "  zahl        unveraendert",
-    "  hundertstel Rohwert durch 100 (Matter zaehlt Hundertstel)",
-    "  zehntel     Rohwert durch 10",
-    "  milli       Rohwert durch 1000 (Matter zaehlt Milliwatt, Millivolt ...)",
-    "  halbprozent Rohwert durch 2 (Matter zaehlt halbe Prozent)",
-    "  prozent254  Rohwert 0..254 als Prozent 0..100",
-    "  lux         10 hoch ((Rohwert minus 1) durch 10000), siehe Spezifikation"
-  ],
-  "cluster": {
-    "6": { "name": "OnOff", "attribute": {
-      "0":  { "thema": "schalter", "typ": "bool", "text": "MT_ATTR.ONOFF" } } },
-
-    "8": { "name": "LevelControl", "attribute": {
-      "0":  { "thema": "helligkeit", "typ": "prozent254", "text": "MT_ATTR.LEVEL" } } },
-
-    "768": { "name": "ColorControl", "attribute": {
-      "0":  { "thema": "farbton_roh", "typ": "zahl", "text": "MT_ATTR.HUE" },
-      "1":  { "thema": "saettigung", "typ": "prozent254", "text": "MT_ATTR.SAT" },
-      "7":  { "thema": "farbtemperatur_mired", "typ": "zahl", "text": "MT_ATTR.CT" },
-      "8":  { "thema": "farbmodus", "typ": "zahl", "text": "MT_ATTR.COLORMODE" } } },
-
-    "1026": { "name": "TemperatureMeasurement", "attribute": {
-      "0":  { "thema": "temperatur", "typ": "hundertstel", "text": "MT_ATTR.TEMP" } } },
-
-    "1029": { "name": "RelativeHumidityMeasurement", "attribute": {
-      "0":  { "thema": "feuchte", "typ": "hundertstel", "text": "MT_ATTR.HUM" } } },
-
-    "1027": { "name": "PressureMeasurement", "attribute": {
-      "0":  { "thema": "luftdruck", "typ": "zehntel", "text": "MT_ATTR.PRESS" } } },
-
-    "1024": { "name": "IlluminanceMeasurement", "attribute": {
-      "0":  { "thema": "helligkeit_lux", "typ": "lux", "text": "MT_ATTR.LUX" } } },
-
-    "1030": { "name": "OccupancySensing", "attribute": {
-      "0":  { "thema": "bewegung", "typ": "bit0", "text": "MT_ATTR.OCC" } } },
-
-    "69": { "name": "BooleanState", "attribute": {
-      "0":  { "thema": "kontakt", "typ": "bool", "text": "MT_ATTR.BOOL" } } },
-
-    "513": { "name": "Thermostat", "attribute": {
-      "0":  { "thema": "ist_temperatur", "typ": "hundertstel", "text": "MT_ATTR.LOCALTEMP" },
-      "8":  { "thema": "heizanforderung", "typ": "zahl", "text": "MT_ATTR.HEATDEMAND" },
-      "17": { "thema": "soll_kuehlen", "typ": "hundertstel", "text": "MT_ATTR.COOLSET" },
-      "18": { "thema": "soll_heizen", "typ": "hundertstel", "text": "MT_ATTR.HEATSET" },
-      "28": { "thema": "betriebsart", "typ": "zahl", "text": "MT_ATTR.SYSMODE" } } },
-
-    "257": { "name": "DoorLock", "attribute": {
-      "0":  { "thema": "schloss", "typ": "zahl", "text": "MT_ATTR.LOCK" } } },
-
-    "258": { "name": "WindowCovering", "attribute": {
-      "10": { "thema": "betriebszustand", "typ": "zahl", "text": "MT_ATTR.OPSTATE" },
-      "14": { "thema": "position", "typ": "hundertstel", "text": "MT_ATTR.LIFT" } } },
-
-    "47": { "name": "PowerSource", "attribute": {
-      "12": { "thema": "batterie", "typ": "halbprozent", "text": "MT_ATTR.BAT" },
-      "14": { "thema": "batterie_stufe", "typ": "zahl", "text": "MT_ATTR.BATLEVEL" } } },
-
-    "144": { "name": "ElectricalPowerMeasurement", "attribute": {
-      "5":  { "thema": "spannung", "typ": "milli", "text": "MT_ATTR.VOLT" },
-      "6":  { "thema": "strom", "typ": "milli", "text": "MT_ATTR.CURRENT" },
-      "8":  { "thema": "leistung", "typ": "milli", "text": "MT_ATTR.POWER" } } },
-
-    "514": { "name": "FanControl", "attribute": {
-      "0":  { "thema": "luefter_modus", "typ": "zahl", "text": "MT_ATTR.FANMODE" },
-      "2":  { "thema": "luefter_prozent", "typ": "zahl", "text": "MT_ATTR.FANPCT" } } },
-
-    "91": { "name": "AirQuality", "attribute": {
-      "0":  { "thema": "luftguete", "typ": "zahl", "text": "MT_ATTR.AIRQ" } } },
-
-    "40": { "name": "BasicInformation", "nur_info": 1, "attribute": {
-      "1":  { "thema": "hersteller", "typ": "text", "text": "MT_ATTR.VENDOR" },
-      "3":  { "thema": "produkt", "typ": "text", "text": "MT_ATTR.PRODUCT" },
-      "5":  { "thema": "bezeichnung", "typ": "text", "text": "MT_ATTR.LABEL" },
-      "10": { "thema": "firmware", "typ": "text", "text": "MT_ATTR.SWSTRING" } } }
+ "_hinweis": [
+  "Zuordnung der Matter-Cluster auf sprechende Themen samt Umrechnung.",
+  "EINE Datei fuer Dienst und Oberflaeche - zwei Kopien liefen zwangslaeufig",
+  "auseinander. Cluster- und Attributnummern sowie die Umrechnungen stammen",
+  "aus der Matter-Spezifikation (die Zahlenwerte sind aus der ZCL uebernommen",
+  "und seit Matter 1.0 unveraendert).",
+  "",
+  "typ = wie der Rohwert in einen brauchbaren Wert umgerechnet wird:",
+  "  bool           0/1 unveraendert",
+  "  bit0           unterstes Bit einer Bitmaske als 0/1",
+  "  zahl           unveraendert",
+  "  hundertstel    Rohwert durch 100 (Matter zaehlt Hundertstel)",
+  "  zehntel        Rohwert durch 10",
+  "  milli          Rohwert durch 1000 (Matter zaehlt Milliwatt, Millivolt ...)",
+  "  halbprozent    Rohwert durch 2 (Matter zaehlt halbe Prozent)",
+  "  prozent254     Rohwert 0..254 als Prozent 0..100",
+  "  lux            10 hoch ((Rohwert minus 1) durch 10000), siehe Spezifikation",
+  "  mwh            Rohwert durch 1000000 (Matter zaehlt Milliwattstunden) -> kWh",
+  "  energie_struct wie mwh, aber der Wert steckt im Feld 'energy' einer",
+  "                 EnergyMeasurementStruct statt als blanke Zahl",
+  "",
+  "min/max/einheit sind FREIWILLIG und dienen der Loxone-Vorlage: daraus",
+  "werden Analog/Digital, MinVal/MaxVal und der Kommentar des virtuellen",
+  "Eingangs gebaut. Fehlen sie, gilt die Vorgabe des Typs. Die Werte sind die",
+  "des UMGERECHNETEN Wertes - umgerechnet wird im Plugin, nicht in Loxone.",
+  "",
+  "_quelle nennt die Stelle der Matter-Spezifikation, aus der Grenzen und",
+  "Aufzaehlungen stammen (Dateien src/app/zap-templates/zcl/data-model/chip/",
+  "im Projekt connectedhomeip). Wer eine Grenze aendert, nennt dort, woher",
+  "sie kommt - geraten wird hier nicht.",
+  "",
+  "_ungeprueft = die Zuordnung stammt aus der Spezifikation, wurde aber noch",
+  "an keinem echten Geraet nachgemessen. Sie wird in der Oberflaeche als",
+  "ungeprueft ausgewiesen, damit niemand sie fuer bestaetigt haelt."
+ ],
+ "cluster": {
+  "6": {
+   "name": "OnOff",
+   "attribute": {
+    "0": {
+     "thema": "schalter",
+     "typ": "bool",
+     "text": "MT_ATTR.ONOFF"
+    }
+   }
   },
-
-  "_geraetetypen_hinweis": [
-    "Nur fuer die ANZEIGE. Die Uebersetzung selbst arbeitet ausschliesslich",
-    "ueber die Cluster - ein unbekannter oder falscher Geraetetyp aendert am",
-    "Ergebnis nichts."
-  ],
-  "geraetetyp": {
-    "10":  "MT_TYP.SCHLOSS",
-    "21":  "MT_TYP.KONTAKT",
-    "256": "MT_TYP.LICHT",
-    "257": "MT_TYP.LICHT_DIMM",
-    "262": "MT_TYP.HELLIGKEIT",
-    "263": "MT_TYP.BEWEGUNG",
-    "266": "MT_TYP.STECKDOSE",
-    "268": "MT_TYP.LICHT_CT",
-    "269": "MT_TYP.LICHT_FARBE",
-    "514": "MT_TYP.ROLLO",
-    "769": "MT_TYP.THERMOSTAT",
-    "770": "MT_TYP.TEMPERATUR",
-    "775": "MT_TYP.FEUCHTE"
+  "8": {
+   "name": "LevelControl",
+   "attribute": {
+    "0": {
+     "thema": "helligkeit",
+     "typ": "prozent254",
+     "text": "MT_ATTR.LEVEL",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "abgeleitet aus dem Typ prozent254 (Rohwert 0..254 -> 0..100 %)"
+    }
+   }
+  },
+  "768": {
+   "name": "ColorControl",
+   "attribute": {
+    "0": {
+     "thema": "farbton_roh",
+     "typ": "zahl",
+     "text": "MT_ATTR.HUE",
+     "min": 0,
+     "max": 254,
+     "_quelle": "ColorControl.CurrentHue, int8u max 0xFE"
+    },
+    "1": {
+     "thema": "saettigung",
+     "typ": "prozent254",
+     "text": "MT_ATTR.SAT",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "ColorControl.CurrentSaturation, int8u max 0xFE -> 0..100 %"
+    },
+    "7": {
+     "thema": "farbtemperatur_mired",
+     "typ": "zahl",
+     "text": "MT_ATTR.CT",
+     "min": 0,
+     "max": 65279,
+     "einheit": "mired",
+     "_quelle": "ColorControl.ColorTemperatureMireds, int16u max 0xFEFF"
+    },
+    "8": {
+     "thema": "farbmodus",
+     "typ": "zahl",
+     "text": "MT_ATTR.COLORMODE",
+     "min": 0,
+     "max": 2,
+     "_quelle": "ColorControl.ColorMode, ColorModeEnum max 0x02"
+    }
+   }
+  },
+  "1026": {
+   "name": "TemperatureMeasurement",
+   "attribute": {
+    "0": {
+     "thema": "temperatur",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.TEMP",
+     "min": -273,
+     "max": 328,
+     "einheit": "°C",
+     "_quelle": "TemperatureMeasurement.MeasuredValue, temperature min -27315, int16 max 0x7FFE"
+    }
+   }
+  },
+  "1029": {
+   "name": "RelativeHumidityMeasurement",
+   "attribute": {
+    "0": {
+     "thema": "feuchte",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.HUM",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "abgeleitet aus dem Typ hundertstel (percent100ths 0..10000 -> 0..100 %)"
+    }
+   }
+  },
+  "1027": {
+   "name": "PressureMeasurement",
+   "attribute": {
+    "0": {
+     "thema": "luftdruck",
+     "typ": "zehntel",
+     "text": "MT_ATTR.PRESS",
+     "min": -3277,
+     "max": 3277,
+     "einheit": "kPa",
+     "_quelle": "PressureMeasurement.MeasuredValue, int16s in kPa (Typ zehntel)"
+    }
+   }
+  },
+  "1024": {
+   "name": "IlluminanceMeasurement",
+   "attribute": {
+    "0": {
+     "thema": "helligkeit_lux",
+     "typ": "lux",
+     "text": "MT_ATTR.LUX",
+     "min": 0,
+     "max": 200000,
+     "einheit": "lx",
+     "_quelle": "abgeleitet aus dem Typ lux (Umrechnung siehe Kopf dieser Datei)"
+    }
+   }
+  },
+  "1030": {
+   "name": "OccupancySensing",
+   "attribute": {
+    "0": {
+     "thema": "bewegung",
+     "typ": "bit0",
+     "text": "MT_ATTR.OCC"
+    }
+   }
+  },
+  "69": {
+   "name": "BooleanState",
+   "attribute": {
+    "0": {
+     "thema": "kontakt",
+     "typ": "bool",
+     "text": "MT_ATTR.BOOL"
+    }
+   }
+  },
+  "513": {
+   "name": "Thermostat",
+   "attribute": {
+    "0": {
+     "thema": "ist_temperatur",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.LOCALTEMP",
+     "min": -273,
+     "max": 328,
+     "einheit": "°C",
+     "_quelle": "Thermostat.LocalTemperature, temperature min -27315 (int16 -> max 32767)"
+    },
+    "8": {
+     "thema": "heizanforderung",
+     "typ": "zahl",
+     "text": "MT_ATTR.HEATDEMAND",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "Thermostat.PIHeatingDemand, int8u max 100"
+    },
+    "17": {
+     "thema": "soll_kuehlen",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.COOLSET",
+     "min": -273,
+     "max": 328,
+     "einheit": "°C",
+     "_quelle": "Thermostat.OccupiedCoolingSetpoint, temperature min -27315"
+    },
+    "18": {
+     "thema": "soll_heizen",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.HEATSET",
+     "min": -273,
+     "max": 328,
+     "einheit": "°C",
+     "_quelle": "Thermostat.OccupiedHeatingSetpoint, temperature min -27315"
+    },
+    "28": {
+     "thema": "betriebsart",
+     "typ": "zahl",
+     "text": "MT_ATTR.SYSMODE",
+     "min": 0,
+     "max": 9,
+     "_quelle": "Thermostat.SystemMode, SystemModeEnum max 0x9"
+    }
+   }
+  },
+  "257": {
+   "name": "DoorLock",
+   "attribute": {
+    "0": {
+     "thema": "schloss",
+     "typ": "zahl",
+     "text": "MT_ATTR.LOCK",
+     "min": 0,
+     "max": 3,
+     "_quelle": "DoorLock.LockState, DlLockState max 3"
+    }
+   }
+  },
+  "258": {
+   "name": "WindowCovering",
+   "attribute": {
+    "10": {
+     "thema": "betriebszustand",
+     "typ": "zahl",
+     "text": "MT_ATTR.OPSTATE",
+     "min": 0,
+     "max": 63,
+     "_quelle": "WindowCovering.OperationalStatus, bitmap8 max 63"
+    },
+    "14": {
+     "thema": "position",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.LIFT",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "WindowCovering.CurrentPositionLiftPercent100ths, max 10000 -> 0..100 %"
+    }
+   }
+  },
+  "47": {
+   "name": "PowerSource",
+   "attribute": {
+    "12": {
+     "thema": "batterie",
+     "typ": "halbprozent",
+     "text": "MT_ATTR.BAT",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "PowerSource.BatPercentRemaining, int8u max 0xC8 -> Typ halbprozent -> 0..100 %"
+    },
+    "14": {
+     "thema": "batterie_stufe",
+     "typ": "zahl",
+     "text": "MT_ATTR.BATLEVEL",
+     "min": 0,
+     "max": 2,
+     "_quelle": "PowerSource.BatChargeLevel, BatChargeLevelEnum max 0x02"
+    }
+   }
+  },
+  "144": {
+   "name": "ElectricalPowerMeasurement",
+   "attribute": {
+    "5": {
+     "thema": "spannung",
+     "typ": "milli",
+     "text": "MT_ATTR.VOLT"
+    },
+    "6": {
+     "thema": "strom",
+     "typ": "milli",
+     "text": "MT_ATTR.CURRENT"
+    },
+    "8": {
+     "thema": "leistung",
+     "typ": "milli",
+     "text": "MT_ATTR.POWER"
+    }
+   }
+  },
+  "514": {
+   "name": "FanControl",
+   "attribute": {
+    "0": {
+     "thema": "luefter_modus",
+     "typ": "zahl",
+     "text": "MT_ATTR.FANMODE",
+     "min": 0,
+     "max": 6,
+     "_quelle": "FanControl.FanMode, FanModeEnum max 6"
+    },
+    "2": {
+     "thema": "luefter_prozent",
+     "typ": "zahl",
+     "text": "MT_ATTR.FANPCT",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "FanControl.PercentSetting, percent max 100"
+    }
+   }
+  },
+  "91": {
+   "name": "AirQuality",
+   "attribute": {
+    "0": {
+     "thema": "luftguete",
+     "typ": "zahl",
+     "text": "MT_ATTR.AIRQ",
+     "min": 0,
+     "max": 6,
+     "_quelle": "AirQuality.AirQuality, AirQualityEnum max 6"
+    }
+   }
+  },
+  "40": {
+   "name": "BasicInformation",
+   "nur_info": 1,
+   "attribute": {
+    "1": {
+     "thema": "hersteller",
+     "typ": "text",
+     "text": "MT_ATTR.VENDOR"
+    },
+    "3": {
+     "thema": "produkt",
+     "typ": "text",
+     "text": "MT_ATTR.PRODUCT"
+    },
+    "5": {
+     "thema": "bezeichnung",
+     "typ": "text",
+     "text": "MT_ATTR.LABEL"
+    },
+    "10": {
+     "thema": "firmware",
+     "typ": "text",
+     "text": "MT_ATTR.SWSTRING"
+    }
+   }
+  },
+  "145": {
+   "name": "ElectricalEnergyMeasurement",
+   "_ungeprueft": true,
+   "_quelle": "Matter 1.3, ElectricalEnergyMeasurement.adoc; Werte in EnergyMeasurementStruct.Energy [mWh]",
+   "attribute": {
+    "1": {
+     "thema": "energie_bezug",
+     "typ": "energie_struct",
+     "text": "MT_ATTR.ENERGIE_BEZUG",
+     "min": 0,
+     "max": 100000000,
+     "einheit": "kWh"
+    },
+    "2": {
+     "thema": "energie_einspeisung",
+     "typ": "energie_struct",
+     "text": "MT_ATTR.ENERGIE_EINSPEISUNG",
+     "min": 0,
+     "max": 100000000,
+     "einheit": "kWh"
+    }
+   }
+  },
+  "96": {
+   "name": "OperationalState",
+   "_ungeprueft": true,
+   "_quelle": "Matter 1.2, OperationalState.adoc; Zustand 0=gestoppt 1=laeuft 2=pausiert 3=Fehler",
+   "attribute": {
+    "1": {
+     "thema": "betrieb_phase",
+     "typ": "zahl",
+     "text": "MT_ATTR.BETRIEB_PHASE",
+     "min": 0,
+     "max": 255
+    },
+    "2": {
+     "thema": "betrieb_restzeit",
+     "typ": "zahl",
+     "text": "MT_ATTR.BETRIEB_RESTZEIT",
+     "min": 0,
+     "max": 259200,
+     "einheit": "s"
+    },
+    "4": {
+     "thema": "betrieb_zustand",
+     "typ": "zahl",
+     "text": "MT_ATTR.BETRIEB_ZUSTAND",
+     "min": 0,
+     "max": 3
+    }
+   }
+  },
+  "153": {
+   "name": "EnergyEvse",
+   "_ungeprueft": true,
+   "_quelle": "Matter 1.3, EnergyEVSE.adoc; Zustand 0=nicht gesteckt 1=gesteckt 2=Bedarf 3=laedt 4=entlaedt 5=endet 6=Fehler",
+   "attribute": {
+    "0": {
+     "thema": "evse_zustand",
+     "typ": "zahl",
+     "text": "MT_ATTR.EVSE_ZUSTAND",
+     "min": 0,
+     "max": 6
+    },
+    "1": {
+     "thema": "evse_versorgung",
+     "typ": "zahl",
+     "text": "MT_ATTR.EVSE_VERSORGUNG",
+     "min": 0,
+     "max": 5
+    },
+    "2": {
+     "thema": "evse_fehler",
+     "typ": "zahl",
+     "text": "MT_ATTR.EVSE_FEHLER",
+     "min": 0,
+     "max": 255
+    },
+    "5": {
+     "thema": "evse_kapazitaet",
+     "typ": "milli",
+     "text": "MT_ATTR.EVSE_KAPAZITAET",
+     "min": 0,
+     "max": 100,
+     "einheit": "A"
+    },
+    "7": {
+     "thema": "evse_max_strom",
+     "typ": "milli",
+     "text": "MT_ATTR.EVSE_MAX_STROM",
+     "min": 0,
+     "max": 100,
+     "einheit": "A"
+    },
+    "48": {
+     "thema": "evse_ladestand",
+     "typ": "zahl",
+     "text": "MT_ATTR.EVSE_LADESTAND",
+     "min": 0,
+     "max": 100,
+     "einheit": "%"
+    },
+    "65": {
+     "thema": "evse_dauer",
+     "typ": "zahl",
+     "text": "MT_ATTR.EVSE_DAUER",
+     "min": 0,
+     "max": 1000000,
+     "einheit": "s"
+    },
+    "66": {
+     "thema": "evse_energie",
+     "typ": "mwh",
+     "text": "MT_ATTR.EVSE_ENERGIE",
+     "min": 0,
+     "max": 1000,
+     "einheit": "kWh"
+    }
+   }
+  },
+  "148": {
+   "name": "WaterHeaterManagement",
+   "_ungeprueft": true,
+   "_quelle": "Matter 1.4, WaterHeaterManagement.adoc; Heizanforderung ist eine Bitmaske der Waermequellen",
+   "attribute": {
+    "1": {
+     "thema": "ww_heizanforderung",
+     "typ": "zahl",
+     "text": "MT_ATTR.WW_HEIZANFORDERUNG",
+     "min": 0,
+     "max": 31
+    },
+    "4": {
+     "thema": "ww_fuellstand",
+     "typ": "zahl",
+     "text": "MT_ATTR.WW_FUELLSTAND",
+     "min": 0,
+     "max": 100,
+     "einheit": "%"
+    },
+    "5": {
+     "thema": "ww_boost",
+     "typ": "zahl",
+     "text": "MT_ATTR.WW_BOOST",
+     "min": 0,
+     "max": 1
+    }
+   }
+  },
+  "81": {
+   "name": "LaundryWasherMode",
+   "_ungeprueft": true,
+   "_quelle": "Matter 1.2, Mode_LaundryWasher.adoc; CurrentMode verweist auf SupportedModes des Geraets",
+   "attribute": {
+    "1": {
+     "thema": "waschen_modus",
+     "typ": "zahl",
+     "text": "MT_ATTR.WASCHEN_MODUS",
+     "min": 0,
+     "max": 255
+    }
+   }
   }
+ },
+ "_geraetetypen_hinweis": [
+  "Nur fuer die ANZEIGE. Die Uebersetzung selbst arbeitet ausschliesslich",
+  "ueber die Cluster - ein unbekannter oder falscher Geraetetyp aendert am",
+  "Ergebnis nichts."
+ ],
+ "geraetetyp": {
+  "10": "MT_TYP.SCHLOSS",
+  "21": "MT_TYP.KONTAKT",
+  "256": "MT_TYP.LICHT",
+  "257": "MT_TYP.LICHT_DIMM",
+  "262": "MT_TYP.HELLIGKEIT",
+  "263": "MT_TYP.BEWEGUNG",
+  "266": "MT_TYP.STECKDOSE",
+  "268": "MT_TYP.LICHT_CT",
+  "269": "MT_TYP.LICHT_FARBE",
+  "514": "MT_TYP.ROLLO",
+  "769": "MT_TYP.THERMOSTAT",
+  "770": "MT_TYP.TEMPERATUR",
+  "775": "MT_TYP.FEUCHTE"
+ }
 }

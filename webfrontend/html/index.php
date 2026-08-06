@@ -56,7 +56,7 @@ if (!hash_equals($mt_soll, $mt_ist)) {
 }
 
 /* ---------------- Aktion (Weissliste) ---------------- */
-$mt_lesend = array('status', 'wert', 'liste', 'roh');
+$mt_lesend = array('status', 'statusalle', 'wert', 'liste', 'roh');
 $mt_schaltend = array('ein', 'aus', 'umschalten', 'helligkeit', 'farbtemperatur',
                       'rollo', 'rollo_auf', 'rollo_zu', 'rollo_stopp',
                       'soll_heizen', 'soll_kuehlen', 'betriebsart',
@@ -129,6 +129,39 @@ if ($mt_aktion === 'liste') {
            . ';Erreichbar=' . (int) $g['erreichbar']
            . ';Endpunkte=' . count((array) $g['endpunkte']) . "\n";
     }
+    exit;
+}
+
+if ($mt_aktion === 'statusalle') {
+    /* Alle Geraete in EINER Zeile - fuer die Sammelvorlage.
+     *
+     * Eine XML-Vorlage hat nur ein Wurzelelement und damit nur eine Adresse.
+     * Ohne diesen Endpunkt braeuchte man je Geraet eine eigene Datei und
+     * einen eigenen virtuellen Eingang. Die Marken tragen die Geraetenummer
+     * im Namen (MATTER_3_1_TEMPERATUR), damit sie eindeutig bleiben.
+     *
+     * OK, ERREICH und ALTER stehen einmal am Anfang und gelten fuer das
+     * Abbild als Ganzes. ERREICH ist hier 1, wenn ALLE Geraete erreichbar
+     * sind - ein einzelnes stummes Geraet faellt sonst nicht auf.
+     */
+    $mt_alleda = count($mt_alle) > 0;
+    foreach ($mt_alle as $g) {
+        if (empty($g['erreichbar'])) { $mt_alleda = false; break; }
+    }
+    $teile = array(
+        'MATTER;OK=' . (int) (!empty($mt_lox['ok'])),
+        'ERREICH=' . (int) $mt_alleda,
+        'ALTER=' . $mt_alter,
+    );
+    foreach ($mt_alle as $nr => $g) {
+        foreach ((array) $g['endpunkte'] as $ep => $felder) {
+            foreach ((array) $felder as $thema => $w) {
+                $teile[] = 'MATTER_' . (int) $nr . '_' . strtoupper($ep . '_' . $thema)
+                         . '=' . mt_w($w);
+            }
+        }
+    }
+    echo implode(';', $teile) . "\n";
     exit;
 }
 

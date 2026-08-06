@@ -107,6 +107,46 @@ function mt_pruefungen()
                       }, $tab['cluster'])))
             : mt_t('TEST.A_TABELLE_FEHLT'));
 
+    // --- Die Loxone-Vorlagen wirklich erzeugen und einlesen ---
+    //
+    // Ein Anfuehrungszeichen oder ein Umlaut im Geraetenamen zerlegt die
+    // Datei, und Loxone Config meldet dazu nichts Brauchbares. Deshalb wird
+    // hier erzeugt und sofort wieder eingelesen: wohlgeformt oder nicht.
+    $mt_vorher = libxml_use_internal_errors(true);
+    $mt_kaputt = array();
+    $mt_gezaehlt = 0;
+    $mt_proben = array('VI alle' => mt_vorlage_alle());
+    foreach (array_keys(mt_geraete()) as $mt_nr) {
+        $mt_proben['VI ' . (int) $mt_nr] = mt_vorlage((int) $mt_nr);
+        $mt_proben['VQ ' . (int) $mt_nr] = mt_vorlage_out((int) $mt_nr);
+    }
+    foreach ($mt_proben as $mt_was => $mt_paar) {
+        $mt_gezaehlt++;
+        libxml_clear_errors();
+        if (simplexml_load_string($mt_paar[1]) === false) {
+            $mt_fehler = libxml_get_errors();
+            $mt_kaputt[] = $mt_was . ' (' . (isset($mt_fehler[0])
+                ? trim($mt_fehler[0]->message) : '?') . ')';
+        }
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($mt_vorher);
+    $zeilen[] = mt_pruefzeile($mt_kaputt ? 0 : 1, mt_t('TEST.F_VORLAGE'),
+        $mt_kaputt ? sprintf(mt_t('TEST.A_VORLAGE_FEHL'), mt_e(implode(', ', $mt_kaputt)))
+                   : sprintf(mt_t('TEST.A_VORLAGE'), $mt_gezaehlt));
+
+    // --- Ungepruefte Cluster ausweisen ---
+    $mt_ungeprueft = array();
+    foreach ($tab['cluster'] as $mt_cl) {
+        if (!empty($mt_cl['_ungeprueft'])) {
+            $mt_ungeprueft[] = isset($mt_cl['name']) ? $mt_cl['name'] : '?';
+        }
+    }
+    if ($mt_ungeprueft) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_UNGEPRUEFT'),
+            sprintf(mt_t('TEST.A_UNGEPRUEFT'), mt_e(implode(', ', $mt_ungeprueft))));
+    }
+
     return $zeilen;
 }
 

@@ -197,6 +197,27 @@ def umrechnen(typ: str, wert):
             return 1 if wert in (True, 1, "1", "true", "True") else 0
         if typ == "bit0":
             return int(wert) & 1
+        if typ == "energie_struct":
+            # ElectricalEnergyMeasurement liefert keine blanke Zahl, sondern
+            # eine EnergyMeasurementStruct. Gebraucht wird daraus das Feld
+            # 'energy' in Milliwattstunden.
+            #
+            # UNGEPRUEFT: wie der Matter-Server die Struktur ueber die
+            # WebSocket-Schnittstelle benennt, liess sich ohne ein solches
+            # Geraet nicht nachmessen. Deshalb werden beide gaengigen Formen
+            # angenommen - der Feldname und die Feldnummer aus der
+            # Spezifikation. Passt keine, wird None zurueckgegeben statt
+            # einer erfundenen Zahl.
+            if not isinstance(wert, dict):
+                return None
+            roh = None
+            for schluessel in ("energy", "Energy", "0"):
+                if schluessel in wert:
+                    roh = wert[schluessel]
+                    break
+            if roh is None:
+                return None
+            return round(float(roh) / 1000000, 3)
         zahl = float(wert)
         if typ == "zahl":
             return int(zahl) if float(zahl).is_integer() else round(zahl, 3)
@@ -215,6 +236,9 @@ def umrechnen(typ: str, wert):
             if zahl <= 0:
                 return 0
             return round(10 ** ((zahl - 1) / 10000), 1)
+        if typ == "mwh":
+            # Matter zaehlt Milliwattstunden, Loxone will kWh.
+            return round(zahl / 1000000, 3)
     except (TypeError, ValueError):
         return None
     return None

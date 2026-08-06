@@ -432,6 +432,54 @@ function mt_x($s)
     return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
+/**
+ * Grenzen und Analog/Digital aus dem Attributtyp ableiten.
+ *
+ * Bis 0.9.0 bekam JEDER Wert Analog="true" und MinVal/MaxVal auf Anschlag
+ * (+/- 2147483647). Loxone zieht aus diesen Grenzen aber die Reglerbereiche
+ * und die Plausibilitaetspruefung - wer alles offen laesst, verschenkt beides,
+ * und ein Schalter wird zum Analogwert ueber vier Milliarden Stufen.
+ *
+ * WICHTIG: umgerechnet wird im PLUGIN, nicht in Loxone. Der virtuelle Eingang
+ * liest den bereits fertigen Wert vom Status-Endpunkt. Deshalb bleiben
+ * SourceVal/DestVal immer 1:1 - hier geht es allein um Analog/Digital und um
+ * sinnvolle Grenzen in der FERTIGEN Einheit.
+ *
+ * Genauere Grenzen darf die Cluster-Tabelle je Attribut mitgeben (min, max,
+ * einheit); der Typ ist nur die Rueckfallebene. Noetig ist das, weil
+ * derselbe Typ Verschiedenes tragen kann: 'hundertstel' ist bei der
+ * Temperatur -273..328 und bei der Feuchte 0..100.
+ */
+function mt_xml_grenzen($typ)
+{
+    switch ((string) $typ) {
+        case 'bool':
+        case 'bit0':
+            return array('analog' => false, 'min' => 0, 'max' => 1);
+        case 'prozent254':
+        case 'halbprozent':
+            return array('analog' => true, 'min' => 0, 'max' => 100);
+        case 'hundertstel':
+            return array('analog' => true, 'min' => -32768, 'max' => 32767);
+        case 'zehntel':
+            return array('analog' => true, 'min' => -3276, 'max' => 3276);
+        case 'milli':
+            return array('analog' => true, 'min' => -2147483, 'max' => 2147483);
+        case 'lux':
+            return array('analog' => true, 'min' => 0, 'max' => 200000);
+        case 'mwh':
+        case 'energie_struct':
+            return array('analog' => true, 'min' => 0, 'max' => 1000000);
+        case 'text':
+            // Text kann ein virtueller HTTP-Eingang nur, wenn er in Loxone
+            // Config auf "Als Text" gestellt wird. Ein Attribut dafuer ist
+            // hier nicht bekannt und wird deshalb NICHT erfunden - statt
+            // dessen steht der Hinweis im Kommentar des Eingangs.
+            return array('analog' => true, 'min' => 0, 'max' => 65535, 'text' => true);
+    }
+    return array('analog' => true, 'min' => -2147483647, 'max' => 2147483647);
+}
+
 function mt_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
@@ -443,22 +491,62 @@ function mt_xml_virtual_in_http($kopf, $cmds)
     $o .= 'PollingTime="' . mt_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
     foreach ($cmds as $c) {
+        $g = mt_xml_grenzen(isset($c['typ']) ? $c['typ'] : '');
+        $min = isset($c['min']) ? $c['min'] : $g['min'];
+        $max = isset($c['max']) ? $c['max'] : $g['max'];
+        $kommentar = isset($c['comment']) ? $c['comment'] : '';
+        if (!empty($c['einheit'])) { $kommentar .= ' [' . $c['einheit'] . ']'; }
+        if (!empty($g['text'])) { $kommentar .= ' - in Loxone Config auf "Als Text" umstellen'; }
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . mt_x($c['title']) . '" ';
-        $o .= 'Comment="' . mt_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'Comment="' . mt_x(trim($kommentar)) . '" ';
         $o .= 'Check="' . mt_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
-        $o .= 'Signed="true" ';
-        $o .= 'Analog="true" ';
+        $o .= 'Signed="' . ($min < 0 ? 'true' : 'false') . '" ';
+        $o .= 'Analog="' . ($g['analog'] ? 'true' : 'false') . '" ';
         $o .= 'SourceValLow="0" ';
         $o .= 'DestValLow="0" ';
-        $o .= 'SourceValHigh="100" ';
-        $o .= 'DestValHigh="100" ';
+        $o .= 'SourceValHigh="1" ';
+        $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
-        $o .= 'MinVal="-2147483647" ';
-        $o .= 'MaxVal="2147483647"';
+        $o .= 'MinVal="' . (int) $min . '" ';
+        $o .= 'MaxVal="' . (int) $max . '"';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}
+
+/**
+ * Virtueller Ausgang: damit schaltet Loxone die Matter-Geraete.
+ *
+ * Bis 0.9.0 gab es dafuer gar keine Vorlage - der Anwender baute jeden
+ * Ausgang samt Adresse von Hand, und das ist die aufwendigere Haelfte.
+ * Aufbau nach dem geprueften Muster VQ_KEBA_P30_UDP.xml, hier aber ueber
+ * HTTP statt UDP.
+ */
+function mt_xml_virtual_out($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut ';
+    $o .= 'Title="' . mt_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . mt_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . mt_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'CloseAfterSend="false" ';
+    $o .= 'CmdSep=""';
+    $o .= '>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualOutCmd ';
+        $o .= 'Title="' . mt_x($c['title']) . '" ';
+        $o .= 'Comment="' . mt_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOn="' . mt_x(isset($c['on']) ? $c['on'] : '') . '" ';
+        if (isset($c['off']) && $c['off'] !== '') {
+            $o .= 'CmdOff="' . mt_x($c['off']) . '" ';
+        }
+        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '"';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
     return $o;
 }
 
@@ -707,57 +795,196 @@ function mt_selbsttest_ausgabe()
 /** Die Werte des Status-Endpunkts: Einheit und Sprachschluessel. */
 function mt_status_felder()
 {
+    // Drittes Feld: der Typ fuer die Loxone-Vorlage. OK und ERREICH sind
+    // Ja/Nein, nicht Analogwerte.
     return array(
-        'OK'      => array('',  'MT_FELD.OK'),
-        'ERREICH' => array('',  'MT_FELD.ERREICH'),
-        'ALTER'   => array('s', 'MT_FELD.ALTER'),
+        'OK'      => array('',  'MT_FELD.OK',      'bool'),
+        'ERREICH' => array('',  'MT_FELD.ERREICH', 'bool'),
+        'ALTER'   => array('s', 'MT_FELD.ALTER',   'zahl'),
     );
 }
 
-/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
-function mt_vorlage($nummer = 1)
+/** Adresse des eigenen Status-Endpunkts. */
+function mt_endpunkt_adresse($aktion, $nummer = null)
 {
     $p = mt_paths();
     $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
-    $token = mt_token();
-    $geraete = mt_geraete();
-    $g = isset($geraete[(string) $nummer]) ? $geraete[(string) $nummer] : null;
-    $tab = mt_tabelle();
+    return 'http://' . $host . '/plugins/' . $p['plugin']
+         . '/index.php?token=' . mt_token() . '&aktion=' . $aktion
+         . ($nummer !== null ? '&geraet=' . (int) $nummer : '');
+}
 
+/**
+ * Die Befehle eines Geraets fuer die Vorlage.
+ *
+ * $markenpraefix muss zu dem Endpunkt passen, den die Vorlage abfragt:
+ * 'status' liefert die Marken blank (TEMPERATUR=), 'statusalle' stellt die
+ * Geraetenummer voran (MATTER_3_1_TEMPERATUR=). Steht in der Vorlage ein
+ * anderes Suchmuster als der Endpunkt ausgibt, bleibt der Eingang stumm -
+ * ohne Fehlermeldung.
+ */
+function mt_vorlage_cmds($nummer, $g, $tab, $mit_status = true, $markenpraefix = '')
+{
     $cmds = array();
-    foreach (mt_status_felder() as $feld => $info) {
-        $cmds[] = array(
-            'title'   => 'MATTER_' . $nummer . '_' . $feld,
-            'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8')))
-                       . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
-            'check'   => '\i' . $feld . '=\i\v',
-        );
+    if ($mit_status) {
+        foreach (mt_status_felder() as $feld => $info) {
+            $cmds[] = array(
+                'title'   => 'MATTER_' . (int) $nummer . '_' . $feld,
+                'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8'))),
+                'check'   => '\i' . $feld . '=\i\v',
+                'typ'     => isset($info[2]) ? $info[2] : 'zahl',
+                'einheit' => $info[0],
+            );
+        }
     }
     // Je erkanntem Endpunkt und Thema ein Befehl - die Titel je erkanntem
     // Geraet ausgeben, nicht als Platzhalter.
     if ($g !== null && !empty($g['endpunkte'])) {
         foreach ($g['endpunkte'] as $ep => $felder) {
             foreach ($felder as $thema => $wert) {
-                $marke = strtoupper($ep . '_' . $thema);
+                $marke = $markenpraefix . strtoupper($ep . '_' . $thema);
+                $i = mt_thema_info($thema, $tab);
                 $cmds[] = array(
-                    'title'   => 'MATTER_' . $nummer . '_' . $marke,
-                    'comment' => mt_thema_text($thema, $tab),
+                    'title'   => 'MATTER_' . (int) $nummer . '_' . strtoupper($ep . '_' . $thema),
+                    'comment' => $i['text'],
                     'check'   => '\i' . $marke . '=\i\v',
+                    'typ'     => $i['typ'],
+                    'min'     => $i['min'],
+                    'max'     => $i['max'],
+                    'einheit' => $i['einheit'],
                 );
             }
         }
     }
-    $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
-             . '/index.php?token=' . $token . '&aktion=status&geraet=' . (int) $nummer;
+    return $cmds;
+}
+
+/** Vorlage fuer EIN Geraet. Rueckgabe: array(name, inhalt) */
+function mt_vorlage($nummer = 1)
+{
+    $geraete = mt_geraete();
+    $g = isset($geraete[(string) $nummer]) ? $geraete[(string) $nummer] : null;
     return array(
-        'matter_geraet' . (int) $nummer . '.xml',
+        'VI_matter_geraet' . (int) $nummer . '.xml',
         mt_xml_virtual_in_http(array(
             'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : ''),
-            'address' => $adresse,
+            'address' => mt_endpunkt_adresse('status', $nummer),
             'polling' => '60',
             'comment' => 'Erzeugt vom LoxBerry-Plugin Matter to Loxone (' . date('d.m.Y') . ')',
+        ), mt_vorlage_cmds($nummer, $g, mt_tabelle())),
+    );
+}
+
+/**
+ * Vorlage fuer ALLE Geraete in EINER Datei.
+ *
+ * Der Grund: bei zwanzig Matter-Geraeten waren das bisher zwanzig Knoepfe,
+ * zwanzig Downloads und zwanzig Importe. Eine XML-Datei hat aber nur EIN
+ * Wurzelelement, also kann sie auch nur EINE Adresse abfragen - deshalb
+ * gibt es dafuer den Endpunkt 'statusalle', der alle Geraete in einer Zeile
+ * liefert. Die Marken tragen die Geraetenummer bereits im Namen, an der
+ * Befehlserkennung aendert sich damit nichts.
+ */
+function mt_vorlage_alle()
+{
+    $tab = mt_tabelle();
+    $cmds = array();
+    foreach (mt_status_felder() as $feld => $info) {
+        $cmds[] = array(
+            'title'   => 'MATTER_' . $feld,
+            'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8'))),
+            'check'   => '\i' . $feld . '=\i\v',
+            'typ'     => isset($info[2]) ? $info[2] : 'zahl',
+            'einheit' => $info[0],
+        );
+    }
+    foreach (mt_geraete() as $nr => $g) {
+        // Markenpraefix wie in der Ausgabe von 'statusalle'.
+        foreach (mt_vorlage_cmds($nr, $g, $tab, false, 'MATTER_' . (int) $nr . '_') as $c) {
+            $cmds[] = $c;
+        }
+    }
+    return array(
+        'VI_matter_alle.xml',
+        mt_xml_virtual_in_http(array(
+            'title'   => 'Matter alle Geraete',
+            'address' => mt_endpunkt_adresse('statusalle'),
+            'polling' => '60',
+            'comment' => 'Alle Geraete in einer Datei. Erzeugt vom LoxBerry-Plugin '
+                       . 'Matter to Loxone (' . date('d.m.Y') . ')',
+        ), $cmds),
+    );
+}
+
+/**
+ * Vorlage fuer die virtuellen AUSGAENGE eines Geraets.
+ *
+ * Angeboten wird nur, was das Geraet laut Cluster-Tabelle auch kann: ohne
+ * OnOff kein Schaltbefehl, ohne LevelControl kein Helligkeitsregler. Ein
+ * Ausgang, der ins Leere geht, ist schlimmer als keiner.
+ */
+function mt_vorlage_out($nummer = 1)
+{
+    $geraete = mt_geraete();
+    $g = isset($geraete[(string) $nummer]) ? $geraete[(string) $nummer] : null;
+    $themen = array();
+    if ($g !== null && !empty($g['endpunkte'])) {
+        foreach ($g['endpunkte'] as $ep => $felder) {
+            foreach ($felder as $thema => $wert) {
+                $themen[$thema] = (string) $ep;
+            }
+        }
+    }
+    $basis = mt_endpunkt_adresse('', $nummer);
+    // Die Adresse des VirtualOut traegt nur Rechner und Pfad; der Rest steht
+    // je Befehl. Deshalb wird sie hier wieder zerlegt.
+    $teile = explode('/index.php?', $basis, 2);
+    $adresse = $teile[0];
+    $frage = '/index.php?token=' . mt_token() . '&geraet=' . (int) $nummer . '&aktion=';
+
+    $cmds = array();
+    // Analogbefehl: EINE Adresse mit dem Wertplatzhalter <v.0>.
+    $wert = function ($thema, $titel, $aktion) use (&$cmds, $themen, $frage, $nummer) {
+        if (!isset($themen[$thema])) { return; }
+        $cmds[] = array(
+            'title'   => 'MATTER_' . (int) $nummer . '_' . strtoupper($aktion),
+            'comment' => trim(strip_tags(html_entity_decode(mt_t($titel), ENT_QUOTES, 'UTF-8'))),
+            'analog'  => true,
+            'on'      => $frage . $aktion . '&endpunkt=' . $themen[$thema] . '&wert=<v.0>',
+        );
+    };
+    // Schaltbefehl: zwei Adressen. Die Aktionen heissen 'ein' und 'aus' -
+    // genau so stehen sie in der Weissliste von webfrontend/html/index.php.
+    // Ein erfundenes 'schalten&wert=1' wuerde dort mit UNBEKANNTE_AKTION
+    // abgewiesen, und in Loxone sieht man davon nichts.
+    $schalter = function ($thema, $titel) use (&$cmds, $themen, $frage, $nummer) {
+        if (!isset($themen[$thema])) { return; }
+        $ep = $themen[$thema];
+        $cmds[] = array(
+            'title'   => 'MATTER_' . (int) $nummer . '_EIN_AUS',
+            'comment' => trim(strip_tags(html_entity_decode(mt_t($titel), ENT_QUOTES, 'UTF-8'))),
+            'analog'  => false,
+            'on'      => $frage . 'ein&endpunkt=' . $ep,
+            'off'     => $frage . 'aus&endpunkt=' . $ep,
+        );
+    };
+    $schalter('schalter',             'LOX.A_SCHALTEN');
+    $wert('helligkeit',               'LOX.A_HELLIGKEIT',     'helligkeit');
+    $wert('farbtemperatur_mired',     'LOX.A_FARBTEMPERATUR', 'farbtemperatur');
+    $wert('position',                 'LOX.A_ROLLO',          'rollo');
+    $wert('soll_heizen',              'LOX.A_SOLL_HEIZEN',    'soll_heizen');
+    $wert('soll_kuehlen',             'LOX.A_SOLL_KUEHLEN',   'soll_kuehlen');
+
+    return array(
+        'VQ_matter_geraet' . (int) $nummer . '.xml',
+        mt_xml_virtual_out(array(
+            'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . ' Befehle',
+            'address' => $adresse,
+            'comment' => 'Schreibende Befehle muessen im Reiter Einstellungen freigegeben '
+                       . 'sein. Erzeugt vom LoxBerry-Plugin Matter to Loxone ('
+                       . date('d.m.Y') . ')',
         ), $cmds),
     );
 }
@@ -765,15 +992,35 @@ function mt_vorlage($nummer = 1)
 /** Klartext zu einem uebersetzten Thema, aus der Cluster-Tabelle. */
 function mt_thema_text($thema, $tab = null)
 {
+    $i = mt_thema_info($thema, $tab);
+    return $i['text'];
+}
+
+/**
+ * Alles, was die Cluster-Tabelle ueber ein Thema weiss: Klartext, Typ,
+ * Grenzen, Einheit und ob die Zuordnung schon an einem Geraet nachgemessen
+ * wurde.
+ */
+function mt_thema_info($thema, $tab = null)
+{
     if ($tab === null) {
         $tab = mt_tabelle();
     }
     foreach ($tab['cluster'] as $cl) {
         foreach ((array) (isset($cl['attribute']) ? $cl['attribute'] : array()) as $a) {
             if (isset($a['thema']) && $a['thema'] === $thema) {
-                return trim(strip_tags(html_entity_decode(mt_t($a['text']), ENT_QUOTES, 'UTF-8')));
+                return array(
+                    'text'       => trim(strip_tags(html_entity_decode(mt_t($a['text']), ENT_QUOTES, 'UTF-8'))),
+                    'typ'        => isset($a['typ']) ? (string) $a['typ'] : 'zahl',
+                    'min'        => isset($a['min']) ? $a['min'] : null,
+                    'max'        => isset($a['max']) ? $a['max'] : null,
+                    'einheit'    => isset($a['einheit']) ? (string) $a['einheit'] : '',
+                    'ungeprueft' => !empty($cl['_ungeprueft']),
+                    'cluster'    => isset($cl['name']) ? (string) $cl['name'] : '',
+                );
             }
         }
     }
-    return (string) $thema;
+    return array('text' => (string) $thema, 'typ' => 'zahl', 'min' => null, 'max' => null,
+                 'einheit' => '', 'ungeprueft' => false, 'cluster' => '');
 }
