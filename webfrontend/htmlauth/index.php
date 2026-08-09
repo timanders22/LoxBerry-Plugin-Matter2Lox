@@ -370,17 +370,43 @@ if ($mt_rahmen) {
 <div class="sm-warnung"><b><?= mt_e(mt_t('ALLG.LETZTE_STOERUNG')) ?></b> <?= mt_e($mt_zustand['fehler']) ?></div>
 <?php } ?>
 
+<?php
+/*
+ * Die Reiter sind echte Verweise - das waren sie schon. Was fehlte, war die
+ * Klasse sm-active AUF DEM SERVER.
+ *
+ * .sm-seite steht auf display:none, sichtbar wird eine Flaeche erst durch
+ * .sm-active. Diese Klasse setzte bis 0.9.1 ausschliesslich das JavaScript am
+ * Seitenende. Im ausgelieferten HTML kam sm-active also gar nicht vor (nur in
+ * den beiden CSS-Regeln) - ohne JavaScript war die Seite vollstaendig leer:
+ * Kacheln und Reiterleiste standen da, darunter nichts.
+ *
+ * $mt_tab wurde dabei sehr wohl schon serverseitig ermittelt; benutzt wurde
+ * das Ergebnis aber nur, um es dem JavaScript zu uebergeben. Jetzt setzt der
+ * Server die Klasse selbst, und das JavaScript spart nur noch den
+ * Seitenaufbau beim Umschalten.
+ *
+ * Die Liste hier, die Positivliste in $mt_muster und die id der Flaechen
+ * muessen deckungsgleich bleiben - alle drei.
+ */
+$mt_reiter = array(
+    'tab-settings'   => mt_t('REITER.EINSTELLUNGEN'),
+    'tab-commission' => mt_t('REITER.ANLERNEN'),
+    'tab-mqtt'       => 'MQTT',
+    'tab-loxone'     => mt_t('REITER.LOXONE'),
+    'tab-test'       => mt_t('REITER.TEST'),
+    'tab-log'        => mt_t('REITER.LOG'),
+);
+?>
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings"   href="index.php?form=settings"><?= mt_e(mt_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-commission" href="index.php?form=commission"><?= mt_e(mt_t('REITER.ANLERNEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-mqtt"       href="index.php?form=mqtt">MQTT</a>
-	<a class="sm-tab" data-ziel="tab-loxone"     href="index.php?form=loxone"><?= mt_e(mt_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"       href="index.php?form=test"><?= mt_e(mt_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"        href="index.php?form=log"><?= mt_e(mt_t('REITER.LOG')) ?></a>
+<?php foreach ($mt_reiter as $mt_id => $mt_bez) { ?>
+	<a class="sm-tab<?= $mt_tab === $mt_id ? ' sm-active' : '' ?>" data-ziel="<?= mt_e($mt_id) ?>"
+	   href="index.php?form=<?= mt_e(substr($mt_id, 4)) ?>"><?= mt_e($mt_bez) ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $mt_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <div class="sm-warnung"><?= mt_t('EINST.WAS_IST_DAS') ?></div>
 
@@ -510,27 +536,43 @@ if ($mt_rahmen) {
 <tr><th>#</th><th><?= mt_e(mt_t('EINST.T_NAME')) ?></th><th><?= mt_e(mt_t('EINST.T_KNOTEN')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_HERSTELLER')) ?></th><th><?= mt_e(mt_t('EINST.T_PRODUKT')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_WERTE')) ?></th><th><?= mt_e(mt_t('EINST.T_ERREICHBAR')) ?></th></tr>
+<?php
+/*
+ * Zugriff mit Rueckfallwert, nicht unmittelbar.
+ *
+ * loxone.json schreibt zwar der Dienst, aber die Datei ueberdauert
+ * Aktualisierungen und kann aus einer aelteren Fassung stammen, halb
+ * geschrieben oder von Hand veraendert sein. Fehlt dann ein Schluessel, ist
+ * das unter PHP 7.4 eine Notice, die das error_reporting dieser Datei
+ * verschluckt - unter PHP 8 eine Warning, und die steht dann MITTEN IN DER
+ * TABELLE, einmal je Geraet und Spalte. Beim Rendern gegen beide Fassungen
+ * waren es sechs Meldungen im Seitenkoerper.
+ */
+$mt_feld = function ($g, $name, $leer = '') {
+    return isset($g[$name]) && $g[$name] !== null && $g[$name] !== '' ? $g[$name] : $leer;
+};
+?>
 <?php foreach ($mt_geraete as $mt_nr => $mt_g) { ?>
-<tr><td><?= mt_e($mt_nr) ?></td><td><?= mt_e($mt_g['name']) ?></td>
-    <td><?= (int) $mt_g['node_id'] ?></td>
-    <td><?= mt_e($mt_g['hersteller']) ?></td><td><?= mt_e($mt_g['produkt']) ?></td>
+<tr><td><?= mt_e($mt_nr) ?></td><td><?= mt_e($mt_feld($mt_g, 'name')) ?></td>
+    <td><?= (int) $mt_feld($mt_g, 'node_id', 0) ?></td>
+    <td><?= mt_e($mt_feld($mt_g, 'hersteller', '—')) ?></td><td><?= mt_e($mt_feld($mt_g, 'produkt', '—')) ?></td>
     <td><?php
       $mt_liste = array();
-      foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
+      foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) {
           foreach ((array) $mt_felder as $mt_thema => $mt_w) {
               $mt_liste[] = '<span class="sm-mono">' . mt_e($mt_ep . '/' . $mt_thema) . '</span> = ' . mt_e($mt_w);
           }
       }
       echo $mt_liste ? implode(', ', $mt_liste) : '&mdash;';
     ?></td>
-    <td class="<?= $mt_g['erreichbar'] ? 'sm-an' : 'sm-aus' ?>"><?= $mt_g['erreichbar'] ? mt_e(mt_t('ALLG.JA')) : mt_e(mt_t('ALLG.NEIN')) ?></td></tr>
+    <td class="<?= $mt_feld($mt_g, 'erreichbar', 0) ? 'sm-an' : 'sm-aus' ?>"><?= $mt_feld($mt_g, 'erreichbar', 0) ? mt_e(mt_t('ALLG.JA')) : mt_e(mt_t('ALLG.NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 <?php } ?>
 </div>
 
 <!-- ================= Reiter: Geraete anlernen ================= -->
-<div class="sm-seite" id="tab-commission">
+<div class="sm-seite<?= $mt_tab === 'tab-commission' ? ' sm-active' : '' ?>" id="tab-commission">
 <h2><?= mt_e(mt_t('ANLERN.H_TITEL')) ?></h2>
 <p><?= mt_t('ANLERN.EINLEITUNG') ?></p>
 
@@ -632,7 +674,7 @@ if ($mt_rahmen) {
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
-<div class="sm-seite" id="tab-mqtt">
+<div class="sm-seite<?= $mt_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= mt_e(mt_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 <?php if (!$mt_mqtt['gefunden']) { ?>
@@ -686,7 +728,7 @@ if ($mt_rahmen) {
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $mt_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= mt_e(mt_t('LOX.H_TITEL')) ?></h2>
 <p><?= mt_t('LOX.EINLEITUNG') ?></p>
 
@@ -851,7 +893,7 @@ function mt_bausteine()
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $mt_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= mt_e(mt_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
@@ -929,7 +971,7 @@ function mt_bausteine()
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $mt_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= mt_e(mt_t('LOG.H_TITEL')) ?></h2>
 <?php
 if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {

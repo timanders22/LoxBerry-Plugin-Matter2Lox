@@ -1,24 +1,68 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Matter to Loxone - Plugin-Symbol.
-     Hausstandard: runde Scheibe in LoxBerry-Gruen #6dac20. Motiv: drei Knoten,
-     die sich zu einem Netz verbinden - Matter ist kein Geraet, sondern ein
-     Verbund. Bewusst KEINE fremden Wortmarken oder Logos, auch nicht
-     angedeutet, und ausdruecklich nicht das Matter-Zeichen selbst. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
-  <g stroke="#ffffff" stroke-width="20" stroke-linecap="round" fill="none">
-    <path d="M256 150 L150 330"/>
-    <path d="M256 150 L362 330"/>
-    <path d="M150 330 L362 330"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Center Icon: Matter Tri-Spoke Network Symbol & Smart Hub Badge -->
+    <g transform="translate(256, 172)">
+      <!-- Outer Connected Ring / Circle -->
+      <circle cx="0" cy="0" r="76" fill="#ffffff" />
+      <circle cx="0" cy="0" r="60" fill="#6dac20" />
+
+      <!-- Matter Tri-Spoke Mesh / Star (3 Arced Spokes at 120 Deg) -->
+      <g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="none">
+        <!-- Top Spoke -->
+        <path d="M 0 -48 L 0 -10" />
+        <!-- Bottom Right Spoke -->
+        <path d="M 41.5 24 L 8.6 5" />
+        <!-- Bottom Left Spoke -->
+        <path d="M -41.5 24 L -8.6 5" />
+      </g>
+
+      <!-- Outer Node Dots at Spoke Ends -->
+      <circle cx="0" cy="-48" r="10" fill="#ffffff" />
+      <circle cx="41.5" cy="24" r="10" fill="#ffffff" />
+      <circle cx="-41.5" cy="24" r="10" fill="#ffffff" />
+
+      <!-- Center Interconnection Hub Dot -->
+      <circle cx="0" cy="0" r="12" fill="#ffffff" />
+      <circle cx="0" cy="0" r="5" fill="#6dac20" />
+    </g>
+
+    <!-- Flanking Left Symbol: Smart Home / Smart Devices -->
+    <g transform="translate(118, 168)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -9 2 L 0 -7 L 9 2 L 9 9 C 9 10.5 7.5 11 6 11 L -6 11 C -7.5 11 -9 10.5 -9 9 Z" fill="#6dac20" />
+      <rect x="-3" y="4" width="6" height="7" fill="#ffffff" />
+    </g>
+
+    <!-- Flanking Right Symbol: Bridge / Interconnection Link to Loxone -->
+    <g transform="translate(394, 168)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <!-- Link / Exchange Chain Nodes -->
+      <circle cx="-6" cy="0" r="7" fill="none" stroke="#6dac20" stroke-width="3" />
+      <circle cx="6" cy="0" r="7" fill="none" stroke="#6dac20" stroke-width="3" />
+      <line x1="-3" y1="0" x2="3" y2="0" stroke="#6dac20" stroke-width="3" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
   </g>
-  <g fill="#ffffff" stroke="#3d6412" stroke-width="12">
-    <circle cx="256" cy="150" r="46"/>
-    <circle cx="150" cy="330" r="46"/>
-    <circle cx="362" cy="330" r="46"/>
-  </g>
-  <g fill="#3d6412">
-    <circle cx="256" cy="150" r="15"/>
-    <circle cx="150" cy="330" r="15"/>
-    <circle cx="362" cy="330" r="15"/>
-  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Matter 2 Lox</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>

@@ -8,6 +8,64 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > und ohne laufenden Matter-Server; geprüft gegen eine Attrappe, die das
 > dokumentierte Protokoll nachbildet. Deshalb 0.9.1 und nicht 1.0.0.
 
+## Neu in 0.9.2
+
+**`abruf` scheiterte, wenn kein Gerät im Zwischenspeicher stand.**
+Gemeldet von einem Mitleser als „Edge-Case, in der Praxis fast irrelevant" —
+nachgestellt ist er es nicht. `&geraet=` steht ohne Angabe auf 1, und die
+Prüfung auf ein unbekanntes Gerät stand **vor** der Auswertung der Aktion:
+
+```
+ohne Abbild (frisch installiert):
+  MATTER;OK=0;GRUND=GERAET_UNBEKANNT;N=0;ALTER=-1
+Dienst läuft, Verbindung zum Matter-Server verloren, geraete leer:
+  MATTER;OK=0;GRUND=GERAET_UNBEKANNT;N=0;ALTER=…
+```
+
+Der zweite Fall ist der wunde Punkt: Die Geräte stehen in der Fabric, nur der
+Zwischenspeicher ist leer — also genau die Lage, in der man `abruf` aufruft.
+Der Befehl, der sie beheben soll, war dann gesperrt, und die Begründung
+(„Gerät unbekannt") führte auf die falsche Fährte.
+
+Dass es ein Versehen war und keine Absicht, steht im selben Skript: Von der
+Steuerungsfreigabe war `abruf` seit jeher ausgenommen (`$mt_aktion !== 'abruf'`)
+— an einer Stelle also gerätunabhängig behandelt, an der anderen nicht.
+Gerätunabhängige Aktionen werden jetzt vor der Geräteprüfung abgefangen; der
+Befehl landet in beiden Fällen in der Warteschlange. Gerätegebundene Aktionen
+(`ein`, `helligkeit`, …) bleiben unverändert geschützt.
+
+**Ohne JavaScript war die Oberfläche leer.**
+`.sm-seite` steht auf `display:none`, sichtbar wird eine Fläche erst durch
+`.sm-active` — und diese Klasse setzte ausschließlich das JavaScript am
+Seitenende. Im ausgelieferten HTML kam `sm-active` gar nicht vor, nur in den
+zwei CSS-Regeln. Kacheln und Reiterleiste standen da, darunter nichts.
+`$mt_tab` wurde serverseitig längst ermittelt, aber nur ans JavaScript
+weitergereicht. Jetzt setzt der Server die Klasse selbst; alle sechs Reiter
+sind über `?form=…` auch ohne JavaScript erreichbar.
+
+**Sechs PHP-8-Warnungen mitten in der Seite.**
+Zugriffe wie `$mt_g['hersteller']` und `$srv['schema_version']` gingen davon
+aus, dass `loxone.json` alle Schlüssel enthält. Die Datei überdauert
+Aktualisierungen und kann aus einer älteren Fassung stammen. Fehlt dann ein
+Schlüssel, ist das unter PHP 7.4 eine Notice, die das `error_reporting`
+verschluckt — unter PHP 8 eine Warning, und die steht im Seitenkörper, einmal
+je Gerät und Spalte. Beide Fassungen liefern jetzt zeichengleiche Ausgabe ohne
+eine einzige Meldung.
+
+**`uninstall` ergänzt — vor allem wegen des Containers.**
+Der Matter-Server-Container wird mit `--restart=unless-stopped` angelegt.
+Docker startet ihn damit bei jedem Systemstart wieder, auch lange nachdem das
+Plugin entfernt wurde: Port 5580 belegt, Fabric gehalten, in keiner
+LoxBerry-Übersicht mehr sichtbar. Dazu entfernt die Datei die
+Konfigurationssicherung außerhalb des Plugin-Ordners (darin stehen
+WLAN-Passwort, Thread-Dataset und Aktionstoken) und weist darauf hin, dass mit
+dem Datenordner die Fabric verschwindet.
+
+Außerdem: `statusalle` und `abruf` waren im Kopfkommentar des Endpunkts und in
+dieser Tabelle nicht aufgeführt, obwohl beide seit 0.9.1 vorhanden sind.
+`bin/__pycache__/` entfernt. 409 Sprachschlüssel, deutsch und englisch
+deckungsgleich, keiner verwaist.
+
 ## Neu in 0.9.1
 
 **Fünf weitere Cluster** — damit sind es 22 statt 17:
@@ -112,9 +170,11 @@ Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
 | Aufruf | Zweck |
 |---|---|
 | `?token=T&aktion=status&geraet=N` | alle Werte eines Geräts in einer Zeile |
+| `?token=T&aktion=statusalle` | **alle** Geräte in einer Zeile, Marken mit Gerätenummer (`MATTER_3_1_TEMPERATUR`) — das ist der Endpunkt der Sammelvorlage |
 | `?token=T&aktion=wert&geraet=N&endpunkt=E&thema=X` | **nur die Zahl** — ein virtueller HTTP-Eingang braucht dann keine Befehlserkennung |
 | `?token=T&aktion=liste` | alle Geräte |
 | `?token=T&aktion=roh` | vollständiges Abbild als JSON |
+| `?token=T&aktion=abruf` | Sofortabruf aller Knoten anstoßen — **gerätunabhängig**, braucht kein `&geraet=` und keine Steuerungsfreigabe |
 | `?token=T&aktion=ein\|aus\|umschalten&geraet=N&endpunkt=E` | schalten |
 | `?token=T&aktion=helligkeit&wert=0..100` | dimmen |
 | `?token=T&aktion=farbtemperatur&wert=<Kelvin>` | Farbtemperatur |

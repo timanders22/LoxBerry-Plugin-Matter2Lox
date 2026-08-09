@@ -1,0 +1,125 @@
+#!/bin/bash
+# Matter to Loxone - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
+# 1 = Warnung (die Deinstallation laeuft trotzdem weiter).
+#
+# ===================================================================
+# WARUM ES DIESE DATEI GIBT
+# ===================================================================
+#
+# LoxBerry raeumt die Plugin-Ordner weg und entfernt den Cron-Eintrag.
+# Vier Dinge bleiben sonst liegen, und das erste davon ist das ernste:
+#
+#   1. DER DOCKER-CONTAINER. Er wird mit --restart=unless-stopped
+#      angelegt (mt_container_befehl in mt_lib.php). Docker startet ihn
+#      damit bei jedem Systemstart wieder - auch Jahre nachdem das Plugin
+#      fort ist. Er belegt weiter Port 5580, haelt die Matter-Fabric und
+#      taucht in keiner LoxBerry-Uebersicht mehr auf. Ohne diese Datei
+#      wird man ihn nur los, wenn man von selbst auf die Docker-
+#      Kommandozeile kommt.
+#   2. config/plugins/<ordner>.backup.json
+#      Die Sicherung der Konfiguration liegt bewusst NEBEN dem
+#      Konfigordner, damit sie Update und Neuinstallation uebersteht
+#      (mt_paths()['sicherung']). Beim Deinstallieren ist genau das
+#      falsch: darin stehen WLAN-Passwort, Thread-Dataset und das
+#      Aktionstoken. Das sind Netzzugangsdaten.
+#   3. Ein noch laufender Abrufdienst (matter_dienst.py).
+#   4. Werte im MQTT-Broker.
+#
+# ZUR PROZESSSUCHE: "pkill -f matter_dienst.py" waere unsauber - das
+# Muster traefe auch einen Editor, in dem die Datei offen ist. Verglichen
+# wird argumentweise gegen den vollen Pfad.
+#
+# ZUR FABRIC: <daten>/matter enthaelt die Matter-Fabric samt Zertifikaten.
+# Wer sie verliert, muss JEDES Geraet neu anlernen. Dieses Skript loescht
+# sie nicht - LoxBerry entfernt den Datenordner ohnehin selbst, und darauf
+# wird unten ausdruecklich hingewiesen, damit niemand ueberrascht wird.
+
+PDIR=$3
+[ -n "$PDIR" ] || PDIR="matter2lox"
+BASE="${5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+
+PBIN="$BASE/bin/plugins/$PDIR"
+PDATA="$BASE/data/plugins/$PDIR"
+PCONFIG="$BASE/config/plugins/$PDIR"
+BK="$BASE/config/plugins/$PDIR.backup.json"
+SKRIPT="$PBIN/matter_dienst.py"
+
+# ---------------------------------------------------------------- Dienst
+GEFUNDEN=0
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    [ -r "$D/cmdline" ] || continue
+    if tr '\0' '\n' < "$D/cmdline" 2>/dev/null | grep -qxF "$SKRIPT"; then
+        kill "$P" 2>/dev/null
+        for i in 1 2 3 4 5; do
+            kill -0 "$P" 2>/dev/null || break
+            sleep 1
+        done
+        kill -9 "$P" 2>/dev/null
+        GEFUNDEN=1
+        echo "<OK> Abrufdienst beendet (PID $P)."
+    fi
+done
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
+rm -f "$PDATA/soll_laufen" "$PDATA/dienst.pid" 2>/dev/null
+
+# ------------------------------------------------------------- Container
+# Der Name ist einstellbar; er steht in der Konfiguration. Faellt das
+# Auslesen aus, wird der Vorgabename genommen - lieber den falschen
+# Container NICHT anfassen als einen fremden.
+NAME=""
+if [ -r "$PCONFIG/matter2lox.json" ] && command -v python3 >/dev/null 2>&1; then
+    NAME=$(python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    n=str(d.get("container_name") or "")
+    print(n if n else "")
+except Exception:
+    print("")' "$PCONFIG/matter2lox.json" 2>/dev/null)
+fi
+[ -n "$NAME" ] || NAME="matter-server"
+
+case "$NAME" in
+    [A-Za-z0-9]*) : ;;
+    *) echo "<WARNING> Containername '$NAME' sieht nicht plausibel aus - er wird nicht angefasst."
+       NAME="" ;;
+esac
+
+if [ -n "$NAME" ]; then
+    if command -v docker >/dev/null 2>&1; then
+        if docker inspect "$NAME" >/dev/null 2>&1; then
+            docker rm -f "$NAME" >/dev/null 2>&1 \
+                && echo "<OK> Docker-Container '$NAME' angehalten und entfernt." \
+                || echo "<WARNING> Container '$NAME' liess sich nicht entfernen. Von Hand: docker rm -f $NAME"
+            echo "<INFO> Das Abbild bleibt liegen - es kann von anderen Containern"
+            echo "<INFO> genutzt werden. Zum Aufraeumen: docker image prune"
+        else
+            echo "<INFO> Kein Container namens '$NAME' vorhanden."
+        fi
+    else
+        echo "<INFO> Docker ist nicht installiert - es gibt keinen Container zu entfernen."
+    fi
+fi
+
+# ------------------------------------------------------------- Sicherung
+if [ -f "$BK" ]; then
+    rm -f "$BK" && echo "<OK> Sicherung der Konfiguration entfernt: $PDIR.backup.json"
+    echo "<INFO> WLAN-Passwort, Thread-Dataset und Aktionstoken sind damit fort."
+else
+    echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
+fi
+
+# ----------------------------------------------------------------- Reste
+echo "<WARNING> Mit dem Datenordner verschwindet auch die Matter-Fabric"
+echo "<INFO> ($PDATA/matter). Jedes Geraet, das ueber dieses Plugin"
+echo "<INFO> angelernt wurde, muss danach neu angelernt werden. Wer das"
+echo "<INFO> vermeiden will, sichert den Ordner VOR der Deinstallation."
+echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
+echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
+echo "<INFO> (Vorgabe: matter/...). Zum Aufraeumen: LoxBerry -> System ->"
+echo "<INFO> MQTT Gateway."
+exit 0

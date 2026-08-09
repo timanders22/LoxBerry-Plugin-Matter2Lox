@@ -61,9 +61,17 @@ function mt_pruefungen()
 
     $srv = mt_serverinfo();
     if ($srv) {
+        // if ($srv) prueft nur, ob das Feld ueberhaupt da ist - nicht, ob es
+        // die einzelnen Schluessel enthaelt. Ein Abbild aus einer aelteren
+        // Fassung hat sie nicht, und unter PHP 8 stuende dann eine Warning in
+        // der Pruefzeile, die den Zustand melden soll.
+        $hol = function ($name, $leer = '?') use ($srv) {
+            return isset($srv[$name]) && $srv[$name] !== null && $srv[$name] !== ''
+                ? $srv[$name] : $leer;
+        };
         $zeilen[] = mt_pruefzeile(1, mt_t('TEST.F_SERVERINFO'),
-            'SDK ' . mt_e($srv['sdk_version']) . ', Schema ' . (int) $srv['schema_version']
-            . ', Fabric ' . mt_e($srv['fabric_id']));
+            'SDK ' . mt_e($hol('sdk_version')) . ', Schema ' . mt_e($hol('schema_version'))
+            . ', Fabric ' . mt_e($hol('fabric_id')));
         $zeilen[] = mt_pruefzeile(!empty($srv['bluetooth']) ? 1 : -1, mt_t('TEST.F_BT'),
             !empty($srv['bluetooth']) ? mt_t('TEST.A_BT_JA') : mt_t('TEST.A_BT_NEIN'));
         $creds = !empty($srv['wlan_gesetzt']) || !empty($srv['thread_gesetzt']);

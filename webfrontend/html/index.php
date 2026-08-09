@@ -9,10 +9,16 @@
  *   /plugins/<ordner>/index.php?token=<TOKEN>&aktion=<Befehl>
  *
  * Lesend:
- *   status  [&geraet=N]      alle uebersetzten Werte eines Geraets
+ *   status     [&geraet=N]   alle uebersetzten Werte eines Geraets
+ *   statusalle               alle Geraete in EINER Zeile, Marken mit
+ *                            Geraetenummer (MATTER_3_1_TEMPERATUR) - fuer die
+ *                            Sammelvorlage, die nur eine Adresse abfragen kann
  *   wert    &geraet=N&endpunkt=E&thema=T   ein einzelner Wert, blank
  *   liste                    alle Geraete
  *   roh                      vollstaendiges Abbild als JSON
+ *
+ * Geraeteunabhaengig (braucht kein &geraet=, keine Steuerungsfreigabe):
+ *   abruf                    Sofortabruf aller Knoten anstossen
  *
  * Schaltend (nur wenn im Reiter Einstellungen zugelassen):
  *   ein | aus | umschalten   &geraet=N[&endpunkt=E]
@@ -24,7 +30,6 @@
  *   betriebsart   &wert=0..9
  *   attribut      &pfad=E/C/A&wert=...
  *   befehl        &cluster=N&name=<Name>[&nutzlast=<JSON>]
- *   abruf
  *
  * Der Endpunkt spricht NIE selbst mit dem Matter-Server. Lesende Aufrufe
  * beantwortet er aus dem Zwischenspeicher, schaltende legt er in einer
@@ -165,6 +170,49 @@ if ($mt_aktion === 'statusalle') {
     exit;
 }
 
+/* ================= Geraeteunabhaengige Aktionen =================
+ *
+ * MUSS vor der Pruefung auf $mt_g stehen. 'abruf' stoesst einen Sofortabruf
+ * ALLER Knoten an - es gilt keinem einzelnen Geraet, und der Dienst liest die
+ * Knotennummer dafuer gar nicht aus (matter_dienst.py, befehl_ausfuehren:
+ * 'abruf' kehrt zurueck, bevor node_id ueberhaupt gelesen wird).
+ *
+ * Bis 0.9.1 stand der Abschnitt HINTER der Pruefung $mt_g === null. Da
+ * &geraet= ohne Angabe auf 1 steht, brach der Aufruf mit GERAET_UNBEKANNT ab,
+ * sobald das Abbild kein Geraet 1 enthielt. Nachgestellt:
+ *
+ *   ohne Abbild (frisch installiert):
+ *     MATTER;OK=0;GRUND=GERAET_UNBEKANNT;N=0;ALTER=-1
+ *   Dienst laeuft, Verbindung zum Matter-Server verloren, geraete leer:
+ *     MATTER;OK=0;GRUND=GERAET_UNBEKANNT;N=0;ALTER=...
+ *
+ * Der zweite Fall ist der wunde Punkt: Die Geraete stehen in der Fabric, nur
+ * der Zwischenspeicher ist leer - also genau die Lage, in der man 'abruf'
+ * aufruft. Der Befehl, der die Lage beheben soll, war dann gesperrt.
+ *
+ * Dass es ein Versehen war und keine Absicht, zeigt der Abschnitt darunter:
+ * dort ist 'abruf' seit jeher von der Steuerungsfreigabe ausgenommen
+ * ($mt_aktion !== 'abruf'). An einer Stelle geraeteunabhaengig behandelt, an
+ * der anderen nicht.
+ */
+$mt_global = array('abruf');
+
+if (in_array($mt_aktion, $mt_global, true)) {
+    if (mt_dienst_pid() === 0) {
+        http_response_code(503);
+        echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
+        echo "Der Dienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
+        exit;
+    }
+    list($mt_erg, $mt_meldung) = mt_befehl_absetzen(array('aktion' => $mt_aktion));
+    if ($mt_erg === 0) {
+        http_response_code(500);
+    }
+    printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $mt_erg, $mt_aktion,
+        str_replace(array("\r", "\n", ';'), ' ', $mt_meldung));
+    exit;
+}
+
 if ($mt_g === null) {
     printf("MATTER;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=%d\n", count($mt_alle), $mt_alter);
     exit;
@@ -200,7 +248,10 @@ if ($mt_aktion === 'status') {
 
 /* ================= Schaltende Aktionen ================= */
 
-if ($mt_aktion !== 'abruf' && empty($mt_cfg['steuerung_ein'])) {
+/* 'abruf' wird hier NICHT mehr geprueft - es kommt gar nicht bis hierher,
+ * sondern wird oben unter den geraeteunabhaengigen Aktionen erledigt. Die
+ * frueher noetige Ausnahme ($mt_aktion !== 'abruf') ist damit entfallen. */
+if (empty($mt_cfg['steuerung_ein'])) {
     http_response_code(403);
     echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
     echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
