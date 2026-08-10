@@ -413,7 +413,6 @@ $mt_reiter = array(
 <h2><?= mt_e(mt_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('EINST.DIENST_ERKLAERUNG') ?></p>
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
@@ -441,8 +440,6 @@ $mt_reiter = array(
 </table>
 <div class="sm-warnung"><?= mt_t('EINST.FABRIC_WARNUNG') ?></div>
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= mt_t('LEGENDE.TECHNIK') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
@@ -524,7 +521,7 @@ $mt_reiter = array(
 </div>
 
 <div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
 
@@ -613,7 +610,7 @@ $mt_feld = function ($g, $name, $leer = '') {
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_THREAD') ?></div>
 </div>
 <div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
 <div class="sm-legende">
