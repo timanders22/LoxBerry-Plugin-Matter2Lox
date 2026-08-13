@@ -334,6 +334,11 @@ if ($mt_rahmen) {
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, "Courier New", monospace;
     font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto;
     white-space: pre-wrap; }
+
+/* Nachgetragene Definitionen (CSS-Luecken-Durchgang 13.08.2026):
+   benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
+   bzw. der Referenzimplementierung uebernommen. */
+.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
 </style>
 <div class="sm-wrap">
 
