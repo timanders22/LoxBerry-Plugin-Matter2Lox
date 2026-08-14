@@ -121,15 +121,7 @@ if ($mt_post && isset($_POST['speichern'])) {
         $mt_cfg['container_abbild'] = $abbild;
     }
 
-    $topic = $sauber('mqtt_topic');
-    if ($topic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $topic)) {
-        $mt_fehler[] = mt_t('EINST.FEHLER_TOPIC');
-    } else {
-        $mt_cfg['mqtt_topic'] = trim($topic, '/');
-    }
-
     $mt_cfg['eigener_container'] = isset($_POST['eigener_container']) ? 1 : 0;
-    $mt_cfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     $mt_cfg['roh_ein'] = isset($_POST['roh_ein']) ? 1 : 0;
     $mt_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
 
@@ -141,6 +133,37 @@ if ($mt_post && isset($_POST['speichern'])) {
         }
     }
     $mt_tab = 'tab-settings';
+
+    /* mqtt_ein und mqtt_topic werden hier bewusst NICHT angefasst: sie wohnen im
+     * Reiter MQTT und haben dort ein eigenes Formular. Die Konfiguration
+     * kommt aus mt_config(), die Werte ueberleben also unveraendert. Stuende
+     * hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0", wuerde jedes Speichern
+     * der Einstellungen MQTT stillschweigend abschalten. */
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+ *
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
+ * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
+ * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
+ * ruehrt ausschliesslich die MQTT-Werte an. */
+if ($mt_post && isset($_POST['save_mqtt'])) {
+    $mt_mcfg = mt_config();
+    $mt_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $mt_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    if ($mt_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $mt_mtopic)) {
+        $mt_fehler[] = mt_t('EINST.FEHLER_TOPIC');
+    } else {
+        $mt_mcfg['mqtt_topic'] = trim($mt_mtopic, '/');
+    }
+    if (!$mt_fehler) {
+        if (mt_config_speichern($mt_mcfg)) {
+        $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
+        }
+    }
+    $mt_tab = 'tab-mqtt';
 }
 
 /* ---------------- Netz-Zugangsdaten speichern ---------------- */
@@ -506,24 +529,8 @@ $mt_reiter = array(
   </label>
 </div>
 
-<h2>MQTT</h2>
-<div class="sm-feld">
-  <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($mt_cfg['mqtt_ein']) ? 'checked' : '' ?>>
-    <?= mt_e(mt_t('EINST.L_MQTT_EIN')) ?>
-  </label>
-</div>
-<div class="sm-feld">
-  <label for="mqtt_topic"><?= mt_e(mt_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= mt_e($mt_cfg['mqtt_topic']) ?>" placeholder="matter">
-</div>
-<div class="sm-feld">
-  <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="roh_ein" value="1" <?= !empty($mt_cfg['roh_ein']) ? 'checked' : '' ?>>
-    <?= mt_e(mt_t('EINST.L_ROH_EIN')) ?>
-  </label>
-  <div class="sm-hilfe"><?= mt_t('EINST.H_ROH_EIN') ?></div>
-</div>
+<?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
+         vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
@@ -677,6 +684,33 @@ $mt_feld = function ($g, $name, $leer = '') {
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $mt_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+
+<h2>MQTT</h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($mt_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('EINST.L_MQTT_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label for="mqtt_topic"><?= mt_e(mt_t('EINST.L_MQTT_TOPIC')) ?></label>
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= mt_e($mt_cfg['mqtt_topic']) ?>" placeholder="matter">
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="roh_ein" value="1" <?= !empty($mt_cfg['roh_ein']) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('EINST.L_ROH_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= mt_t('EINST.H_ROH_EIN') ?></div>
+</div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
 <h2><?= mt_e(mt_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 <?php if (!$mt_mqtt['gefunden']) { ?>
