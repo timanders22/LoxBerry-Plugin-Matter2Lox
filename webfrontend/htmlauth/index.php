@@ -67,14 +67,63 @@ if ($mt_post && isset($_POST['vorlage'])) {
         list($mt_name, $mt_inhalt) = mt_vorlage_alle();
     } elseif (preg_match('/^aus([0-9]{1,3})$/', $mt_wunsch, $mt_tr)) {
         list($mt_name, $mt_inhalt) = mt_vorlage_out((int) $mt_tr[1]);
+        /* Ohne bekanntes Geraet enthaelt die Datei NULL Befehle. Sie waere
+         * wohlgeformt und voellig nutzlos - und in Loxone Config faellt das
+         * erst auf, wenn man sie importiert hat. Lieber ein Satz als ein
+         * Download, der nichts enthaelt. */
+        if (strpos($mt_inhalt, '<VirtualOutCmd') === false) {
+            $mt_fehler[] = mt_t('LOX.M_VORLAGE_LEER');
+            $mt_tab = 'tab-loxone';
+            $mt_inhalt = null;
+        }
     } else {
         $mt_nr = preg_match('/^[0-9]{1,3}$/', $mt_wunsch) ? (int) $mt_wunsch : 1;
         list($mt_name, $mt_inhalt) = mt_vorlage($mt_nr);
     }
-    header('Content-Type: application/xml; charset=utf-8');
-    header('Content-Disposition: attachment; filename="' . $mt_name . '"');
-    echo $mt_inhalt;
-    exit;
+    if ($mt_inhalt !== null) {
+        header('Content-Type: application/xml; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $mt_name . '"');
+        echo $mt_inhalt;
+        exit;
+    }
+}
+
+/* ---------------- Fabric sichern ----------------
+ *
+ * Der Datenordner ist das Wertvollste, was dieses Plugin hat: Fabric und
+ * Zertifikate. Kein Archiv liefert ihn mit, und wer ihn verliert, muss
+ * JEDES Geraet zuruecksetzen und neu anlernen. Bis 0.9.9 warnte die
+ * uninstall-Datei davor - einen Knopf zum Sichern gab es nicht. */
+if ($mt_post && isset($_POST['fabric_sichern'])) {
+    $mt_quelle = mt_fabric_pfad();
+    if (!is_dir($mt_quelle)) {
+        $mt_fehler[] = sprintf(mt_t('EINST.M_FABRIC_FEHLT'), mt_e($mt_quelle));
+    } elseif (!mt_tar_da()) {
+        $mt_fehler[] = mt_t('EINST.M_FABRIC_KEIN_TAR');
+    } else {
+        $mt_dname = 'matter-fabric-' . date('Y-m-d_H-i') . '.tar.gz';
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="' . $mt_dname . '"');
+        /* Aus dem Ordner heraus packen, nicht den Pfad mitpacken: sonst
+         * traegt das Archiv den absoluten Pfad des Rechners in sich. */
+        passthru('tar -czf - -C ' . escapeshellarg($mt_quelle) . ' .');
+        exit;
+    }
+    $mt_tab = 'tab-settings';
+}
+
+/* ---------------- Container aktualisieren ---------------- */
+if ($mt_post && isset($_POST['container_akt'])) {
+    list($mt_ok, $mt_ausgabe) = mt_container_aktualisieren();
+    if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+    $mt_tab = 'tab-settings';
+}
+
+/* ---------------- MQTT-Probewert ---------------- */
+if ($mt_post && isset($_POST['mqtt_probe'])) {
+    list($mt_ok, $mt_ausgabe) = mt_mqtt_probe();
+    if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+    $mt_tab = 'tab-mqtt';
 }
 
 /* ---------------- Einstellungen speichern ---------------- */
@@ -94,7 +143,8 @@ if ($mt_post && isset($_POST['speichern'])) {
     }
 
     foreach (array('server_port' => array(1, 65535), 'wartezeit' => array(0, 60),
-                   'bluetooth_adapter' => array(0, 9)) as $feld => $grenzen) {
+                   'bluetooth_adapter' => array(0, 9), 'sendetakt' => array(0, 60),
+                   'herzschlag' => array(0, 3600)) as $feld => $grenzen) {
         $w = $sauber($feld);
         if (!preg_match('/^[0-9]+$/', $w)) {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_ZAHL'), mt_t('EINST.L_' . strtoupper($feld)));
@@ -124,6 +174,7 @@ if ($mt_post && isset($_POST['speichern'])) {
     $mt_cfg['eigener_container'] = isset($_POST['eigener_container']) ? 1 : 0;
     $mt_cfg['roh_ein'] = isset($_POST['roh_ein']) ? 1 : 0;
     $mt_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
+    $mt_cfg['schloss_ein'] = isset($_POST['schloss_ein']) ? 1 : 0;
 
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_cfg)) {
@@ -158,9 +209,19 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
     } else {
         $mt_mcfg['mqtt_topic'] = trim($mt_mtopic, '/');
     }
+    /* Auswahl, welche Geraete ueberhaupt hinausgehen. Leer heisst alle -
+     * das ist die Vorgabe, damit sich fuer bestehende Anlagen nichts
+     * aendert. Was nicht ins Muster passt, wird ABGEWIESEN, nicht still
+     * zurechtgebogen. */
+    $mt_nur = trim((string) (isset($_POST['mqtt_nur']) ? $_POST['mqtt_nur'] : ''));
+    if ($mt_nur !== '' && !preg_match('/^[0-9]{1,3}([ ,;]+[0-9]{1,3})*$/', $mt_nur)) {
+        $mt_fehler[] = mt_t('EINST.FEHLER_MQTT_NUR');
+    } else {
+        $mt_mcfg['mqtt_nur'] = preg_replace('/[ ;]+/', ',', $mt_nur);
+    }
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_mcfg)) {
-        $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
+            $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
         }
     }
     $mt_tab = 'tab-mqtt';
@@ -254,7 +315,7 @@ if ($mt_post && isset($_POST['test'])) {
     } else {
         $mt_fehler[] = mt_e($mt_text);
     }
-    $mt_tab = in_array((string) $_POST['test'], array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster'), true)
+    $mt_tab = in_array((string) $_POST['test'], array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster', 'name'), true)
         ? 'tab-commission' : 'tab-test';
 }
 if ($mt_post && isset($_POST['selbsttest'])) {
@@ -277,6 +338,11 @@ $mt_pid = mt_dienst_pid();
 $mt_mqtt = mt_mqtt_zustand();
 $mt_contzustand = mt_container_zustand();
 $mt_tabelle = mt_tabelle();
+/* Was laeuft im Container wirklich, und wie gross ist die Fabric? Beides
+ * stand bis 0.9.9 nirgends - und ohne die Abbildkennung laesst sich die
+ * Wirkung des Knopfs 'Abbild neu holen' gar nicht beurteilen. */
+$mt_fassung = mt_container_fassung($mt_cfg);
+$mt_fabricgroesse = mt_fabric_groesse();
 $mt_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
     ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
     : (gethostname() ?: 'loxberry');
@@ -417,20 +483,27 @@ if ($mt_rahmen) {
  * Die Liste hier, die Positivliste in $mt_muster und die id der Flaechen
  * muessen deckungsgleich bleiben - alle drei.
  */
-$mt_reiter = array(
-    'tab-settings'   => mt_t('REITER.EINSTELLUNGEN'),
-    'tab-commission' => mt_t('REITER.ANLERNEN'),
-    'tab-mqtt'       => 'MQTT',
-    'tab-loxone'     => mt_t('REITER.LOXONE'),
-    'tab-test'       => mt_t('REITER.TEST'),
-    'tab-log'        => mt_t('REITER.LOG'),
-);
+/*
+ * Die Reiterleiste steht ausgeschrieben da, nicht als Schleife.
+ *
+ * Bis 0.9.9 wurde sie aus einem Feld erzeugt. Das ist sparsamer zu lesen,
+ * macht aber hausstandard_pruefen.py blind: das Werkzeug sucht die Reiter
+ * woertlich im Quelltext und meldete deshalb 'nicht gemessen' statt eines
+ * Ergebnisses. Eine Korrektur, die eine Pruefung blind macht, ist keine.
+ *
+ * Ausgeschrieben heisst: drei Stellen muessen von Hand zusammenpassen -
+ * die Positivliste in $mt_muster ganz oben, diese Leiste und die id der
+ * Flaechen darunter. Genau das prueft der Reiter Test jetzt nach und liest
+ * dafuer diese Datei; siehe mt_pruef_reiter() in mt_test.php.
+ */
 ?>
 <div class="sm-tabs">
-<?php foreach ($mt_reiter as $mt_id => $mt_bez) { ?>
-	<a class="sm-tab<?= $mt_tab === $mt_id ? ' sm-active' : '' ?>" data-ziel="<?= mt_e($mt_id) ?>"
-	   href="index.php?form=<?= mt_e(substr($mt_id, 4)) ?>"><?= mt_e($mt_bez) ?></a>
-<?php } ?>
+	<a class="sm-tab<?= $mt_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= mt_e(mt_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $mt_tab === 'tab-commission' ? ' sm-active' : '' ?>" data-ziel="tab-commission" href="index.php?form=commission"><?= mt_e(mt_t('REITER.ANLERNEN')) ?></a>
+	<a class="sm-tab<?= $mt_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?form=mqtt"><?= mt_e('MQTT') ?></a>
+	<a class="sm-tab<?= $mt_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone" href="index.php?form=loxone"><?= mt_e(mt_t('REITER.LOXONE')) ?></a>
+	<a class="sm-tab<?= $mt_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test" href="index.php?form=test"><?= mt_e(mt_t('REITER.TEST')) ?></a>
+	<a class="sm-tab<?= $mt_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log" href="index.php?form=log"><?= mt_e(mt_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -464,7 +537,15 @@ $mt_reiter = array(
 <tr><td><?= mt_e(mt_t('EINST.T_AUFRUF')) ?></td>
     <td><span class="sm-mono">docker <?= mt_e(mt_container_befehl($mt_cfg)) ?></span></td></tr>
 <tr><td><?= mt_e(mt_t('EINST.T_DATENORDNER')) ?></td>
-    <td><span class="sm-mono"><?= mt_e($mt_p['datadir']) ?>/matter</span></td></tr>
+    <td><span class="sm-mono"><?= mt_e($mt_p['datadir']) ?>/matter</span>
+        <?php if ($mt_fabricgroesse >= 0) { ?>(<?= (int) round($mt_fabricgroesse / 1024) ?> kB)<?php } ?></td></tr>
+<tr><td><?= mt_e(mt_t('EINST.T_ABBILDSTAND')) ?></td>
+    <td><?php if ($mt_fassung['container'] === '') { ?><?= mt_e(mt_t('EINST.T_ABBILD_UNBEKANNT')) ?><?php } else { ?>
+        <span class="sm-mono"><?= mt_e(substr($mt_fassung['container'], 0, 19)) ?></span>
+        <?php if ($mt_fassung['marke'] !== '') { ?>&mdash; <?= mt_e($mt_fassung['marke']) ?><?php } ?>
+        <?php if ($mt_fassung['abbild'] !== '' && $mt_fassung['abbild'] !== $mt_fassung['container']) { ?>
+        <br><span class="sm-aus"><?= mt_t('EINST.T_ABBILD_NEUER') ?></span><?php } ?>
+    <?php } ?></td></tr>
 </table>
 <div class="sm-warnung"><?= mt_t('EINST.FABRIC_WARNUNG') ?></div>
 <div class="sm-legende">
@@ -478,6 +559,26 @@ $mt_reiter = array(
     <button data-role="none" class="sm-btn <?= $mt_farbe ?>" type="submit" name="container" value="<?= $mt_b ?>"><?= mt_e(mt_t('EINST.KC_' . strtoupper($mt_b))) ?></button>
   </form>
 <?php } ?>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="container_akt" value="1"><?= mt_e(mt_t('EINST.KC_AKTUALISIEREN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('EINST.H_AKTUALISIEREN') ?></div>
+
+<h2><?= mt_e(mt_t('EINST.H_FABRIC')) ?></h2>
+<div class="sm-warnung"><?= mt_t('EINST.FABRIC_SICHERN_ERKLAERUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="fabric_sichern" value="1"><?= mt_e(mt_t('EINST.K_FABRIC_SICHERN')) ?></button>
+  </form>
+</div>
+<div class="sm-step"><?= mt_t('EINST.FABRIC_ZURUECK') ?>
+<p><span class="sm-mono">sudo systemctl stop docker &amp;&amp; tar -xzf matter-fabric-....tar.gz -C <?= mt_e($mt_p['datadir']) ?>/matter</span></p>
 </div>
 
 <form action="index.php" method="post" autocomplete="off">
@@ -519,6 +620,16 @@ $mt_reiter = array(
   <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $mt_cfg['wartezeit'] ?>" min="0" max="60">
   <div class="sm-hilfe"><?= mt_t('EINST.H_WARTEZEIT') ?></div>
 </div>
+<div class="sm-feld">
+  <label for="sendetakt"><?= mt_e(mt_t('EINST.L_SENDETAKT')) ?></label>
+  <input data-role="none" type="number" id="sendetakt" name="sendetakt" value="<?= (int) $mt_cfg['sendetakt'] ?>" min="0" max="60">
+  <div class="sm-hilfe"><?= mt_t('EINST.H_SENDETAKT') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="herzschlag"><?= mt_e(mt_t('EINST.L_HERZSCHLAG')) ?></label>
+  <input data-role="none" type="number" id="herzschlag" name="herzschlag" value="<?= (int) $mt_cfg['herzschlag'] ?>" min="0" max="3600">
+  <div class="sm-hilfe"><?= mt_t('EINST.H_HERZSCHLAG') ?></div>
+</div>
 
 <h2><?= mt_e(mt_t('EINST.H_STEUERUNG')) ?></h2>
 <div class="sm-warnung"><?= mt_t('EINST.STEUERUNG_ERKLAERUNG') ?></div>
@@ -527,6 +638,13 @@ $mt_reiter = array(
     <input data-role="none" type="checkbox" name="steuerung_ein" value="1" <?= !empty($mt_cfg['steuerung_ein']) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('EINST.L_STEUERUNG_EIN')) ?>
   </label>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="schloss_ein" value="1" <?= !empty($mt_cfg['schloss_ein']) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('EINST.L_SCHLOSS_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= mt_t('EINST.H_SCHLOSS_EIN') ?></div>
 </div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
@@ -544,6 +662,7 @@ $mt_reiter = array(
 <table class="sm-tbl">
 <tr><th>#</th><th><?= mt_e(mt_t('EINST.T_NAME')) ?></th><th><?= mt_e(mt_t('EINST.T_KNOTEN')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_HERSTELLER')) ?></th><th><?= mt_e(mt_t('EINST.T_PRODUKT')) ?></th>
+    <th><?= mt_e(mt_t('EINST.T_TYP')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_WERTE')) ?></th><th><?= mt_e(mt_t('EINST.T_ERREICHBAR')) ?></th></tr>
 <?php
 /*
@@ -566,6 +685,18 @@ $mt_feld = function ($g, $name, $leer = '') {
     <td><?= (int) $mt_feld($mt_g, 'node_id', 0) ?></td>
     <td><?= mt_e($mt_feld($mt_g, 'hersteller', '—')) ?></td><td><?= mt_e($mt_feld($mt_g, 'produkt', '—')) ?></td>
     <td><?php
+      /* Der Dienst rechnet die Geraetetypen je Endpunkt aus und schreibt sie
+       * ins Abbild; die Tabelle fuehrt dreizehn uebersetzte Namen dafuer.
+       * Gelesen hat das bis 0.9.9 kein PHP - dreizehn verwaiste
+       * Sprachschluessel und eine Auskunft, die dalag und niemandem nutzte. */
+      $mt_typen = array();
+      foreach ((array) $mt_feld($mt_g, 'typen', array()) as $mt_ep2 => $mt_liste2) {
+          $mt_t2 = mt_geraetetyp_text($mt_liste2, $mt_tabelle);
+          if ($mt_t2 !== '') { $mt_typen[$mt_t2] = 1; }
+      }
+      echo $mt_typen ? mt_e(implode(', ', array_keys($mt_typen))) : '&mdash;';
+    ?></td>
+    <td><?php
       $mt_liste = array();
       foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) {
           foreach ((array) $mt_felder as $mt_thema => $mt_w) {
@@ -584,6 +715,9 @@ $mt_feld = function ($g, $name, $leer = '') {
 <div class="sm-seite<?= $mt_tab === 'tab-commission' ? ' sm-active' : '' ?>" id="tab-commission">
 <h2><?= mt_e(mt_t('ANLERN.H_TITEL')) ?></h2>
 <p><?= mt_t('ANLERN.EINLEITUNG') ?></p>
+<?php if (empty($mt_cfg['steuerung_ein'])) { ?>
+<div class="sm-warnung"><?= mt_t('ANLERN.STEUERUNG_GESPERRT') ?></div>
+<?php } ?>
 
 <div class="sm-step"><b><?= mt_e(mt_t('ANLERN.S1_TITEL')) ?></b><br>
 <?= mt_t('ANLERN.S1_TEXT') ?>
@@ -614,7 +748,7 @@ $mt_feld = function ($g, $name, $leer = '') {
 <div class="sm-feld">
   <label for="wlan_passwort"><?= mt_e(mt_t('ANLERN.L_WLANPW')) ?></label>
   <input data-role="none" type="password" id="wlan_passwort" name="wlan_passwort" value=""
-         placeholder="<?= $mt_cfg['wlan_passwort'] !== '' ? mt_e(sprintf(mt_t('ANLERN.PW_GESETZT'), strlen((string) $mt_cfg['wlan_passwort']))) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
+         placeholder="<?= $mt_cfg['wlan_passwort'] !== '' ? mt_e(mt_t('ANLERN.PW_GESETZT')) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
 </div>
 <div class="sm-feld">
   <label for="thread_dataset"><?= mt_e(mt_t('ANLERN.L_THREAD')) ?></label>
@@ -674,7 +808,13 @@ $mt_feld = function ($g, $name, $leer = '') {
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
+<div class="sm-feld">
+  <label for="geraetename"><?= mt_e(mt_t('ANLERN.L_NAME')) ?></label>
+  <input data-role="none" type="text" id="geraetename" name="geraetename" value="" maxlength="32">
+  <div class="sm-hilfe"><?= mt_t('ANLERN.H_NAME') ?></div>
+</div>
 <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="name"><?= mt_e(mt_t('ANLERN.K_NAME')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="fenster"><?= mt_e(mt_t('ANLERN.K_FENSTER')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="entfernen"><?= mt_e(mt_t('ANLERN.K_ENTFERNEN')) ?></button>
 </div>
@@ -698,6 +838,11 @@ $mt_feld = function ($g, $name, $leer = '') {
 <div class="sm-feld">
   <label for="mqtt_topic"><?= mt_e(mt_t('EINST.L_MQTT_TOPIC')) ?></label>
   <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= mt_e($mt_cfg['mqtt_topic']) ?>" placeholder="matter">
+</div>
+<div class="sm-feld">
+  <label for="mqtt_nur"><?= mt_e(mt_t('EINST.L_MQTT_NUR')) ?></label>
+  <input data-role="none" type="text" id="mqtt_nur" name="mqtt_nur" value="<?= mt_e($mt_cfg['mqtt_nur']) ?>" placeholder="1,3,7">
+  <div class="sm-hilfe"><?= mt_t('EINST.H_MQTT_NUR') ?></div>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
@@ -727,6 +872,17 @@ $mt_feld = function ($g, $name, $leer = '') {
 <tr><td><?= mt_e(mt_t('MQTT.T_UDP')) ?></td><td><span class="sm-mono"><?= (int) $mt_mqtt['udpport'] ?></span></td></tr>
 </table>
 
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="mqtt_probe" value="1"><?= mt_e(mt_t('MQTT.K_PROBE')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('MQTT.H_PROBE') ?></div>
+
 <h2><?= mt_e(mt_t('MQTT.H_ABO')) ?></h2>
 <div class="sm-warnung"><?= mt_t('MQTT.ABO_WARNUNG') ?></div>
 <div class="sm-step"><?= mt_t('MQTT.ABO_SCHRITTE') ?>
@@ -738,8 +894,11 @@ $mt_feld = function ($g, $name, $leer = '') {
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('MQTT.T_THEMA')) ?></th><th><?= mt_e(mt_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ok</span></td><td><?= mt_t('MQTT.B_OK') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/online</span></td><td><?= mt_t('MQTT.B_ONLINE') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ts</span></td><td><?= mt_t('MQTT.B_TS') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraete</span></td><td><?= mt_t('MQTT.B_GERAETE') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/name</span></td><td><?= mt_t('MQTT.B_NAME') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/knoten</span></td><td><?= mt_t('MQTT.B_KNOTEN') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/erreichbar</span></td><td><?= mt_t('MQTT.B_ERREICH') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/&lt;Endpunkt&gt;/&lt;Thema&gt;</span></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/roh/&lt;Pfad&gt;</span></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
@@ -759,6 +918,19 @@ $mt_feld = function ($g, $name, $leer = '') {
     <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
     <td><?= mt_t($mt_a['text']) ?></td></tr>
 <?php } } ?>
+<?php
+/* Themen, die aus einem EREIGNIS stammen. Sie stehen nicht unter 'cluster'
+ * und fehlten deshalb in dieser Tabelle, obwohl der Dienst sie
+ * veroeffentlicht. Ein Thema auf dem Broker, das in der Oberflaeche nicht
+ * vorkommt, ist genau die Art Luecke, die der Hausstandard hier schliesst. */
+foreach ((array) (isset($mt_tabelle['ereignisthemen']['themen'])
+        ? $mt_tabelle['ereignisthemen']['themen'] : array()) as $mt_a) { ?>
+<tr><td><span class="sm-mono">Switch</span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_t('MQTT.T_EREIGNIS')) ?></span></td>
+    <td><span class="sm-mono"><?= mt_e($mt_a['thema']) ?></span></td>
+    <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
+    <td><?= mt_t($mt_a['text']) ?></td></tr>
+<?php } ?>
 </table>
 <p class="sm-hilfe"><?= mt_t('MQTT.PLATZHALTER') ?></p>
 </div>
@@ -789,14 +961,14 @@ $mt_feld = function ($g, $name, $leer = '') {
     <th><?= mt_e(mt_t('LOX.T_EINZELN')) ?></th><th><?= mt_e(mt_t('LOX.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach (mt_status_felder() as $mt_feld => $mt_info) { ?>
 <tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_feld) ?></span></td>
-    <td><span class="sm-mono">\i<?= mt_e($mt_feld) ?>=\i\v</span></td><td>&mdash;</td>
+    <td><span class="sm-mono"><?= mt_e(mt_check($mt_feld)) ?></span></td><td>&mdash;</td>
     <td><?= mt_t($mt_info[1]) ?></td></tr>
 <?php }
 foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
     foreach ((array) $mt_felder as $mt_thema => $mt_w) {
         $mt_marke = strtoupper($mt_ep . '_' . $mt_thema); ?>
 <tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_marke) ?></span></td>
-    <td><span class="sm-mono">\i<?= mt_e($mt_marke) ?>=\i\v</span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_check($mt_marke)) ?></span></td>
     <td><span class="sm-mono">&amp;aktion=wert&amp;endpunkt=<?= mt_e($mt_ep) ?>&amp;thema=<?= mt_e($mt_thema) ?></span></td>
     <td><?= mt_e(mt_thema_text($mt_thema, $mt_tabelle)) ?></td></tr>
 <?php } } ?>
@@ -824,6 +996,7 @@ foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
 </form>
 <div class="sm-hinweis"><?= mt_t('LOX.S3_EINZELN') ?></div>
 <div class="sm-warnung"><?= mt_t('LOX.S3_STRICH') ?></div>
+<div class="sm-warnung"><?= mt_t('LOX.S3_NEU_EINLESEN') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
 </div>
@@ -1000,6 +1173,14 @@ function mt_bausteine()
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="umschalten"><?= mt_e(mt_t('TEST.K_UMSCHALTEN')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="helligkeit"><?= mt_e(mt_t('TEST.K_HELLIGKEIT')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="anstupsen"><?= mt_e(mt_t('TEST.K_ANSTUPSEN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="identify"><?= mt_e(mt_t('TEST.K_IDENTIFY')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="farbton"><?= mt_e(mt_t('TEST.K_FARBTON')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="luefter"><?= mt_e(mt_t('TEST.K_LUEFTER')) ?></button>
+</div>
+<div class="sm-warnung"><?= mt_t('TEST.SCHLOSS_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="sperren"><?= mt_e(mt_t('TEST.K_SPERREN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="entsperren"><?= mt_e(mt_t('TEST.K_ENTSPERREN')) ?></button>
 </div>
 </form>
 

@@ -94,10 +94,43 @@ def mqtt_wert_saeubern(wert):
 # ---------------------------------------------------------------------------
 SELF = Path(__file__).resolve().parent            # <home>/bin/plugins/<ordner>
 PNAME = SELF.name
-if len(SELF.parents) >= 3:
+
+
+def _ist_lbwurzel(d) -> bool:
+    """Sieht dieses Verzeichnis wirklich wie eine LoxBerry-Wurzel aus?"""
+    try:
+        return (d / "config" / "plugins").is_dir() and (d / "webfrontend").is_dir()
+    except OSError:
+        return False
+
+
+# Bis 0.9.9 stand hier nur "if len(SELF.parents) >= 3: LBHOME = SELF.parents[2]".
+# Die Bedingung ist fast immer wahr, der Rueckfall darunter griff also praktisch
+# nie. Im installierten Aufbau (<home>/bin/plugins/<ordner>) stimmt die
+# Ableitung; aus einem entpackten Archiv heraus zeigte sie zwei Ebenen zu weit
+# nach oben - gemessen wurde ein PNAME "bin" und Konfigurations- und
+# Datenordner an einer Stelle, an der kein LoxBerry liegt. Der Dienst haette
+# dort in fremde Verzeichnisse geschrieben und trotzdem Erfolg gemeldet.
+#
+# Deshalb wird die abgeleitete Wurzel jetzt geprueft, bevor sie gilt.
+LBHOME = None
+if len(SELF.parents) >= 3 and _ist_lbwurzel(SELF.parents[2]):
     LBHOME = SELF.parents[2]
+if LBHOME is None:
+    umgebung = os.environ.get("LBHOMEDIR") or ""
+    if umgebung and _ist_lbwurzel(Path(umgebung)):
+        LBHOME = Path(umgebung)
+if LBHOME is None:
+    gesucht = lb_wurzel_ermitteln()
+    if gesucht:
+        LBHOME = Path(gesucht)
+if LBHOME is None:
+    # Nichts gefunden. Lieber die alte Ableitung als ein Leerstring, der
+    # gegen /-Pfade werkelt - aber der Selbsttest sagt es dann deutlich.
+    LBHOME = SELF.parents[2] if len(SELF.parents) >= 3 else SELF
+    LBHOME_GERATEN = True
 else:
-    LBHOME = Path(os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln())
+    LBHOME_GERATEN = False
 
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
@@ -106,7 +139,13 @@ PTEMPLATES = LBHOME / "templates" / "plugins" / PNAME
 
 DATEI_CONFIG = PCONFIG / "matter2lox.json"
 DATEI_LOXONE = PDATA / "loxone.json"
-DATEI_CACHE = PDATA / "cache.json"
+# Bis 0.9.9 wurde daneben eine cache.json mit dem vollstaendigen Knotenabzug
+# geschrieben - bei JEDEM Ereignis, und gelesen hat sie niemand (mt_cache() in
+# mt_lib.php wurde nie aufgerufen). Sie entfaellt; eine vorhandene wird beim
+# Start einmal weggeraeumt.
+DATEI_ALTCACHE = PDATA / "cache.json"
+# Zuordnung Knotennummer -> Geraetenummer. Siehe nummern_zuordnen().
+DATEI_NUMMERN = PDATA / "nummern.json"
 DATEI_ZUSTAND = PDATA / "zustand.json"
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
@@ -128,11 +167,24 @@ VORGABEN = {
     "wlan_ssid": "",
     "wlan_passwort": "",
     "thread_dataset": "",
+    # Kuerzester Abstand zwischen zwei Veroeffentlichungen, in Sekunden.
+    # 0 schaltet die Bremse ab und stellt das Verhalten bis 0.9.9 wieder her.
+    "sendetakt": 2,
+    # Abstand des Herzschlags in Sekunden, 0 schaltet ihn ab.
+    "herzschlag": 60,
+    # Geraetenummern, die ueber MQTT hinausgehen sollen. Leer = alle.
+    "mqtt_nur": "",
+    # Schloesser schalten. Bewusst NICHT an steuerung_ein gehaengt: wer Lampen
+    # aus Loxone schalten will, will damit nicht zwangslaeufig auch die
+    # Haustuer aufsperren koennen.
+    "schloss_ein": 0,
 }
 
 _LAUF = True
 _LOG = logging.getLogger("matter2lox")
 _LETZTE_MELDUNG: dict[str, float] = {}
+# Zuletzt veroeffentlichte Paare - Grundlage der Delta-Veroeffentlichung.
+_LETZTE_PAARE: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +243,44 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
 
 def config() -> dict:
     c = dict(VORGABEN)
-    c.update(json_lesen(DATEI_CONFIG))
+    gelesen = json_lesen(DATEI_CONFIG)
+    if not gelesen and DATEI_CONFIG.is_file():
+        # Datei da, aber nichts Brauchbares darin. Bis 0.9.9 lief der Dienst
+        # dann stillschweigend mit der Werkseinstellung weiter - also ohne
+        # Steuerungsfreigabe, mit dem Vorgabe-Praefix und ohne Zugangsdaten,
+        # waehrend die Oberflaeche aus der Zweitschrift die richtigen Werte
+        # zeigte. Zwei Herren an einer Datei.
+        try:
+            leer = DATEI_CONFIG.stat().st_size == 0
+        except OSError:
+            leer = True
+        zweit = PCONFIG.parent / (PNAME + ".backup.json")
+        ersatz = json_lesen(zweit)
+        if ersatz:
+            if not leer:
+                melde_gebremst(
+                    "config_kaputt",
+                    f"{DATEI_CONFIG} laesst sich nicht als JSON lesen - es wird mit der "
+                    f"Zweitschrift {zweit} weitergearbeitet. Die Oberflaeche stellt die Datei "
+                    "beim naechsten Aufruf wieder her.", 3600)
+            gelesen = ersatz
+        elif not leer:
+            melde_gebremst(
+                "config_kaputt",
+                f"{DATEI_CONFIG} laesst sich nicht als JSON lesen, und es gibt keine "
+                "brauchbare Zweitschrift. Der Dienst laeuft mit der Werkseinstellung - "
+                "Steuerung aus, Themenpraefix 'matter'.", 3600)
+    c.update(gelesen)
     c["server_port"] = max(1, min(65535, int(c.get("server_port") or 5580)))
     c["wartezeit"] = max(0, min(60, int(c.get("wartezeit") or 8)))
+    # 0 ist hier ein zulaessiger Wert und heisst "aus" - deshalb NICHT ueber
+    # "or", das die 0 verschluckte und stillschweigend die Vorgabe naehme.
+    for feld, klein, gross, vorgabe in (("sendetakt", 0, 60, 2),
+                                        ("herzschlag", 0, 3600, 60)):
+        try:
+            c[feld] = max(klein, min(gross, int(c.get(feld, vorgabe))))
+        except (TypeError, ValueError):
+            c[feld] = vorgabe
     host = str(c.get("server_host") or "127.0.0.1").strip()
     c["server_host"] = host if re.match(r"^[A-Za-z0-9\.\-:_\[\]]{1,80}$", host) else "127.0.0.1"
     return c
@@ -257,6 +344,10 @@ def umrechnen(typ: str, wert):
         zahl = float(wert)
         if typ == "zahl":
             return int(zahl) if float(zahl).is_integer() else round(zahl, 3)
+        if typ == "gleitkomma":
+            # Die Luftguete-Cluster melden ein 'single', keine Ganzzahl. Ein
+            # CO2-Wert von 812,5 ppm darf nicht zu 812 werden.
+            return round(zahl, 3)
         if typ == "hundertstel":
             return round(zahl / 100, 2)
         if typ == "zehntel":
@@ -424,6 +515,15 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
                 if isinstance(e, dict) and e.get("deviceType") is not None
             ]
 
+    # Abgeleitetes: Loxone rechnet in Kelvin, Matter in Mired. Wer den Wert
+    # liest und den Ausgang bedient, haette sonst zwei Einheiten fuer dieselbe
+    # Sache vor sich - das sieht wie ein Fehler aus. Kein geratener Wert,
+    # sondern der Kehrwert: Kelvin = 1000000 / Mired.
+    for felder in endpunkte.values():
+        mired = felder.get("farbtemperatur_mired")
+        if isinstance(mired, (int, float)) and mired > 0:
+            felder["farbtemperatur_kelvin"] = int(round(1000000 / mired))
+
     bezeichnung = info.get("bezeichnung") or info.get("produkt") or f"Knoten {node_id}"
     return {
         "node_id": node_id,
@@ -457,6 +557,8 @@ class MatterVerbindung:
         self.ws = None
         self.server_info: dict = {}
         self.knoten: dict[int, dict] = {}
+        # Letztes Ereignis je Knoten und Endpunkt. Siehe _taste().
+        self.ereignisse: dict[int, dict] = {}
         self._warten: dict[str, asyncio.Future] = {}
         self._schleife: asyncio.AbstractEventLoop | None = None
         # Wird gesetzt, sobald start_listening den vollstaendigen Bestand
@@ -571,6 +673,14 @@ class MatterVerbindung:
                 return False
             knoten.setdefault("attributes", {})[str(pfad)] = wert
             return True
+        if art == "node_event":
+            return self._taste(daten)
+        if art in ("endpoint_added", "endpoint_removed"):
+            # Bridges melden Endpunkte zur Laufzeit an und ab. Die Attribute
+            # selbst schickt der Server danach als node_updated; hier wird nur
+            # dafuer gesorgt, dass das Abbild neu geschrieben wird.
+            _LOG.info("Endpunkt-Ereignis %s: %s", art, daten)
+            return True
         if art == "server_shutdown":
             _LOG.warning("Der Matter-Server faehrt herunter.")
             return False
@@ -579,6 +689,64 @@ class MatterVerbindung:
                 self.server_info.update(daten)
             return False
         return False
+
+    def _taste(self, daten) -> bool:
+        """Ein node_event einarbeiten - vor allem Tastendruecke.
+
+        Der Switch-Cluster 0x003B (59) meldet Tastendruecke AUSSCHLIESSLICH als
+        Ereignis; ein Attribut, das man abfragen koennte, gibt es nicht. Bis
+        0.9.9 hat _ereignis() node_event stillschweigend verworfen - damit war
+        jeder Szenentaster fuer dieses Plugin unerreichbar, ganz gleich was in
+        der Cluster-Tabelle stand.
+
+        Gemerkt wird je Knoten und Endpunkt der letzte Ereigniscode, die
+        Stellung, die Uhrzeit und ein Zaehler. Der Zaehler ist der Grund, warum
+        das in Loxone taugt: zweimal dieselbe Taste ergibt zweimal denselben
+        Code, und ein Eingang, der auf Wertaenderung reagiert, saehe den
+        zweiten Druck sonst nicht.
+
+        UNGEPRUEFT: wie der Matter-Server die Nutzlast des Ereignisses benennt,
+        liess sich ohne Taster nicht nachmessen. Deshalb werden mehrere
+        Schreibweisen angenommen, und wo keine passt, bleibt die Stellung leer
+        statt eine erfundene 0 zu tragen.
+        """
+        if not isinstance(daten, dict):
+            return False
+        try:
+            node_id = int(daten.get("node_id"))
+            ep = str(int(daten.get("endpoint_id")))
+            cluster_id = int(daten.get("cluster_id"))
+            event_id = int(daten.get("event_id"))
+        except (TypeError, ValueError):
+            return False
+        if cluster_id != 59:
+            melde_gebremst(
+                f"ereignis_{cluster_id}",
+                f"Ereignisse von Cluster {cluster_id} werden nicht ausgewertet "
+                f"(zuletzt Knoten {node_id}, Endpunkt {ep}, Ereignis {event_id}).", 3600)
+            return False
+        stellung = None
+        nutz = daten.get("data")
+        if isinstance(nutz, dict):
+            for schluessel in ("NewPosition", "PreviousPosition",
+                               "newPosition", "previousPosition"):
+                if schluessel in nutz:
+                    try:
+                        stellung = int(nutz[schluessel])
+                    except (TypeError, ValueError):
+                        stellung = None
+                    break
+        je_knoten = self.ereignisse.setdefault(node_id, {})
+        vorher = je_knoten.get(ep) or {}
+        je_knoten[ep] = {
+            "taste": event_id,
+            "taste_zaehler": int(vorher.get("taste_zaehler") or 0) + 1,
+            "taste_position": stellung,
+            "taste_zeit": int(time.time()),
+        }
+        _LOG.info("Taste an Knoten %s, Endpunkt %s: Ereignis %s, Stellung %s.",
+                  node_id, ep, event_id, stellung)
+        return True
 
     async def schliessen(self) -> None:
         if self.ws is not None:
@@ -603,7 +771,46 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
 
     # Lesende und verwaltende Aktionen brauchen die Steuerungsfreigabe nicht.
     if aktion == "abruf":
-        return (1, "Sofortabruf eingeplant.")
+        # Bis 0.9.9 stand hier nur "return (1, 'Sofortabruf eingeplant.')" -
+        # es wurde KEIN Befehl an den Matter-Server geschickt. Das Abbild wurde
+        # danach lediglich aus dem Speicherzwischenstand neu geschrieben; war
+        # dieser leer, entstand ein leeres Abbild. Genau in dieser Lage ruft
+        # man den Befehl aber auf.
+        #
+        # Ohne Knotennummer wird der Bestand neu geholt (get_nodes), mit
+        # Knotennummer der eine Knoten neu interviewt (interview_node). Die
+        # Namen und Argumente stammen aus APICommand in
+        # matter_server/common/models.py und den Signaturen in
+        # matter_server/server/device_controller.py.
+        roh = b.get("knoten")
+        if roh in (None, "", 0, "0"):
+            try:
+                erg = await v.senden("get_nodes", {"only_available": False}, zeit=60)
+            except Exception as err:  # noqa: BLE001
+                return (0, "Schritt get_nodes: " + fehlertext(err))
+            if not isinstance(erg, list):
+                return (0, "Schritt get_nodes: der Matter-Server hat keine Knotenliste "
+                           f"geliefert, sondern {type(erg).__name__}.")
+            gezaehlt = 0
+            for k in erg:
+                if isinstance(k, dict) and k.get("node_id") is not None:
+                    v.knoten[int(k["node_id"])] = k
+                    gezaehlt += 1
+            return (1, f"Bestand neu geholt: {gezaehlt} Knoten.")
+        try:
+            node_id = int(roh)
+        except (TypeError, ValueError):
+            return (0, "Die Knotennummer ist keine Zahl.")
+        if node_id not in v.knoten:
+            return (0, f"Knoten {node_id} ist dem Matter-Server nicht bekannt. "
+                       f"Bekannt sind: {', '.join(str(k) for k in sorted(v.knoten)) or 'keine'}.")
+        try:
+            # Ein Interview kann dauern; der Server meldet das Ergebnis danach
+            # von selbst als node_updated.
+            await v.senden("interview_node", {"node_id": node_id}, zeit=120)
+        except Exception as err:  # noqa: BLE001
+            return (0, f"Schritt interview_node fuer Knoten {node_id}: " + fehlertext(err))
+        return (1, f"Knoten {node_id} wurde neu ausgelesen.")
 
     if not cfg.get("steuerung_ein"):
         return (0, "Die Steuerung ist ausgeschaltet. Reiter Einstellungen, "
@@ -669,12 +876,48 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
 
     if aktion == "fenster":
         erg = await v.senden("open_commissioning_window", {"node_id": node_id}, zeit=60)
-        return (1, "Kopplungsfenster geoeffnet. Manueller Code: "
-                   f"{(erg or {}).get('setup_manual_code')}")
+        erg = erg or {}
+        # Die Antwort traegt drei Felder: setup_pin_code, setup_manual_code und
+        # setup_qr_code. Bis 0.9.9 wurde nur der manuelle Code gelesen und der
+        # QR-Code verworfen - dabei ist er der bequemere Weg, weil ihn jede
+        # Matter-App einlesen kann.
+        teile = [f"Manueller Code: {erg.get('setup_manual_code')}"]
+        if erg.get("setup_qr_code"):
+            teile.append(f"QR-Text: {erg.get('setup_qr_code')}")
+        return (1, "Kopplungsfenster geoeffnet. " + " | ".join(teile))
 
     if aktion == "anstupsen":
         erg = await v.senden("ping_node", {"node_id": node_id}, zeit=60)
         return (1, f"Antwort auf den Anstupser: {json.dumps(erg)}")
+
+    if aktion == "name":
+        # Der Name wird in das GERAET geschrieben, nicht in eine eigene Liste
+        # des Plugins: BasicInformation.NodeLabel (Cluster 40, Attribut 5) ist
+        # laut Datenmodell beschreibbar (char_string, length=32). Damit heisst
+        # das Geraet auch in jeder anderen Fabric so - und das Plugin muss
+        # keine Zuordnung pflegen, die auseinanderlaufen kann.
+        neuer = str(b.get("bezeichnung") or "").strip()
+        if neuer == "":
+            return (0, "Der Name darf nicht leer sein.")
+        if re.search(r"[\x00-\x1f\x7f]", neuer):
+            return (0, "Der Name enthaelt Steuerzeichen.")
+        laenge = len(neuer.encode("utf-8"))
+        if laenge > 32:
+            return (0, f"Der Name ist zu lang: NodeLabel laesst 32 Zeichen zu, dieser hat "
+                       f"{laenge}. (Umlaute zaehlen doppelt, weil Matter in UTF-8 zaehlt.)")
+        try:
+            await v.senden("write_attribute",
+                           {"node_id": node_id, "attribute_path": "0/40/5", "value": neuer},
+                           zeit=60)
+        except Exception as err:  # noqa: BLE001
+            return (0, f"Schritt write_attribute 0/40/5 fuer Knoten {node_id}: "
+                       + fehlertext(err))
+        # Das Abbild traegt sonst den alten Namen, bis der Server die Aenderung
+        # von sich aus meldet.
+        knoten = v.knoten.get(node_id)
+        if isinstance(knoten, dict):
+            knoten.setdefault("attributes", {})["0/40/5"] = neuer
+        return (1, f"Knoten {node_id} heisst jetzt {neuer}.")
 
     # ---- Geraetebefehle ---------------------------------------------------
     try:
@@ -682,10 +925,15 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
     except (TypeError, ValueError):
         return (0, "Die Endpunktnummer ist keine Zahl.")
 
-    async def cluster_befehl(cluster_id: int, name: str, nutzlast: dict):
-        return await v.senden("device_command", {
-            "node_id": node_id, "endpoint_id": ep,
-            "cluster_id": cluster_id, "command_name": name, "payload": nutzlast}, zeit=60)
+    async def cluster_befehl(cluster_id: int, name: str, nutzlast: dict, timed_ms=None):
+        args = {"node_id": node_id, "endpoint_id": ep, "cluster_id": cluster_id,
+                "command_name": name, "payload": nutzlast}
+        if timed_ms is not None:
+            # Manche Befehle verlangen einen "timed invoke" - das Datenmodell
+            # kennzeichnet sie mit mustUseTimedInvoke. Ohne diese Angabe weist
+            # das Geraet den Befehl ab. Betrifft hier LockDoor und UnlockDoor.
+            args["timed_request_timeout_ms"] = int(timed_ms)
+        return await v.senden("device_command", args, zeit=60)
 
     async def attribut_schreiben(pfad: str, wert):
         return await v.senden("write_attribute",
@@ -743,6 +991,75 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
             await cluster_befehl(258, name, {})
             return (1, f"Cluster WindowCovering, Befehl {name} gesendet.")
 
+        # ---- Farbe -------------------------------------------------------
+        # Loxone rechnet den Farbton in Grad (0..360) und die Saettigung in
+        # Prozent; Matter zaehlt beides 0..254. Umgerechnet wird hier, damit
+        # der virtuelle Ausgang einen blanken Analogwert schicken kann - genau
+        # so, wie es die Ausfuhren dieser Anlage bei Kelvin und Helligkeit
+        # auch tun. Ein zusammengesetztes Loxone-Farbformat wird NICHT
+        # angenommen: wie es an einem virtuellen Ausgang ankaeme, ist hier
+        # nicht gemessen, und geraten wird nicht.
+        if aktion in ("farbton", "saettigung", "farbe"):
+            zeit10 = int(zahl("uebergang", 0, 600) or 0)
+            if aktion == "farbton":
+                grad = zahl("wert", 0, 360)
+                if grad is None:
+                    return (0, "Der Farbton muss zwischen 0 und 360 Grad liegen.")
+                stufe = int(round(grad * 254 / 360))
+                await cluster_befehl(768, "MoveToHue", {
+                    "hue": stufe, "direction": 0, "transitionTime": zeit10,
+                    "optionsMask": 0, "optionsOverride": 0})
+                return (1, f"Farbton {grad:.0f} Grad (Matter-Stufe {stufe} von 254) gesendet.")
+            if aktion == "saettigung":
+                p = zahl("wert", 0, 100)
+                if p is None:
+                    return (0, "Die Saettigung muss zwischen 0 und 100 Prozent liegen.")
+                stufe = int(round(p * 254 / 100))
+                await cluster_befehl(768, "MoveToSaturation", {
+                    "saturation": stufe, "transitionTime": zeit10,
+                    "optionsMask": 0, "optionsOverride": 0})
+                return (1, f"Saettigung {p:.0f} % (Matter-Stufe {stufe} von 254) gesendet.")
+            grad = zahl("wert", 0, 360)
+            saet = zahl("saettigung", 0, 100)
+            if grad is None:
+                return (0, "Der Farbton muss zwischen 0 und 360 Grad liegen.")
+            if saet is None:
+                saet = 100.0
+            await cluster_befehl(768, "MoveToHueAndSaturation", {
+                "hue": int(round(grad * 254 / 360)),
+                "saturation": int(round(saet * 254 / 100)),
+                "transitionTime": zeit10, "optionsMask": 0, "optionsOverride": 0})
+            return (1, f"Farbe gesendet: Farbton {grad:.0f} Grad, Saettigung {saet:.0f} %.")
+
+        # ---- Schloss -----------------------------------------------------
+        if aktion in ("sperren", "entsperren"):
+            if not cfg.get("schloss_ein"):
+                return (0, "Schloesser zu schalten ist gesperrt. Reiter Einstellungen, "
+                           "Haken Schloesser schalten zulassen. Das ist bewusst ein "
+                           "eigener Haken: wer Lampen schalten laesst, will damit nicht "
+                           "zwangslaeufig die Haustuer aufsperren lassen.")
+            name = "LockDoor" if aktion == "sperren" else "UnlockDoor"
+            # Beide verlangen laut Datenmodell einen timed invoke
+            # (mustUseTimedInvoke). Ohne den weist das Geraet ab.
+            await cluster_befehl(257, name, {}, timed_ms=7000)
+            return (1, f"Cluster DoorLock, Befehl {name} an Knoten {node_id} gesendet.")
+
+        # ---- Welches Geraet ist das? --------------------------------------
+        if aktion == "identify":
+            sek = int(zahl("wert", 0, 300) or 15)
+            await cluster_befehl(3, "Identify", {"identifyTime": sek})
+            return (1, f"Knoten {node_id}, Endpunkt {ep} macht sich {sek} s lang bemerkbar.")
+
+        # ---- Luefter ------------------------------------------------------
+        if aktion == "luefter":
+            p = zahl("wert", 0, 100)
+            if p is None:
+                return (0, "Die Luefterstufe muss zwischen 0 und 100 Prozent liegen.")
+            # PercentSetting ist der SOLLWERT (Attribut 2). Der Istwert steht
+            # in Attribut 3 und wird nur gelesen.
+            await attribut_schreiben(f"{ep}/514/2", int(round(p)))
+            return (1, f"Luefter-Sollwert {p:.0f} % geschrieben.")
+
         if aktion in ("soll_heizen", "soll_kuehlen"):
             grad = zahl("wert", -50, 100)
             if grad is None:
@@ -797,10 +1114,64 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
 # ---------------------------------------------------------------------------
 # Abbild schreiben und veroeffentlichen
 # ---------------------------------------------------------------------------
-def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int, fehler: str = "") -> dict:
+def nummern_zuordnen(knoten_ids) -> dict:
+    """Feste Geraetenummern, die sich nicht mehr verschieben.
+
+    Bis 0.9.9 war die Geraetenummer der Platz in der sortierten Knotenliste
+    (enumerate(sorted(...))). Wurde ein Geraet aus der Fabric entfernt, rueckte
+    jedes nachfolgende um eins vor - und der virtuelle Eingang MATTER_3_...,
+    das Thema geraet3/... und die Adresse &geraet=3 zeigten danach still auf
+    ein anderes Geraet. Kein Fehler, keine Meldung, nur falsche Werte.
+
+    Deshalb steht die Zuordnung jetzt in einer Datei. Eine einmal vergebene
+    Nummer wird nie veraendert und auch nach dem Entfernen des Geraets nicht
+    neu vergeben - sonst erbte das naechste Geraet die Adressen des alten.
+
+    Beim ERSTEN Lauf entsteht sie genau so, wie sie bis 0.9.9 entstanden waere:
+    sortiert, ab 1. Eine bestehende Anlage behaelt damit ihre Loxone-Adressen.
+    """
+    d = json_lesen(DATEI_NUMMERN)
+    karte: dict[int, int] = {}
+    for k, w in (d.get("nummern") or {}).items():
+        try:
+            karte[int(k)] = int(w)
+        except (TypeError, ValueError):
+            continue
+    neu = [n for n in sorted(knoten_ids) if n not in karte]
+    if neu:
+        frei = (max(karte.values()) + 1) if karte else 1
+        for n in neu:
+            karte[n] = frei
+            frei += 1
+        if json_schreiben(DATEI_NUMMERN, {
+            "_hinweis": "Feste Zuordnung Knotennummer -> Geraetenummer. Nicht von Hand "
+                        "aendern: die Geraetenummer steht in den virtuellen Eingaengen "
+                        "der Loxone-Projektdatei und in den MQTT-Themen.",
+            "nummern": {str(k): w for k, w in sorted(karte.items())},
+        }):
+            for n in neu:
+                _LOG.info("Knoten %s hat die feste Geraetenummer %s bekommen.", n, karte[n])
+    return karte
+
+
+def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
+                     fehler: str = "", voll: bool = False) -> dict:
+    karte = nummern_zuordnen(v.knoten.keys())
     geraete: dict[str, dict] = {}
-    for i, node_id in enumerate(sorted(v.knoten), start=1):
-        geraete[str(i)] = knoten_abbilden(v.knoten[node_id], tab, cfg)
+    for node_id in sorted(v.knoten):
+        nr = karte.get(node_id)
+        if nr is None:
+            continue
+        g = knoten_abbilden(v.knoten[node_id], tab, cfg)
+        g["nummer"] = nr
+        # Ereignisthemen dazu. Sie stammen nicht aus den Attributen und stehen
+        # deshalb nicht im Knotenbestand - knoten_abbilden() kennt sie nicht.
+        for ep, felder in (v.ereignisse.get(node_id) or {}).items():
+            ziel = g["endpunkte"].setdefault(ep, {})
+            for thema, wert in felder.items():
+                if wert is not None:
+                    ziel[thema] = wert
+        geraete[str(nr)] = g
 
     lox = {
         "ok": ok,
@@ -810,6 +1181,13 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int, fehler:
         "server": {
             "sdk_version": v.server_info.get("sdk_version"),
             "schema_version": v.server_info.get("schema_version"),
+            # Die kleinste Schemafassung, die der Server noch bedient. Das
+            # Plugin fuehrt selbst KEINE Schemafassung - es benutzt eine
+            # Handvoll Befehle, und eine Zahl dafuer zu erfinden waere eine
+            # erfundene Zahl. Der Wert wird deshalb nur angezeigt, nicht
+            # verglichen; beim Umstieg auf einen anderen Server ist er die
+            # erste Stelle, an der man nachsieht.
+            "min_schema": v.server_info.get("min_supported_schema_version"),
             "bluetooth": 1 if v.server_info.get("bluetooth_enabled") else 0,
             "wlan_gesetzt": 1 if v.server_info.get("wifi_credentials_set") else 0,
             "thread_gesetzt": 1 if v.server_info.get("thread_credentials_set") else 0,
@@ -818,22 +1196,102 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int, fehler:
         "geraete": geraete,
     }
     json_schreiben(DATEI_LOXONE, lox)
-    json_schreiben(DATEI_CACHE, {"ts": int(time.time()), "knoten": v.knoten})
 
     if cfg.get("mqtt_ein"):
         praefix = str(cfg.get("mqtt_topic") or "matter").strip("/") or "matter"
+        # Auswahl, was ueberhaupt hinausgeht. Eine Bridge mit fuenfzig
+        # Endpunkten ist sonst der Unterschied zwischen benutzbar und
+        # unbenutzbar. Leer heisst: alles - das ist die Vorgabe, damit sich
+        # fuer bestehende Anlagen nichts aendert.
+        nur = set()
+        for stueck in str(cfg.get("mqtt_nur") or "").replace(";", ",").split(","):
+            stueck = stueck.strip()
+            if stueck.isdigit():
+                nur.add(stueck)
         paare: dict[str, object] = {"ok": ok, "geraete": len(geraete)}
         for nr, g in geraete.items():
+            if nur and nr not in nur:
+                continue
             basis = f"geraet{nr}"
             paare[f"{basis}/name"] = g["kurz"]
             paare[f"{basis}/erreichbar"] = g["erreichbar"]
+            paare[f"{basis}/knoten"] = g["node_id"]
             for ep, felder in g["endpunkte"].items():
                 for thema, wert in felder.items():
                     paare[f"{basis}/{ep}/{thema}"] = wert
             for pfad, wert in (g.get("roh") or {}).items():
                 paare[f"{basis}/roh/{pfad}"] = wert
-        mqtt_senden(paare, praefix)
+        # Nur senden, was sich geaendert hat. Bis 0.9.9 ging bei JEDEM einzelnen
+        # attribute_updated der vollstaendige Bestand aller Geraete erneut
+        # hinaus - ein bewegter Dimmer erzeugte damit hunderte Telegramme je
+        # Sekunde. 'voll' erzwingt das Vollbild; das geschieht nach jedem
+        # Verbindungsaufbau, damit ein verpasstes Telegramm nicht dauerhaft
+        # fehlt.
+        if voll:
+            senden = paare
+        else:
+            senden = {k: w for k, w in paare.items() if _LETZTE_PAARE.get(k) != str(w)}
+        _LETZTE_PAARE.clear()
+        _LETZTE_PAARE.update({k: str(w) for k, w in paare.items()})
+        if senden:
+            mqtt_senden(senden, praefix)
     return geraete
+
+
+def abbild_stoerung(cfg: dict, fehler: str) -> None:
+    """Bei einer Stoerung nur den Zustand neu schreiben, nicht die Werte.
+
+    Bis 0.9.9 wurde hier abbild_schreiben() mit einem frischen, also LEEREN
+    Verbindungsobjekt gerufen. Scheiterte schon verbinden() - der Container
+    steht, das Netz ist weg -, ueberschrieb das die loxone.json mit einer
+    leeren Geraeteliste. Und weil dabei auch ts neu gesetzt wurde, sprang
+    ALTER auf 0. Die Oberflaeche zeigte 0 Geraete, der Endpunkt antwortete
+    GERAET_UNBEKANNT, und beides sah taufrisch aus - waehrend die Geraete die
+    ganze Zeit in der Fabric standen.
+
+    Jetzt bleiben die zuletzt bekannten Werte stehen, und ts bleibt der
+    Zeitpunkt der letzten ECHTEN Messung. ALTER waechst damit und sagt die
+    Wahrheit: die Werte sind alt, nicht weg.
+    """
+    lox = json_lesen(DATEI_LOXONE)
+    if not lox:
+        # Noch nie etwas geschrieben - dann ist eine leere Liste richtig.
+        lox = {"ts": int(time.time()), "anzahl": 0, "server": {}, "geraete": {}}
+    lox["ok"] = 0
+    lox["fehler"] = fehler
+    if not lox.get("stoerung_seit"):
+        lox["stoerung_seit"] = int(time.time())
+    json_schreiben(DATEI_LOXONE, lox)
+    if cfg.get("mqtt_ein"):
+        praefix = str(cfg.get("mqtt_topic") or "matter").strip("/") or "matter"
+        # Nur das Signal, nicht die Werte: die stehen im Broker und sind das
+        # Letzte, was gemessen wurde. Sie jetzt zu ueberschreiben hiesse, eine
+        # Stoerung als Messwert auszugeben.
+        mqtt_senden({"ok": 0}, praefix)
+        _LETZTE_PAARE["ok"] = "0"
+
+
+def herzschlag_senden(cfg: dict, ok: int) -> None:
+    """Lebenszeichen, unabhaengig davon, ob sich ein Wert geaendert hat.
+
+    Der Dienst veroeffentlichte bis 0.9.9 ausschliesslich bei Ereignissen.
+    Reisst die Verbindung zum Matter-Server ab oder stirbt der Dienst, hoert
+    das Senden einfach auf - die zuletzt gesendeten Werte bleiben im Broker
+    stehen, und in Loxone sieht ein toter Dienst genauso aus wie ein ruhiges
+    Haus. Das ist die stille Falschaussage, gegen die dieses Thema hilft:
+    'ts' laeuft weiter, solange der Dienst lebt.
+    """
+    if not cfg.get("herzschlag"):
+        return
+    # Der Zeitstempel geht IMMER in die zustand.json, auch wenn MQTT
+    # abgeschaltet ist: daran erkennt der Reiter Test, ob der Dienst noch
+    # lebt. Die Prozessnummer allein beantwortet das nicht - ein Prozess kann
+    # dastehen und nichts mehr tun.
+    zustand_schreiben(herzschlag=int(time.time()), herzschlag_ok=int(ok))
+    if not cfg.get("mqtt_ein"):
+        return
+    praefix = str(cfg.get("mqtt_topic") or "matter").strip("/") or "matter"
+    mqtt_senden({"online": 1, "ok": int(ok), "ts": int(time.time())}, praefix)
 
 
 def zustand_schreiben(**felder) -> None:
@@ -900,17 +1358,39 @@ async def dienst(einmal: bool = False) -> int:
               cfg["server_host"], cfg["server_port"],
               "ein" if cfg.get("steuerung_ein") else "aus")
 
+    # Die cache.json wird seit 0.9.10 nicht mehr geschrieben; gelesen hat sie
+    # ohnehin nie jemand. Eine vorhandene einmal wegraeumen, damit auf dem
+    # Geraet kein Abzug von gestern liegen bleibt und wie ein Zwischenstand
+    # aussieht.
+    try:
+        if DATEI_ALTCACHE.is_file():
+            DATEI_ALTCACHE.unlink()
+            _LOG.info("Die nicht mehr benutzte cache.json wurde entfernt.")
+    except OSError as err:
+        _LOG.warning("cache.json liess sich nicht entfernen: %s", err)
+
     fehler_folge = 0
     while _LAUF:
         cfg = config()
         v = MatterVerbindung(cfg)
+        # Der Ereignispfad liest KEINE Dateien mehr. Bis 0.9.9 rief jedes
+        # einzelne attribute_updated config() auf, was die Konfiguration von
+        # der Platte las, und danach mqtt_zustand(), was die general.json las.
+        lauf = {"cfg": cfg, "offen": False}
         try:
             await v.verbinden()
             fehler_folge = 0
             zustand_schreiben(ok=1, fehler="", server=v.server_info)
 
             def schreiben() -> None:
-                abbild_schreiben(v, config(), tab, 1)
+                # Nur vormerken. Geschrieben und gesendet wird im Takt unten -
+                # sonst loest ein bewegter Dimmer im Sekundentakt zwei
+                # Dateischreibvorgaenge und den vollstaendigen Bestand aus.
+                # Sendetakt 0 stellt das Verhalten bis 0.9.9 wieder her.
+                if int(lauf["cfg"].get("sendetakt") or 0) <= 0:
+                    abbild_schreiben(v, lauf["cfg"], tab, 1)
+                else:
+                    lauf["offen"] = True
 
             aufgabe = asyncio.ensure_future(v.lauschen(schreiben))
             # Erst wenn der Bestand da ist, hat ein Abbild Aussagekraft.
@@ -922,29 +1402,48 @@ async def dienst(einmal: bool = False) -> int:
                     "Der Matter-Server hat auf start_listening binnen 30 s keinen "
                     "Knotenbestand geliefert.") from None
 
+            # Nach jedem Verbindungsaufbau einmal das Vollbild, damit ein
+            # waehrend der Stoerung verpasstes Telegramm nicht dauerhaft fehlt.
+            abbild_schreiben(v, lauf["cfg"], tab, 1, voll=True)
+            lauf["offen"] = False
+            letzte_sendung = time.time()
+            letzter_herzschlag = time.time()
+            herzschlag_senden(lauf["cfg"], 1)
+
             # Waehrend gelauscht wird, im Sekundentakt die Warteschlange leeren.
             while _LAUF and not aufgabe.done():
                 if not (PDATA / "soll_laufen").is_file():
                     _LOG.info("Der Merker soll_laufen ist weg - Dienst haelt an.")
                     break
+                lauf["cfg"] = config()
+                c = lauf["cfg"]
                 try:
-                    if await warteschlange(v, config(), tab):
-                        abbild_schreiben(v, config(), tab, 1)
+                    if await warteschlange(v, c, tab):
+                        lauf["offen"] = True
                 except Exception as err:  # noqa: BLE001
                     _LOG.error("Warteschlange: %s", fehlertext(err))
+                jetzt = time.time()
+                if lauf["offen"] and jetzt - letzte_sendung >= int(c.get("sendetakt") or 0):
+                    abbild_schreiben(v, c, tab, 1)
+                    lauf["offen"] = False
+                    letzte_sendung = jetzt
+                hz = int(c.get("herzschlag") or 0)
+                if hz and jetzt - letzter_herzschlag >= hz:
+                    herzschlag_senden(c, 1)
+                    letzter_herzschlag = jetzt
                 if einmal:
                     break
                 await asyncio.sleep(1)
             aufgabe.cancel()
             if einmal:
-                abbild_schreiben(v, cfg, tab, 1)
+                abbild_schreiben(v, lauf["cfg"], tab, 1, voll=True)
                 await v.schliessen()
                 return 0
         except Exception as err:  # noqa: BLE001
             fehler_folge += 1
             text = fehlertext(err)
             melde_gebremst("verbindung", f"Verbindung zum Matter-Server: {text}", 900)
-            abbild_schreiben(v, cfg, tab, 0, text)
+            abbild_stoerung(cfg, text)
             zustand_schreiben(ok=0, fehler=text, fehler_folge=fehler_folge)
             if einmal:
                 return 1
@@ -959,9 +1458,16 @@ async def dienst(einmal: bool = False) -> int:
         if fehler_folge >= 3:
             melde_gebremst("bremse",
                            f"{fehler_folge} Fehlversuche - naechster Versuch erst in {pause} s.", 1800)
-        for _ in range(pause):
+        # Auch waehrend der Wartezeit schlaegt das Herz weiter - mit ok=0. Das
+        # ist genau die Lage, fuer die es den Herzschlag gibt: der Dienst lebt,
+        # der Matter-Server nicht. Ohne das Lebenszeichen waere in Loxone
+        # nicht zu unterscheiden, ob die Bruecke steht oder nur nichts passiert.
+        hz = int(cfg.get("herzschlag") or 0)
+        for i in range(pause):
             if not _LAUF:
                 break
+            if hz and i % hz == 0:
+                herzschlag_senden(cfg, 0)
             await asyncio.sleep(1)
 
     _LOG.info("Dienst beendet.")
@@ -1015,6 +1521,15 @@ def selbsttest() -> int:
     if not tab.get("cluster"):
         fehler += 1
         zeilen.append("[FEHL] Die Cluster-Tabelle ist leer - matter_cluster.json wurde nicht gefunden")
+
+    if LBHOME_GERATEN:
+        fehler += 1
+        zeilen.append(f"[FEHL] Der LoxBerry-Wurzelordner liess sich nicht bestimmen. Geraten "
+                      f"wurde {LBHOME} - dort liegt kein config/plugins und kein webfrontend. "
+                      "Der Dienst wuerde in fremde Verzeichnisse schreiben. Das passiert, wenn "
+                      "das Plugin als entpacktes Archiv laeuft statt installiert.")
+    else:
+        zeilen.append(f"[OK]   LoxBerry-Wurzel gefunden und geprueft: {LBHOME}")
 
     for name, pfad in (("Konfiguration", PCONFIG), ("Daten", PDATA), ("Log", PLOG)):
         schreibbar = pfad.is_dir() and os.access(pfad, os.W_OK)

@@ -128,6 +128,10 @@ function mt_vorgaben()
         'wlan_ssid'         => '',
         'wlan_passwort'     => '',
         'thread_dataset'    => '',
+        'sendetakt'         => 2,
+        'herzschlag'        => 60,
+        'mqtt_nur'          => '',
+        'schloss_ein'       => 0,
     );
 }
 
@@ -159,13 +163,74 @@ function mt_json_schreiben($pfad, $daten, $rechte = null)
     return @rename($tmp, $pfad);
 }
 
+/**
+ * Die Konfiguration lesen, mit Selbstheilung.
+ *
+ * Bis 0.9.9 wurde die Zweitschrift NUR bei einer leeren Datei oder bei "{}"
+ * gezogen. War die Datei vorhanden, aber ungueltiges JSON - halb geschrieben,
+ * ein Zeichen verrutscht -, gab mt_json_lesen() stillschweigend ein leeres
+ * Feld zurueck, und die Werkseinstellung lag darueber. Danach lief folgende
+ * Kette an, ausgeloest durch nichts weiter als einen Aufruf der Oberflaeche:
+ *
+ *   1. aktionstoken leer  -> mt_token() erzeugte ein NEUES. Jede Adresse in
+ *      der Loxone-Projektdatei war damit ungueltig, ohne eine Meldung.
+ *   2. mt_token() ruft mt_config_speichern() -> die Werkseinstellung wurde
+ *      ueber die beschaedigte Datei geschrieben.
+ *   3. mt_config_speichern() kopierte das Ergebnis auf die SICHERUNG - die
+ *      letzte gute Fassung war damit ebenfalls fort.
+ *
+ * Verloren waren in einem Zug: Aktionstoken, Steuerungsfreigabe,
+ * MQTT-Praefix, WLAN-Passwort und Thread-Dataset.
+ *
+ * Jetzt gilt: ungueltiges JSON ist ein FEHLER. Die beschaedigte Datei bleibt
+ * einmalig als .kaputt liegen, es gibt genau eine Protokollzeile, und die
+ * Zweitschrift wird GELESEN, nicht blind kopiert - zurueckgeschrieben wird
+ * erst durch mt_config_speichern(), also erst nach gelungenem Lesen. Der
+ * Zusatz ist wichtig: eine Heilung, die nur liest und nie schreibt, zieht bei
+ * jedem Aufruf erneut und protokolliert dabei jedes Mal.
+ */
 function mt_config()
 {
     $p = mt_paths();
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['sicherung'], $p['config']);
+    $ziehen = false;
+
+    if ($roh === '' || $roh === '{}') {
+        // Leer oder frisch angelegt - das ist der Normalfall nach der
+        // Installation, kein Fehler.
+        $ziehen = true;
+    } else {
+        $geprueft = json_decode($roh, true);
+        if (!is_array($geprueft)) {
+            $ziehen = true;
+            mt_log_gebremst('config_kaputt', 'FEHLER: ' . $p['config'] . ' ist kein gueltiges JSON ('
+                . json_last_error_msg() . ', ' . strlen($roh) . ' Byte). Die Zweitschrift wird '
+                . 'gelesen; die beschaedigte Datei bleibt als .kaputt liegen. Die Konfiguration '
+                . 'wird NICHT ueberschrieben und die Sicherung nicht angetastet.');
+            if (!is_file($p['config'] . '.kaputt')) {
+                @copy($p['config'], $p['config'] . '.kaputt');
+                @chmod($p['config'] . '.kaputt', 0600);
+            }
+        } else {
+            return array_merge(mt_vorgaben(), $geprueft);
+        }
+    }
+
+    if ($ziehen && is_file($p['sicherung'])) {
+        $zweit = mt_json_lesen($p['sicherung']);
+        if ($zweit) {
+            // Lesen allein genuegt nicht: bin/matter_dienst.py liest dieselbe
+            // Datei und wuerde weiter mit der Werkseinstellung laufen, waehrend
+            // die Oberflaeche die guten Werte zeigt. Deshalb wird die
+            // Konfiguration hier wirklich wiederhergestellt - aber ueber
+            // mt_json_schreiben(), NICHT ueber mt_config_speichern(): die
+            // Sicherung bleibt unangetastet, sie ist ja die Quelle.
+            if (!is_dir($p['configdir'])) {
+                @mkdir($p['configdir'], 0775, true);
+            }
+            mt_json_schreiben($p['config'], $zweit, 0600);
+            return array_merge(mt_vorgaben(), $zweit);
+        }
     }
     return array_merge(mt_vorgaben(), mt_json_lesen($p['config']));
 }
@@ -178,8 +243,14 @@ function mt_config_speichern($cfg)
     if (!mt_json_schreiben($p['config'], $cfg, 0600)) {
         return false;
     }
-    @copy($p['config'], $p['sicherung']);
-    @chmod($p['sicherung'], 0600);
+    // Wache: die Sicherung wird NUR ueberschrieben, wenn wirklich eine
+    // Konfiguration gespeichert wurde. Ohne Aktionstoken ist das die blanke
+    // Werkseinstellung - und die ueber eine gute Sicherung zu schreiben, war
+    // genau der Schaden, den diese Datei bis 0.9.9 angerichtet hat.
+    if (trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '')) !== '') {
+        @copy($p['config'], $p['sicherung']);
+        @chmod($p['sicherung'], 0600);
+    }
     return true;
 }
 
@@ -235,10 +306,10 @@ function mt_zustand()
     return mt_json_lesen(mt_paths()['datadir'] . '/zustand.json');
 }
 
-function mt_cache()
-{
-    return mt_json_lesen(mt_paths()['datadir'] . '/cache.json');
-}
+/* mt_cache() ist mit 0.9.10 entfallen. Sie las eine cache.json, die der
+ * Dienst bei JEDEM Ereignis schrieb und die niemand gelesen hat - die
+ * Funktion selbst wurde im ganzen Plugin nie aufgerufen. Der Dienst schreibt
+ * die Datei nicht mehr und raeumt eine vorhandene beim Start weg. */
 
 function mt_geraete()
 {
@@ -314,6 +385,9 @@ function mt_dienst($befehl)
     if (!in_array($befehl, array('start', 'stop', 'restart'), true)) {
         return array(0, 'Unbekannter Befehl.');
     }
+    // Wer den Dienst anfasst, veraendert die Lage - die zwischengespeicherte
+    // Antwort auf "nimmt jemand Verbindungen an?" gilt danach nicht mehr.
+    mt_erreichbar_vergessen();
     $skript = mt_paths()['bindir'] . '/dienst.sh';
     if (!is_file($skript)) {
         return array(0, 'dienst.sh nicht gefunden: ' . $skript);
@@ -445,20 +519,62 @@ function mt_mqtt_senden(array $paare, $praefix)
         mt_log_gebremst('mqtt_aus', 'MQTT: das Gateway ist nicht auf Autostart gestellt '
             . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
     }
-    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+    // stream_socket_client() statt socket_create(): letzteres steckt in einer
+    // Erweiterung, die nicht garantiert geladen ist, und ihr Fehlen ist KEIN
+    // abfangbarer Fehler, sondern ein fataler ("Call to undefined function").
+    // In einem Cron, der nach /dev/null schreibt, sieht das niemand.
+    // stream_socket_client() gehoert zum Kern und tut dasselbe.
+    $fehler = 0;
+    $text = '';
+    $s = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $fehler, $text, 2);
     if (!$s) {
-        mt_log_gebremst('mqtt_socket', 'MQTT: Socket nicht moeglich.');
+        mt_log_gebremst('mqtt_socket', 'MQTT: kein UDP-Socket moeglich (' . $text . ').');
         return false;
     }
+    $gesendet = 0;
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') {
             continue;   // fehlender Wert: nichts senden statt eine erfundene 0
         }
         $msg = 'publish ' . $praefix . '/' . $k . ' ' . mt_mqtt_wert_saeubern($v);
-        @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
+        if (@fwrite($s, $msg) !== false) {
+            $gesendet++;
+        }
     }
-    socket_close($s);
-    return true;
+    fclose($s);
+    return $gesendet;
+}
+
+/**
+ * Einen Probewert durch das Gateway schicken.
+ *
+ * Damit laesst sich die ganze Kette pruefen - Plugin, UDP-Eingang, Gateway,
+ * Broker - ohne ein einziges Matter-Geraet. Rueckgabe: array(ok, Meldung).
+ */
+function mt_mqtt_probe()
+{
+    $z = mt_mqtt_zustand();
+    if (!$z['gefunden']) {
+        return array(0, mt_t('MQTT.M_PROBE_KEIN_GATEWAY'));
+    }
+    if (!$z['udpport']) {
+        return array(0, mt_t('MQTT.M_PROBE_KEIN_PORT'));
+    }
+    $cfg = mt_config();
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($praefix === '') {
+        $praefix = 'matter';
+    }
+    $wert = date('Y-m-d H:i:s');
+    $anzahl = mt_mqtt_senden(array('probe' => $wert), $praefix);
+    if (!$anzahl) {
+        return array(0, mt_t('MQTT.M_PROBE_FEHL'));
+    }
+    // Gesendet ist nicht angekommen - das Gateway bestaetigt nichts. Genau das
+    // gehoert dazugesagt, statt einen Erfolg zu melden, den niemand geprueft
+    // hat.
+    return array(1, sprintf(mt_t('MQTT.M_PROBE_OK'), mt_e($praefix . '/probe'), mt_e($wert),
+                            (int) $z['udpport']));
 }
 
 /* ==================================================================
@@ -514,6 +630,11 @@ function mt_xml_grenzen($typ)
         case 'mwh':
         case 'energie_struct':
             return array('analog' => true, 'min' => 0, 'max' => 1000000);
+        case 'gleitkomma':
+            // Rueckfallebene. Die Luftguete-Cluster geben eigene Grenzen mit;
+            // ohne sie waere hier nichts Sinnvolles zu sagen, denn derselbe
+            // Typ traegt ppm, ug/m3 und Bq/m3.
+            return array('analog' => true, 'min' => 0, 'max' => 1000000);
         case 'text':
             // Text kann ein virtueller HTTP-Eingang nur, wenn er in Loxone
             // Config auf "Als Text" gestellt wird. Ein Attribut dafuer ist
@@ -528,32 +649,46 @@ function mt_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    // Reihenfolge und Zusatzfelder wortgleich aus den Ausfuhren DIESER Anlage
+    // (VI_Marstek Speicher (LoxBerry-Plugin)_Test.xml, 12.08.2026): HintText
+    // steht vorn, und als erstes Kindelement folgt <Info>. Ob Loxone Config
+    // ohne sie einliest, ist nicht gemessen - die Vorlagen liefen bisher auch
+    // ohne. Gemessen ist nur, dass Config sie SCHREIBT.
     $o .= '<VirtualInHttp ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . mt_x($kopf['title']) . '" ';
     $o .= 'Comment="' . mt_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . mt_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . mt_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $g = mt_xml_grenzen(isset($c['typ']) ? $c['typ'] : '');
         $min = isset($c['min']) ? $c['min'] : $g['min'];
         $max = isset($c['max']) ? $c['max'] : $g['max'];
         $kommentar = isset($c['comment']) ? $c['comment'] : '';
-        if (!empty($c['einheit'])) { $kommentar .= ' [' . $c['einheit'] . ']'; }
         if (!empty($g['text'])) { $kommentar .= ' - in Loxone Config auf "Als Text" umstellen'; }
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . mt_x($c['title']) . '" ';
         $o .= 'Comment="' . mt_x(trim($kommentar)) . '" ';
         $o .= 'Check="' . mt_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
-        $o .= 'Signed="' . ($min < 0 ? 'true' : 'false') . '" ';
+        // Reihenfolge wie in den Ausfuhren dieser Anlage: erst Analog, dann
+        // Signed. Bis 0.9.9 stand es umgekehrt - XML-semantisch belanglos,
+        // aber das Muster ist das Muster.
         $o .= 'Analog="' . ($g['analog'] ? 'true' : 'false') . '" ';
+        $o .= 'Signed="' . ($min < 0 ? 'true' : 'false') . '" ';
         $o .= 'SourceValLow="0" ';
         $o .= 'DestValLow="0" ';
         $o .= 'SourceValHigh="1" ';
         $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="' . (int) $min . '" ';
-        $o .= 'MaxVal="' . (int) $max . '"';
+        $o .= 'MaxVal="' . (int) $max . '" ';
+        // Die Einheit gehoert an den Eingang, nicht in den Kommentar: Loxone
+        // zeigt sie dann am Wert an. Form wortgleich aus den Ausfuhren
+        // dieser Anlage (VI_Marstek..._Test.xml): "<v.1> %", "<v.1> °C".
+        $o .= 'Unit="' . mt_x('<v.1>' . (!empty($c['einheit']) ? ' ' . $c['einheit'] : '')) . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -572,22 +707,39 @@ function mt_xml_virtual_out($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    // Aufbau wortgleich aus VO_Rasenmaeher steuern (LoxBerry-Plugin)_Test.xml,
+    // einer Ausfuhr aus dieser Anlage vom 12.08.2026: HintText und CmdInit am
+    // Wurzelelement, <Info> als erstes Kind, und je Befehl die vollstaendige
+    // Feldreihenfolge samt der leeren Felder. CloseAfterSend steht dort auf
+    // "true" - der Befehl geht ueber HTTP, und die Verbindung danach offen zu
+    // halten bringt nichts.
     $o .= '<VirtualOut ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . mt_x($kopf['title']) . '" ';
     $o .= 'Comment="' . mt_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . mt_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
-    $o .= 'CloseAfterSend="false" ';
+    $o .= 'CmdInit="" ';
+    $o .= 'CloseAfterSend="true" ';
     $o .= 'CmdSep=""';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualOutCmd ';
         $o .= 'Title="' . mt_x($c['title']) . '" ';
         $o .= 'Comment="' . mt_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOffMethod="GET" ';
         $o .= 'CmdOn="' . mt_x(isset($c['on']) ? $c['on'] : '') . '" ';
-        if (isset($c['off']) && $c['off'] !== '') {
-            $o .= 'CmdOff="' . mt_x($c['off']) . '" ';
-        }
-        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '"';
+        $o .= 'CmdOnHTTP="" ';
+        $o .= 'CmdOnPost="" ';
+        $o .= 'CmdOff="' . mt_x(isset($c['off']) ? $c['off'] : '') . '" ';
+        $o .= 'CmdOffHTTP="" ';
+        $o .= 'CmdOffPost="" ';
+        $o .= 'CmdAnswer="" ';
+        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" ';
+        $o .= 'Repeat="0" ';
+        $o .= 'RepeatRate="0" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
@@ -759,6 +911,10 @@ function mt_container($was)
     $cfg = mt_config();
     $name = mt_container_name($cfg);
     $p = mt_paths();
+    // Nach jedem Eingriff am Container ist die zwischengespeicherte Antwort
+    // auf "nimmt jemand Verbindungen an?" hinfaellig. Sonst stuende nach dem
+    // Start noch bis zu einer halben Minute "nicht erreichbar".
+    mt_erreichbar_vergessen();
     switch ($was) {
         case 'holen':
             $abbild = trim((string) $cfg['container_abbild']);
@@ -783,6 +939,237 @@ function mt_container($was)
             return mt_docker('rm -f ' . escapeshellarg($name));
     }
     return array(0, 'Unbekannter Containerbefehl.');
+}
+
+/**
+ * Was laeuft da wirklich? Kennung des Abbilds im laufenden Container, Kennung
+ * des lokal vorliegenden Abbilds, und die Fassungsmarke, falls das Abbild eine
+ * traegt.
+ *
+ * Ohne diese Auskunft laesst sich die Wirkung von "Abbild neu holen" gar nicht
+ * beurteilen - und genau das war bis 0.9.9 der Fall: der Knopf zog das Abbild,
+ * der laufende Container blieb auf dem alten Stand, und nichts sagte es.
+ */
+function mt_container_fassung($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $abbild = trim((string) $cfg['container_abbild']);
+    $erg = array('container' => '', 'abbild' => '', 'marke' => '');
+    list($ok, $aus) = mt_docker('inspect -f {{.Image}} ' . escapeshellarg(mt_container_name($cfg)));
+    if ($ok) {
+        $erg['container'] = trim($aus);
+    }
+    list($ok, $aus) = mt_docker('image inspect -f {{.Id}} ' . escapeshellarg($abbild));
+    if ($ok) {
+        $erg['abbild'] = trim($aus);
+    }
+    list($ok, $aus) = mt_docker('image inspect -f '
+        . escapeshellarg('{{index .Config.Labels "org.opencontainers.image.version"}}') . ' '
+        . escapeshellarg($abbild));
+    if ($ok) {
+        $marke = trim($aus);
+        // Fehlt die Marke, gibt Docker "<no value>" aus - das ist keine Fassung.
+        $erg['marke'] = ($marke === '' || strpos($marke, '<no value>') !== false) ? '' : $marke;
+    }
+    return $erg;
+}
+
+/**
+ * Den Matter-Server wirklich aktualisieren.
+ *
+ * "Abbild holen" allein wirkt nicht: der laufende Container haengt an der
+ * Kennung, mit der er angelegt wurde. Erst Entfernen und Neuanlegen bringt den
+ * neuen Stand. Der Datenordner - und damit die Fabric - bleibt dabei
+ * unberuehrt; er haengt am Ablageort, nicht am Container.
+ *
+ * Gemeldet wird die WIRKUNG: die Kennung vorher und nachher. Hat sich nichts
+ * geaendert, steht das ausdruecklich da, statt einen Erfolg zu behaupten.
+ *
+ * Rueckgabe: array(ok, Meldung)
+ */
+function mt_container_aktualisieren()
+{
+    $cfg = mt_config();
+    if (!mt_docker_da()) {
+        return array(0, mt_t('EINST.M_AKT_KEIN_DOCKER'));
+    }
+    $vorher = mt_container_fassung($cfg);
+    if ($vorher['container'] === '') {
+        return array(0, mt_t('EINST.M_AKT_KEIN_CONTAINER'));
+    }
+    list($ok, $aus) = mt_container('holen');
+    if (!$ok) {
+        return array(0, sprintf(mt_t('EINST.M_AKT_PULL_FEHL'), mt_e(substr($aus, 0, 300))));
+    }
+    $gezogen = mt_container_fassung($cfg);
+    if ($gezogen['abbild'] !== '' && $gezogen['abbild'] === $vorher['container']) {
+        // Nichts Neues. Den Container dafuer anzuhalten waere eine
+        // Betriebsunterbrechung ohne jeden Gegenwert.
+        return array(1, sprintf(mt_t('EINST.M_AKT_UNVERAENDERT'),
+                                mt_e(substr($vorher['container'], 0, 19)),
+                                $gezogen['marke'] !== '' ? mt_e($gezogen['marke']) : '?'));
+    }
+    list($ok, $aus) = mt_container('entfernen');
+    if (!$ok) {
+        return array(0, sprintf(mt_t('EINST.M_AKT_RM_FEHL'), mt_e(substr($aus, 0, 300))));
+    }
+    list($ok, $aus) = mt_container('anlegen');
+    if (!$ok) {
+        return array(0, sprintf(mt_t('EINST.M_AKT_RUN_FEHL'), mt_e(substr($aus, 0, 300))));
+    }
+    $nachher = mt_container_fassung($cfg);
+    return array(1, sprintf(mt_t('EINST.M_AKT_OK'),
+                            mt_e(substr($vorher['container'], 0, 19)),
+                            mt_e(substr($nachher['container'], 0, 19)),
+                            $nachher['marke'] !== '' ? mt_e($nachher['marke']) : '?'));
+}
+
+/**
+ * Der Datenordner der Fabric - das Wertvollste, was dieses Plugin hat.
+ *
+ * REGELN_1 Abschnitt 9: was gesichert werden muss, ergibt sich aus dem Code,
+ * nicht aus dem Archiv - und die wertvollen Dateien sind gerade die, die kein
+ * Archiv mitliefert. Hier sind das Fabric und Zertifikate. Wer sie verliert,
+ * muss JEDES Geraet zuruecksetzen und neu anlernen. Die uninstall-Datei warnt
+ * davor seit jeher; einen Knopf zum Sichern gab es bis 0.9.9 nicht.
+ *
+ * Rueckgabe: array(ok, Meldung oder Pfad)
+ */
+function mt_fabric_pfad()
+{
+    return mt_paths()['datadir'] . '/matter';
+}
+
+function mt_fabric_groesse()
+{
+    $pfad = mt_fabric_pfad();
+    if (!is_dir($pfad)) {
+        return -1;
+    }
+    $summe = 0;
+    $it = @scandir($pfad);
+    if (!is_array($it)) {
+        return -1;
+    }
+    $stapel = array($pfad);
+    while ($stapel) {
+        $d = array_pop($stapel);
+        foreach ((array) @scandir($d) as $f) {
+            if ($f === '.' || $f === '..') {
+                continue;
+            }
+            $p = $d . '/' . $f;
+            if (is_dir($p)) {
+                $stapel[] = $p;
+            } else {
+                $summe += (int) @filesize($p);
+            }
+        }
+    }
+    return $summe;
+}
+
+/** Gibt es tar? Ohne das laesst sich nichts packen. */
+function mt_tar_da()
+{
+    $a = array();
+    @exec('command -v tar 2>/dev/null', $a);
+    return count($a) > 0 ? 1 : 0;
+}
+
+/**
+ * Den eigenen Endpunkt WIRKLICH ueber HTTP aufrufen.
+ *
+ * Das ist die teuerste Fehlerklasse dieses Hauses: html/ und htmlauth/ liegen
+ * installiert in getrennten Baeumen, und eine Leseprüfung sieht das nie. Nur
+ * der echte Aufruf beantwortet, ob die Seite, die Loxone bedient, ueberhaupt
+ * antwortet.
+ *
+ * Aufbau wortgleich nach dem geprueften Vorbild aus EVCC 0.9.18
+ * (ev_selbsttest_endpunkt): curl, wenn vorhanden, sonst ein Stromkontext.
+ * Das Ergebnis wird zwischengespeichert - diese Zeile laeuft sonst bei jedem
+ * Seitenaufruf, und dann ruft sich der Webserver bei jedem Klick selbst auf.
+ *
+ * Rueckgabe: array(ok, HTTP-Code, erste Zeile, Adresse, Alter)
+ */
+function mt_selbsttest_endpunkt($hoechstalter = 120)
+{
+    $url = mt_endpunkt_adresse('liste');
+    $f = mt_paths()['datadir'] . '/.endpunkt.json';
+    $d = mt_json_lesen($f);
+    if (isset($d['ts'], $d['url']) && $d['url'] === $url) {
+        $alter = time() - (int) $d['ts'];
+        if ($alter >= 0 && $alter <= $hoechstalter) {
+            return array((int) $d['ok'], (int) $d['code'], (string) $d['text'], $url, $alter);
+        }
+    }
+    $kopf = array('User-Agent: LoxBerry-Matter2Lox-Selbsttest', 'Accept: text/plain');
+    $body = false;
+    $code = 0;
+    $netzfehler = '';
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_HTTPHEADER => $kopf,
+        ));
+        $body = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $netzfehler = (string) curl_error($ch);
+        curl_close($ch);
+    } else {
+        $ctx = stream_context_create(array('http' => array(
+            'method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
+            'header' => implode("\r\n", $kopf))));
+        $body = @file_get_contents($url, false, $ctx);
+        if (isset($http_response_header[0])
+                && preg_match('#\s(\d{3})\s#', $http_response_header[0], $m)) {
+            $code = (int) $m[1];
+        }
+    }
+    if ($body === false) {
+        $text = $netzfehler !== '' ? $netzfehler : mt_t('TEST.A_ENDPUNKT_KEINE_ANTWORT');
+        $ok = 0;
+    } else {
+        $text = trim(strtok((string) $body, "\n"));
+        if ($text === '' && $code >= 500) {
+            // Genau das Bild eines Endpunkts, der mit einem fatalen Fehler
+            // abbricht: Code 500 und ein leerer Rumpf, weil display_errors
+            // dort aus ist. Der Grund steht dann nur im Fehlerprotokoll des
+            // Webservers.
+            $text = mt_t('TEST.A_ENDPUNKT_LEER');
+        }
+        $ok = ($code === 200 && strpos($text, 'LISTE;') === 0) ? 1 : 0;
+    }
+    mt_json_schreiben($f, array('url' => $url, 'ok' => $ok, 'code' => $code,
+                                'text' => $text, 'ts' => time()));
+    return array($ok, $code, $text, $url, 0);
+}
+
+/**
+ * Klartext zu den Geraetetypen eines Endpunkts.
+ *
+ * Der Dienst rechnet sie seit jeher aus und schreibt sie ins Abbild, und die
+ * Tabelle fuehrt dreizehn uebersetzte Namen dafuer - gelesen hat sie bis 0.9.9
+ * kein einziges PHP. Dreizehn verwaiste Sprachschluessel und eine Auskunft,
+ * die dalag und niemandem nutzte.
+ */
+function mt_geraetetyp_text($typen, $tab = null)
+{
+    if ($tab === null) {
+        $tab = mt_tabelle();
+    }
+    $karte = isset($tab['geraetetyp']) && is_array($tab['geraetetyp']) ? $tab['geraetetyp'] : array();
+    $aus = array();
+    foreach ((array) $typen as $nr) {
+        $nr = (string) $nr;
+        if (isset($karte[$nr])) {
+            $aus[mt_t($karte[$nr])] = 1;
+        }
+    }
+    return implode(', ', array_keys($aus));
 }
 
 /** Die letzten Zeilen des Containerprotokolls. */
@@ -812,6 +1199,55 @@ function mt_ipv6_zustand()
     }
     $zeilen = file('/proc/net/if_inet6', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array();
     return array('ok' => 1, 'text' => count($zeilen) . ' IPv6-Adressen auf diesem Rechner');
+}
+
+/**
+ * Nimmt auf dem eingestellten Port jemand Verbindungen an?
+ *
+ * Bis 0.9.9 stand dieser Verbindungsversuch unmittelbar in mt_pruefungen() -
+ * und die laeuft bei JEDEM Aufruf der Oberflaeche, weil alle sechs Flaechen
+ * mitgerendert werden. Wer nur ins Protokoll sehen wollte, wartete dafuer bis
+ * zu drei Sekunden auf einen Matter-Server, den er gar nicht gefragt hatte.
+ *
+ * Das Ergebnis wird deshalb kurz zwischengespeichert. Damit die Antwort nicht
+ * heimlich alt wird, gibt die Funktion ihr Alter mit zurueck, und die
+ * Oberflaeche schreibt es hin. Nach einem Eingriff an Dienst oder Container
+ * wird der Zwischenspeicher verworfen (mt_erreichbar_vergessen()) - sonst
+ * stuende nach dem Start des Containers noch eine Minute lang "nicht
+ * erreichbar".
+ *
+ * Rueckgabe: array(ok, Alter in Sekunden, Fehlertext)
+ */
+function mt_erreichbar($hoechstalter = 30)
+{
+    $cfg = mt_config();
+    $host = (string) $cfg['server_host'];
+    $port = (int) $cfg['server_port'];
+    $f = mt_paths()['datadir'] . '/.erreichbar.json';
+    $d = mt_json_lesen($f);
+    if (isset($d['ts'], $d['host'], $d['port'], $d['ok'])
+            && (string) $d['host'] === $host && (int) $d['port'] === $port) {
+        $alter = time() - (int) $d['ts'];
+        if ($alter >= 0 && $alter <= $hoechstalter) {
+            return array((int) $d['ok'], $alter, (string) (isset($d['fehler']) ? $d['fehler'] : ''));
+        }
+    }
+    $errno = 0;
+    $errstr = '';
+    $fp = @fsockopen($host, $port, $errno, $errstr, 3);
+    $ok = 0;
+    if ($fp) {
+        $ok = 1;
+        fclose($fp);
+    }
+    mt_json_schreiben($f, array('host' => $host, 'port' => $port, 'ok' => $ok,
+                                'fehler' => $ok ? '' : (string) $errstr, 'ts' => time()));
+    return array($ok, 0, $ok ? '' : (string) $errstr);
+}
+
+function mt_erreichbar_vergessen()
+{
+    @unlink(mt_paths()['datadir'] . '/.erreichbar.json');
 }
 
 function mt_architektur()
@@ -861,6 +1297,30 @@ function mt_endpunkt_adresse($aktion, $nummer = null)
 }
 
 /**
+ * Das Suchmuster fuer die Befehlserkennung - an EINER Stelle.
+ *
+ * Das fuehrende Semikolon gehoert zwingend dazu. Loxone sucht die Zeichenkette
+ * woertlich und nimmt den ERSTEN Treffer. Die Statuszeile lautet
+ *   MATTER;OK=1;ERREICH=1;ALTER=5;1_TEMPERATUR=21;11_TEMPERATUR=22
+ * und "1_TEMPERATUR=" steckt woertlich in "11_TEMPERATUR=". Ohne Semikolon
+ * liest der Eingang fuer Endpunkt 1 unter Umstaenden den Wert von Endpunkt 11
+ * - bei einer Bridge der Normalfall, und ohne jede Fehlermeldung. Dieselbe
+ * Verwechslung ist bei der Waermepumpe schon einmal aufgetreten (SOLL= traf
+ * die Stelle in WWSOLL=), siehe wp_lib.php.
+ *
+ * Jede Marke der Statuszeile ist durch das implode(';') in
+ * webfrontend/html/index.php von einem Semikolon eingeleitet - auch OK, denn
+ * davor steht "MATTER".
+ *
+ * Bis 0.9.9 stand dieses Muster an fuenf Stellen; drei erzeugten es, zwei
+ * zeigten es an. Zwei Wege fuer dieselbe Frage sind einer zu viel.
+ */
+function mt_check($marke)
+{
+    return '\i;' . $marke . '=\i\v';
+}
+
+/**
  * Die Befehle eines Geraets fuer die Vorlage.
  *
  * $markenpraefix muss zu dem Endpunkt passen, den die Vorlage abfragt:
@@ -877,7 +1337,7 @@ function mt_vorlage_cmds($nummer, $g, $tab, $mit_status = true, $markenpraefix =
             $cmds[] = array(
                 'title'   => 'MATTER_' . (int) $nummer . '_' . $feld,
                 'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8'))),
-                'check'   => '\i' . $feld . '=\i\v',
+                'check'   => mt_check($feld),
                 'typ'     => isset($info[2]) ? $info[2] : 'zahl',
                 'einheit' => $info[0],
             );
@@ -893,7 +1353,7 @@ function mt_vorlage_cmds($nummer, $g, $tab, $mit_status = true, $markenpraefix =
                 $cmds[] = array(
                     'title'   => 'MATTER_' . (int) $nummer . '_' . strtoupper($ep . '_' . $thema),
                     'comment' => $i['text'],
-                    'check'   => '\i' . $marke . '=\i\v',
+                    'check'   => mt_check($marke),
                     'typ'     => $i['typ'],
                     'min'     => $i['min'],
                     'max'     => $i['max'],
@@ -939,7 +1399,7 @@ function mt_vorlage_alle()
         $cmds[] = array(
             'title'   => 'MATTER_' . $feld,
             'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8'))),
-            'check'   => '\i' . $feld . '=\i\v',
+            'check'   => mt_check($feld),
             'typ'     => isset($info[2]) ? $info[2] : 'zahl',
             'einheit' => $info[0],
         );
@@ -1017,9 +1477,15 @@ function mt_vorlage_out($nummer = 1)
     $schalter('schalter',             'LOX.A_SCHALTEN');
     $wert('helligkeit',               'LOX.A_HELLIGKEIT',     'helligkeit');
     $wert('farbtemperatur_mired',     'LOX.A_FARBTEMPERATUR', 'farbtemperatur');
+    // Farbton und Saettigung als zwei getrennte Analogbefehle: ein
+    // VirtualOutCmd traegt genau EINEN Wertplatzhalter. Genau so machen es die
+    // Ausfuhren dieser Anlage bei Helligkeit und Kelvin auch.
+    $wert('farbton_roh',              'LOX.A_FARBTON',        'farbton');
+    $wert('saettigung',               'LOX.A_SAETTIGUNG',     'saettigung');
     $wert('position',                 'LOX.A_ROLLO',          'rollo');
     $wert('soll_heizen',              'LOX.A_SOLL_HEIZEN',    'soll_heizen');
     $wert('soll_kuehlen',             'LOX.A_SOLL_KUEHLEN',   'soll_kuehlen');
+    $wert('luefter_soll',             'LOX.A_LUEFTER',        'luefter');
 
     return array(
         'VQ_matter_geraet' . (int) $nummer . '.xml',
@@ -1050,18 +1516,36 @@ function mt_thema_info($thema, $tab = null)
     if ($tab === null) {
         $tab = mt_tabelle();
     }
+    $bauen = function ($a, $clustername, $ungeprueft) {
+        return array(
+            'text'       => trim(strip_tags(html_entity_decode(mt_t($a['text']), ENT_QUOTES, 'UTF-8'))),
+            'typ'        => isset($a['typ']) ? (string) $a['typ'] : 'zahl',
+            'min'        => isset($a['min']) ? $a['min'] : null,
+            'max'        => isset($a['max']) ? $a['max'] : null,
+            'einheit'    => isset($a['einheit']) ? (string) $a['einheit'] : '',
+            'ungeprueft' => $ungeprueft,
+            'cluster'    => $clustername,
+        );
+    };
     foreach ($tab['cluster'] as $cl) {
         foreach ((array) (isset($cl['attribute']) ? $cl['attribute'] : array()) as $a) {
             if (isset($a['thema']) && $a['thema'] === $thema) {
-                return array(
-                    'text'       => trim(strip_tags(html_entity_decode(mt_t($a['text']), ENT_QUOTES, 'UTF-8'))),
-                    'typ'        => isset($a['typ']) ? (string) $a['typ'] : 'zahl',
-                    'min'        => isset($a['min']) ? $a['min'] : null,
-                    'max'        => isset($a['max']) ? $a['max'] : null,
-                    'einheit'    => isset($a['einheit']) ? (string) $a['einheit'] : '',
-                    'ungeprueft' => !empty($cl['_ungeprueft']),
-                    'cluster'    => isset($cl['name']) ? (string) $cl['name'] : '',
-                );
+                return $bauen($a, isset($cl['name']) ? (string) $cl['name'] : '',
+                              !empty($cl['_ungeprueft']));
+            }
+        }
+    }
+    // Themen, die nicht aus einem Attribut stammen: aus einem Ereignis
+    // (Tastendruck) oder ausgerechnet (Kelvin aus Mired). Ohne diesen zweiten
+    // Blick stuende in der Tabelle des Reiters MQTT und im Kommentar des
+    // virtuellen Eingangs nur der nackte Themenname.
+    foreach (array('ereignisthemen' => 'Switch', 'abgeleitete_themen' => '') as $schl => $cl) {
+        if (!isset($tab[$schl]['themen']) || !is_array($tab[$schl]['themen'])) {
+            continue;
+        }
+        foreach ($tab[$schl]['themen'] as $a) {
+            if (isset($a['thema']) && $a['thema'] === $thema) {
+                return $bauen($a, $cl, $schl === 'ereignisthemen');
             }
         }
     }

@@ -19,6 +19,11 @@
   "  mwh            Rohwert durch 1000000 (Matter zaehlt Milliwattstunden) -> kWh",
   "  energie_struct wie mwh, aber der Wert steckt im Feld 'energy' einer",
   "                 EnergyMeasurementStruct statt als blanke Zahl",
+  "  gleitkomma     Rohwert als Gleitkommazahl, auf drei Stellen gerundet.",
+  "                 Braucht es fuer die Luftguete-Cluster: deren MeasuredValue",
+  "                 ist ein 'single', keine Ganzzahl. Und die EINHEIT steht",
+  "                 dort in Attribut 8 - sie wird nicht angenommen, sondern",
+  "                 als eigenes Thema mitveroeffentlicht.",
   "",
   "min/max/einheit sind FREIWILLIG und dienen der Loxone-Vorlage: daraus",
   "werden Analog/Digital, MinVal/MaxVal und der Kommentar des virtuellen",
@@ -32,7 +37,11 @@
   "",
   "_ungeprueft = die Zuordnung stammt aus der Spezifikation, wurde aber noch",
   "an keinem echten Geraet nachgemessen. Sie wird in der Oberflaeche als",
-  "ungeprueft ausgewiesen, damit niemand sie fuer bestaetigt haelt."
+  "ungeprueft ausgewiesen, damit niemand sie fuer bestaetigt haelt.",
+  "",
+  "ereignisthemen = Themen, die aus einem EREIGNIS stammen statt aus einem",
+  "Attribut. Ein Tastendruck kommt bei Matter nie als Attributaenderung;",
+  "es gibt kein Attribut, das man dafuer abfragen koennte."
  ],
  "cluster": {
   "6": {
@@ -83,10 +92,10 @@
      "thema": "farbtemperatur_mired",
      "typ": "zahl",
      "text": "MT_ATTR.CT",
-     "min": 0,
+     "min": 1,
      "max": 65279,
      "einheit": "mired",
-     "_quelle": "ColorControl.ColorTemperatureMireds, int16u max 0xFEFF"
+     "_quelle": "ColorControl.ColorTemperatureMireds, int16u max 0xFEFF. Die Spezifikation nennt den Bereich 1 bis 65279 - bis 0.9.9 stand hier faelschlich 0."
     },
     "8": {
      "thema": "farbmodus",
@@ -282,21 +291,35 @@
   },
   "144": {
    "name": "ElectricalPowerMeasurement",
+   "_quelle": "Cluster 0x0090; Attributnummern am 17.08.2026 gegen src/app/zap-templates/zcl/data-model/chip/electrical-power-measurement-cluster.xml (project-chip/connectedhomeip) geprueft",
+   "_berichtigt": "Bis 0.9.9 stand die Spannung auf Attribut 5 und der Strom auf 6. Attribut 5 ist aber ActiveCurrent und Attribut 6 ReactiveCurrent (Blindstrom, meist gar nicht vorhanden) - als Spannung wurde also der Wirkstrom veroeffentlicht, ein 230-V-Netz meldete rund 0,4. Die Spannung ist Attribut 4.",
    "attribute": {
-    "5": {
+    "4": {
      "thema": "spannung",
      "typ": "milli",
-     "text": "MT_ATTR.VOLT"
+     "text": "MT_ATTR.VOLT",
+     "min": 0,
+     "max": 500,
+     "einheit": "V",
+     "_quelle": "Attribut 0x0004 Voltage, Typ voltage_mv (Millivolt). Die Grenzen 0..500 hat das Plugin fuer die Loxone-Vorlage gewaehlt - die Spezifikation nennt fuer dieses Attribut keine."
     },
-    "6": {
+    "5": {
      "thema": "strom",
      "typ": "milli",
-     "text": "MT_ATTR.CURRENT"
+     "text": "MT_ATTR.CURRENT",
+     "min": -100,
+     "max": 100,
+     "einheit": "A",
+     "_quelle": "Attribut 0x0005 ActiveCurrent, Typ amperage_ma (Milliampere). Grenzen vom Plugin gewaehlt, nicht aus der Spezifikation; negativ moeglich, weil der Wirkstrom die Richtung traegt."
     },
     "8": {
      "thema": "leistung",
      "typ": "milli",
-     "text": "MT_ATTR.POWER"
+     "text": "MT_ATTR.POWER",
+     "min": -25000,
+     "max": 25000,
+     "einheit": "W",
+     "_quelle": "Attribut 0x0008 ActivePower, Typ power_mw (Milliwatt), einziges Pflichtattribut des Clusters. Grenzen vom Plugin gewaehlt, nicht aus der Spezifikation."
     }
    }
   },
@@ -312,13 +335,22 @@
      "_quelle": "FanControl.FanMode, FanModeEnum max 6"
     },
     "2": {
-     "thema": "luefter_prozent",
+     "thema": "luefter_soll",
      "typ": "zahl",
      "text": "MT_ATTR.FANPCT",
      "min": 0,
      "max": 100,
      "einheit": "%",
-     "_quelle": "FanControl.PercentSetting, percent max 100"
+     "_quelle": "FanControl.PercentSetting, percent max 100, beschreibbar. Das ist der SOLLwert - bis 0.9.9 hiess er blank 'luefter_prozent', womit ein Luefter, der die Vorgabe nicht erreicht, trotzdem die Vorgabe meldete."
+    },
+    "3": {
+     "thema": "luefter_ist",
+     "typ": "zahl",
+     "text": "MT_ATTR.FANPCT_IST",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "FanControl.PercentCurrent, percent max 100 - der tatsaechlich gefahrene Wert"
     }
    }
   },
@@ -523,6 +555,335 @@
      "max": 255
     }
    }
+  },
+  "59": {
+   "name": "Switch",
+   "_ungeprueft": true,
+   "_quelle": "switch-cluster.xml, code 0x003B, geprueft 17.08.2026",
+   "_hinweis": "Das Wesentliche dieses Clusters sind die EREIGNISSE, nicht die Attribute. Ein Tastendruck kommt nie als Attributaenderung. Siehe ereignisthemen weiter unten.",
+   "attribute": {
+    "0": {
+     "thema": "taster_stellungen",
+     "typ": "zahl",
+     "text": "MT_ATTR.TASTER_STELLUNGEN",
+     "min": 2,
+     "max": 255,
+     "_quelle": "NumberOfPositions, int8u, min=2; die Obergrenze ist der Typ"
+    },
+    "1": {
+     "thema": "taster_stellung",
+     "typ": "zahl",
+     "text": "MT_ATTR.TASTER_STELLUNG",
+     "min": 0,
+     "max": 254,
+     "_quelle": "CurrentPosition, int8u, max=254"
+    },
+    "2": {
+     "thema": "taster_mehrfach_max",
+     "typ": "zahl",
+     "text": "MT_ATTR.TASTER_MEHRFACH_MAX",
+     "min": 2,
+     "max": 255,
+     "_quelle": "MultiPressMax, int8u, min=2; die Obergrenze ist der Typ"
+    }
+   }
+  },
+  "92": {
+   "name": "SmokeCoAlarm",
+   "_ungeprueft": true,
+   "_quelle": "smoke-co-alarm-cluster.xml, code 0x005C, geprueft 17.08.2026. AlarmStateEnum: 0 normal, 1 Warnung, 2 kritisch.",
+   "attribute": {
+    "0": {
+     "thema": "rauch_gesamt",
+     "typ": "zahl",
+     "text": "MT_ATTR.RAUCH_GESAMT",
+     "min": 0,
+     "max": 9,
+     "_quelle": "ExpressedState, max=0x09"
+    },
+    "1": {
+     "thema": "rauch_alarm",
+     "typ": "zahl",
+     "text": "MT_ATTR.RAUCH_ALARM",
+     "min": 0,
+     "max": 2,
+     "_quelle": "SmokeState, AlarmStateEnum, max=0x02"
+    },
+    "2": {
+     "thema": "co_alarm",
+     "typ": "zahl",
+     "text": "MT_ATTR.CO_ALARM",
+     "min": 0,
+     "max": 2,
+     "_quelle": "COState, AlarmStateEnum, max=0x02"
+    },
+    "3": {
+     "thema": "rauch_batterie",
+     "typ": "zahl",
+     "text": "MT_ATTR.RAUCH_BATTERIE",
+     "min": 0,
+     "max": 2,
+     "_quelle": "BatteryAlert, AlarmStateEnum, max=0x02"
+    },
+    "4": {
+     "thema": "rauch_stumm",
+     "typ": "zahl",
+     "text": "MT_ATTR.RAUCH_STUMM",
+     "min": 0,
+     "max": 1,
+     "_quelle": "DeviceMuted, MuteStateEnum, max=0x01"
+    },
+    "6": {
+     "thema": "rauch_hwfehler",
+     "typ": "bool",
+     "text": "MT_ATTR.RAUCH_HWFEHLER",
+     "_quelle": "HardwareFaultAlert, boolean"
+    },
+    "7": {
+     "thema": "rauch_lebensende",
+     "typ": "zahl",
+     "text": "MT_ATTR.RAUCH_LEBENSENDE",
+     "min": 0,
+     "max": 1,
+     "_quelle": "EndOfServiceAlert, max=0x01"
+    },
+    "10": {
+     "thema": "rauch_verschmutzung",
+     "typ": "zahl",
+     "text": "MT_ATTR.RAUCH_VERSCHMUTZUNG",
+     "min": 0,
+     "max": 3,
+     "_quelle": "ContaminationState, max=0x03"
+    }
+   }
+  },
+  "1037": {
+   "name": "CarbonDioxideConcentrationMeasurement",
+   "_ungeprueft": true,
+   "_quelle": "concentration-measurement-cluster.xml, code 0x040D, geprueft 17.08.2026. MeasurementUnitEnum: 0 ppm, 1 ppb, 2 ppt, 3 mg/m3, 4 ug/m3, 5 ng/m3, 6 /m3, 7 Bq/m3, 8 dBpm, 9 pcft.",
+   "attribute": {
+    "0": {
+     "thema": "co2",
+     "typ": "gleitkomma",
+     "text": "MT_ATTR.CO2",
+     "min": 0,
+     "max": 100000,
+     "_quelle": "MeasuredValue, single. Grenze vom Plugin fuer die Loxone-Vorlage gewaehlt, nicht aus der Spezifikation"
+    },
+    "8": {
+     "thema": "co2_einheit",
+     "typ": "zahl",
+     "text": "MT_ATTR.CO2_EINHEIT",
+     "min": 0,
+     "max": 9,
+     "_quelle": "MeasurementUnit, MeasurementUnitEnum"
+    }
+   }
+  },
+  "1066": {
+   "name": "Pm25ConcentrationMeasurement",
+   "_ungeprueft": true,
+   "_quelle": "concentration-measurement-cluster.xml, code 0x042A, geprueft 17.08.2026",
+   "attribute": {
+    "0": {
+     "thema": "pm25",
+     "typ": "gleitkomma",
+     "text": "MT_ATTR.PM25",
+     "min": 0,
+     "max": 10000,
+     "_quelle": "MeasuredValue, single. Grenze vom Plugin fuer die Loxone-Vorlage gewaehlt, nicht aus der Spezifikation"
+    },
+    "8": {
+     "thema": "pm25_einheit",
+     "typ": "zahl",
+     "text": "MT_ATTR.PM25_EINHEIT",
+     "min": 0,
+     "max": 9,
+     "_quelle": "MeasurementUnit, MeasurementUnitEnum"
+    }
+   }
+  },
+  "1070": {
+   "name": "TotalVolatileOrganicCompoundsConcentrationMeasurement",
+   "_ungeprueft": true,
+   "_quelle": "concentration-measurement-cluster.xml, code 0x042E, geprueft 17.08.2026. LevelValueEnum: 0 unbekannt, 1 niedrig, 2 mittel, 3 hoch, 4 kritisch.",
+   "attribute": {
+    "0": {
+     "thema": "voc",
+     "typ": "gleitkomma",
+     "text": "MT_ATTR.VOC",
+     "min": 0,
+     "max": 100000,
+     "_quelle": "MeasuredValue, single. Grenze vom Plugin fuer die Loxone-Vorlage gewaehlt, nicht aus der Spezifikation"
+    },
+    "8": {
+     "thema": "voc_einheit",
+     "typ": "zahl",
+     "text": "MT_ATTR.VOC_EINHEIT",
+     "min": 0,
+     "max": 9,
+     "_quelle": "MeasurementUnit, MeasurementUnitEnum"
+    },
+    "10": {
+     "thema": "voc_stufe",
+     "typ": "zahl",
+     "text": "MT_ATTR.VOC_STUFE",
+     "min": 0,
+     "max": 4,
+     "_quelle": "LevelValue, LevelValueEnum, Attribut 0x000A"
+    }
+   }
+  },
+  "84": {
+   "name": "RvcRunMode",
+   "_ungeprueft": true,
+   "_quelle": "rvc-run-mode-cluster.xml, code 0x0054, geprueft 17.08.2026",
+   "attribute": {
+    "1": {
+     "thema": "rvc_modus",
+     "typ": "zahl",
+     "text": "MT_ATTR.RVC_MODUS",
+     "min": 0,
+     "max": 255,
+     "_quelle": "CurrentMode, int8u; verweist auf SupportedModes des Geraets"
+    }
+   }
+  },
+  "97": {
+   "name": "RvcOperationalState",
+   "_ungeprueft": true,
+   "_quelle": "operational-state-rvc-cluster.xml, code 0x0061, geprueft 17.08.2026. ACHTUNG: OperationalState hat hier ABSICHTLICH keine Obergrenze - das XML benutzt enum8 statt OperationalStateEnum, damit auch die RVC-eigenen Werte ab 0x40 durchkommen. Die Grenze max=3 von Cluster 96 waere hier falsch.",
+   "attribute": {
+    "1": {
+     "thema": "rvc_phase",
+     "typ": "zahl",
+     "text": "MT_ATTR.RVC_PHASE",
+     "min": 0,
+     "max": 255,
+     "_quelle": "CurrentPhase, int8u, nullbar"
+    },
+    "2": {
+     "thema": "rvc_restzeit",
+     "typ": "zahl",
+     "text": "MT_ATTR.RVC_RESTZEIT",
+     "min": 0,
+     "max": 259200,
+     "einheit": "s",
+     "_quelle": "CountdownTime, elapsed_s, max=259200"
+    },
+    "4": {
+     "thema": "rvc_zustand",
+     "typ": "zahl",
+     "text": "MT_ATTR.RVC_ZUSTAND",
+     "min": 0,
+     "max": 255,
+     "_quelle": "OperationalState, enum8 OHNE Obergrenze in der Spezifikation; die 255 ist der Typ"
+    }
+   }
+  },
+  "129": {
+   "name": "ValveConfigurationAndControl",
+   "_ungeprueft": true,
+   "_quelle": "valve-configuration-and-control-cluster.xml, code 0x0081, geprueft 17.08.2026. ValveStateEnum: 0 zu, 1 offen, 2 uebergang.",
+   "attribute": {
+    "0": {
+     "thema": "ventil_dauer",
+     "typ": "zahl",
+     "text": "MT_ATTR.VENTIL_DAUER",
+     "min": 0,
+     "max": 604800,
+     "einheit": "s",
+     "_quelle": "OpenDuration, elapsed_s, min=1. Grenze vom Plugin fuer die Loxone-Vorlage gewaehlt, nicht aus der Spezifikation"
+    },
+    "3": {
+     "thema": "ventil_rest",
+     "typ": "zahl",
+     "text": "MT_ATTR.VENTIL_REST",
+     "min": 0,
+     "max": 604800,
+     "einheit": "s",
+     "_quelle": "RemainingDuration, elapsed_s. Grenze vom Plugin fuer die Loxone-Vorlage gewaehlt, nicht aus der Spezifikation"
+    },
+    "4": {
+     "thema": "ventil_zustand",
+     "typ": "zahl",
+     "text": "MT_ATTR.VENTIL_ZUSTAND",
+     "min": 0,
+     "max": 2,
+     "_quelle": "CurrentState, ValveStateEnum, max=0x02"
+    },
+    "6": {
+     "thema": "ventil_stellung",
+     "typ": "zahl",
+     "text": "MT_ATTR.VENTIL_STELLUNG",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "CurrentLevel, percent, max=100"
+    },
+    "9": {
+     "thema": "ventil_fehler",
+     "typ": "zahl",
+     "text": "MT_ATTR.VENTIL_FEHLER",
+     "min": 0,
+     "max": 63,
+     "_quelle": "ValveFault, ValveFaultBitmap, max=0x003F"
+    }
+   }
+  },
+  "86": {
+   "name": "TemperatureControl",
+   "_ungeprueft": true,
+   "_quelle": "temperature-control-cluster.xml, code 0x0056, geprueft 17.08.2026",
+   "attribute": {
+    "0": {
+     "thema": "tc_soll",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.TC_SOLL",
+     "min": -273,
+     "max": 328,
+     "einheit": "°C",
+     "_quelle": "TemperatureSetpoint, Typ temperature (Hundertstel Grad)"
+    },
+    "4": {
+     "thema": "tc_stufe",
+     "typ": "zahl",
+     "text": "MT_ATTR.TC_STUFE",
+     "min": 0,
+     "max": 31,
+     "_quelle": "SelectedTemperatureLevel, int8u, max=31"
+    }
+   }
+  },
+  "516": {
+   "name": "ThermostatUserInterfaceConfiguration",
+   "_ungeprueft": true,
+   "_quelle": "thermostat-user-interface-configuration-cluster.xml, code 0x0204, geprueft 17.08.2026",
+   "attribute": {
+    "1": {
+     "thema": "tastensperre",
+     "typ": "zahl",
+     "text": "MT_ATTR.TASTENSPERRE",
+     "min": 0,
+     "max": 5,
+     "_quelle": "KeypadLockout, KeypadLockoutEnum, max=0x05"
+    }
+   }
+  },
+  "158": {
+   "name": "WaterHeaterMode",
+   "_ungeprueft": true,
+   "_quelle": "water-heater-mode-cluster.xml, code 0x009E, geprueft 17.08.2026",
+   "attribute": {
+    "1": {
+     "thema": "ww_modus",
+     "typ": "zahl",
+     "text": "MT_ATTR.WW_MODUS",
+     "min": 0,
+     "max": 255,
+     "_quelle": "CurrentMode, int8u; verweist auf SupportedModes des Geraets"
+    }
+   }
   }
  },
  "_geraetetypen_hinweis": [
@@ -544,5 +905,74 @@
   "769": "MT_TYP.THERMOSTAT",
   "770": "MT_TYP.TEMPERATUR",
   "775": "MT_TYP.FEUCHTE"
+ },
+ "ereignisthemen": {
+  "_hinweis": [
+   "Themen, die NICHT aus einem Attribut stammen, sondern aus einem Ereignis.",
+   "Ein Tastendruck kommt bei Matter ausschliesslich als Ereignis (node_event);",
+   "es gibt kein Attribut, das man abfragen koennte. Der Dienst merkt sich das",
+   "letzte Ereignis je Endpunkt und veroeffentlicht es unter diesen Themen.",
+   "",
+   "taste_zaehler ist der Grund, warum das in Loxone ueberhaupt brauchbar ist:",
+   "wer zweimal dieselbe Taste drueckt, erzeugt zweimal denselben Ereigniscode -",
+   "ein Eingang, der auf Wertaenderung reagiert, saehe den zweiten Druck nicht.",
+   "Der Zaehler aendert sich immer."
+  ],
+  "themen": {
+   "taste": {
+    "thema": "taste",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE",
+    "min": 0,
+    "max": 6,
+    "_quelle": "Ereigniscode aus switch-cluster.xml: 0 eingerastet, 1 gedrueckt, 2 lang gedrueckt, 3 kurz losgelassen, 4 lang losgelassen, 5 Mehrfachdruck laeuft, 6 Mehrfachdruck fertig"
+   },
+   "taste_zaehler": {
+    "thema": "taste_zaehler",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_ZAEHLER",
+    "min": 0,
+    "max": 2147483647,
+    "_quelle": "vom Plugin gezaehlt, kein Wert des Geraets"
+   },
+   "taste_position": {
+    "thema": "taste_position",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_POSITION",
+    "min": 0,
+    "max": 254,
+    "_quelle": "NewPosition bzw. PreviousPosition des Ereignisses, int8u"
+   },
+   "taste_zeit": {
+    "thema": "taste_zeit",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_ZEIT",
+    "min": 0,
+    "max": 2147483647,
+    "_quelle": "Unix-Zeit, vom Plugin gesetzt"
+   }
+  }
+ },
+ "abgeleitete_themen": {
+  "_hinweis": [
+   "Themen, die das Plugin ausrechnet, statt sie zu lesen. Kein Wert des",
+   "Geraets - aber auch nichts Geratenes: farbtemperatur_kelvin ist der",
+   "Kehrwert von farbtemperatur_mired (Kelvin = 1000000 / Mired).",
+   "",
+   "Der Grund: Loxone rechnet in Kelvin, Matter in Mired. Wer den Wert",
+   "liest und den Ausgang bedient, haette sonst zwei Einheiten fuer",
+   "dieselbe Sache vor sich - das sieht wie ein Fehler aus."
+  ],
+  "themen": {
+   "farbtemperatur_kelvin": {
+    "thema": "farbtemperatur_kelvin",
+    "typ": "zahl",
+    "text": "MT_ATTR.CT_KELVIN",
+    "min": 1000,
+    "max": 10000,
+    "einheit": "K",
+    "_quelle": "ausgerechnet aus ColorControl.ColorTemperatureMireds; die Grenzen entsprechen dem Bereich, den die Aktion farbtemperatur annimmt"
+   }
+  }
  }
 }

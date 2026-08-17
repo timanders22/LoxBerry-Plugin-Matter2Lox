@@ -17,19 +17,40 @@
  *   liste                    alle Geraete
  *   roh                      vollstaendiges Abbild als JSON
  *
- * Geraeteunabhaengig (braucht kein &geraet=, keine Steuerungsfreigabe):
- *   abruf                    Sofortabruf aller Knoten anstossen
+ * Jedes Geraet ist auf zwei Wegen ansprechbar:
+ *   &geraet=N                die Geraetenummer des Plugins. Seit 0.9.10 fest -
+ *                            die Zuordnung steht in data/.../nummern.json und
+ *                            verschiebt sich nicht mehr, wenn ein Geraet aus
+ *                            der Fabric faellt.
+ *   &knoten=M                die Knotennummer des Matter-Servers. Haengt an
+ *                            keiner Zaehlung des Plugins. Gewinnt, wenn beides
+ *                            angegeben ist.
+ *
+ * Geraeteunabhaengig (braucht keine Steuerungsfreigabe):
+ *   abruf                    ohne Geraeteangabe: Bestand neu holen
+ *                            (get_nodes). Mit &geraet= oder &knoten=: diesen
+ *                            einen Knoten neu auslesen (interview_node).
  *
  * Schaltend (nur wenn im Reiter Einstellungen zugelassen):
  *   ein | aus | umschalten   &geraet=N[&endpunkt=E]
  *   helligkeit    &wert=0..100
  *   farbtemperatur &wert=<Kelvin>
+ *   farbton       &wert=0..360     (Grad)
+ *   saettigung    &wert=0..100
+ *   farbe         &wert=<Farbton 0..360>[&saettigung=0..100]
  *   rollo         &wert=0..100     (0 = ganz offen)
  *   rollo_auf | rollo_zu | rollo_stopp
  *   soll_heizen | soll_kuehlen  &wert=<Grad>
  *   betriebsart   &wert=0..9
+ *   luefter       &wert=0..100     (Sollwert)
+ *   identify      [&wert=<Sekunden>]  Geraet macht sich bemerkbar
  *   attribut      &pfad=E/C/A&wert=...
  *   befehl        &cluster=N&name=<Name>[&nutzlast=<JSON>]
+ *
+ * Schaltend, aber mit EIGENEM Haken (Reiter Einstellungen):
+ *   sperren | entsperren     Tuerschloss. Bewusst nicht an der allgemeinen
+ *                            Steuerungsfreigabe: wer Lampen schalten laesst,
+ *                            will damit nicht die Haustuer freigeben.
  *
  * Der Endpunkt spricht NIE selbst mit dem Matter-Server. Lesende Aufrufe
  * beantwortet er aus dem Zwischenspeicher, schaltende legt er in einer
@@ -63,8 +84,10 @@ if (!hash_equals($mt_soll, $mt_ist)) {
 /* ---------------- Aktion (Weissliste) ---------------- */
 $mt_lesend = array('status', 'statusalle', 'wert', 'liste', 'roh');
 $mt_schaltend = array('ein', 'aus', 'umschalten', 'helligkeit', 'farbtemperatur',
+                      'farbe', 'farbton', 'saettigung',
                       'rollo', 'rollo_auf', 'rollo_zu', 'rollo_stopp',
-                      'soll_heizen', 'soll_kuehlen', 'betriebsart',
+                      'soll_heizen', 'soll_kuehlen', 'betriebsart', 'luefter',
+                      'sperren', 'entsperren', 'identify',
                       'attribut', 'befehl', 'abruf');
 $mt_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
 if (!in_array($mt_aktion, array_merge($mt_lesend, $mt_schaltend), true)) {
@@ -94,6 +117,14 @@ function mt_param($name, $muster, $vorgabe = '')
 }
 
 $mt_nr       = mt_param('geraet', '/^[0-9]{1,3}$/', '1');
+/* Die Knotennummer als dauerhafte Adresse.
+ *
+ * &geraet= ist seit 0.9.10 stabil (die Zuordnung steht in nummern.json und
+ * wird nie veraendert). Wer ganz sichergehen will, adressiert ueber &knoten=
+ * - das ist die Nummer, die der Matter-Server selbst vergeben hat, und sie
+ * haengt an keiner Zaehlung des Plugins. Ist beides angegeben, gewinnt
+ * &knoten=. */
+$mt_knoten   = mt_param('knoten', '/^[0-9]{1,20}$/', '');
 $mt_endpunkt = mt_param('endpunkt', '/^[0-9]{1,3}$/', '1');
 $mt_wert     = mt_param('wert', '/^-?[0-9]{1,6}([.,][0-9]{1,3})?$/', '');
 $mt_thema    = mt_param('thema', '/^[a-z0-9_]{1,40}$/', '');
@@ -113,7 +144,18 @@ function mt_w($v)
 $mt_lox = mt_loxone();
 $mt_alle = mt_geraete();
 $mt_alter = mt_alter();
-$mt_g = isset($mt_alle[$mt_nr]) ? $mt_alle[$mt_nr] : null;
+if ($mt_knoten !== '') {
+    $mt_g = null;
+    foreach ($mt_alle as $mt_k => $mt_kandidat) {
+        if (isset($mt_kandidat['node_id']) && (string) $mt_kandidat['node_id'] === $mt_knoten) {
+            $mt_g = $mt_kandidat;
+            $mt_nr = (string) $mt_k;
+            break;
+        }
+    }
+} else {
+    $mt_g = isset($mt_alle[$mt_nr]) ? $mt_alle[$mt_nr] : null;
+}
 
 /* ================= Lesende Aktionen ================= */
 
@@ -204,7 +246,16 @@ if (in_array($mt_aktion, $mt_global, true)) {
         echo "Der Dienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
         exit;
     }
-    list($mt_erg, $mt_meldung) = mt_befehl_absetzen(array('aktion' => $mt_aktion));
+    /* Ohne Geraeteangabe wird der ganze Bestand neu geholt, mit Angabe genau
+     * ein Knoten neu ausgelesen. Ein Interview dauert laenger als ein
+     * Bestandsabgleich - deshalb bekommt der Einzelfall mehr Zeit. */
+    $mt_auftrag = array('aktion' => $mt_aktion);
+    $mt_frist = null;
+    if ($mt_g !== null && (isset($_GET['geraet']) || $mt_knoten !== '')) {
+        $mt_auftrag['knoten'] = (int) $mt_g['node_id'];
+        $mt_frist = 20;
+    }
+    list($mt_erg, $mt_meldung) = mt_befehl_absetzen($mt_auftrag, $mt_frist);
     if ($mt_erg === 0) {
         http_response_code(500);
     }
@@ -270,13 +321,27 @@ $mt_befehl = array(
     'endpunkt' => (int) $mt_endpunkt,
 );
 if (in_array($mt_aktion, array('helligkeit', 'farbtemperatur', 'rollo',
-                               'soll_heizen', 'soll_kuehlen', 'betriebsart'), true)) {
+                               'soll_heizen', 'soll_kuehlen', 'betriebsart',
+                               'farbe', 'farbton', 'saettigung', 'luefter'), true)) {
     if ($mt_wert === '') {
         http_response_code(400);
         echo "SET;OK=0;GRUND=WERT_FEHLT\n";
         exit;
     }
     $mt_befehl['wert'] = (float) str_replace(',', '.', $mt_wert);
+    // Bei 'farbe' darf zusaetzlich die Saettigung mitkommen. Fehlt sie, setzt
+    // der Dienst 100 % - das ist die volle Farbe, nicht Weiss.
+    if ($mt_aktion === 'farbe') {
+        $mt_saet = mt_param('saettigung', '/^[0-9]{1,3}$/', '');
+        if ($mt_saet !== '') {
+            $mt_befehl['saettigung'] = (int) $mt_saet;
+        }
+    }
+} elseif ($mt_aktion === 'identify') {
+    // Ohne Angabe macht sich das Geraet 15 s lang bemerkbar.
+    if ($mt_wert !== '') {
+        $mt_befehl['wert'] = (float) str_replace(',', '.', $mt_wert);
+    }
 } elseif ($mt_aktion === 'attribut') {
     if ($mt_pfad === '' || $mt_wert === '') {
         http_response_code(400);

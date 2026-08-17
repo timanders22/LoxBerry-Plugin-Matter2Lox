@@ -4,9 +4,247 @@ Bindet **Matter-Geräte** an Loxone an — Lampen, Steckdosen, Sensoren,
 Thermostate, Behänge. Übersetzt Matter-Attribute in sprechende MQTT-Themen und
 nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 
-> **Fassung 0.9.1 — ungeprüft am echten Gerät.** Gebaut ohne Matter-Hardware
-> und ohne laufenden Matter-Server; geprüft gegen eine Attrappe, die das
-> dokumentierte Protokoll nachbildet. Deshalb 0.9.1 und nicht 1.0.0.
+> **Ungeprüft am echten Gerät.** Gebaut ohne Matter-Hardware und ohne
+> laufenden Matter-Server; geprüft gegen eine Attrappe, die das dokumentierte
+> Protokoll nachbildet. Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer
+> echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
+> geprüft ist*.
+
+## Neu in 0.9.10
+
+Aus einer Durchsicht Zeile für Zeile am 17.08.2026. Fünf der sechs Punkte
+erzeugten still falsche Werte oder Datenverlust — nichts davon hat sich je
+gemeldet.
+
+**Die Spannung war der Strom.** In der Cluster-Tabelle stand
+`ElectricalPowerMeasurement` (0x0090) mit der Spannung auf Attribut 5 und dem
+Strom auf 6. Attribut 5 ist aber `ActiveCurrent` und 6 `ReactiveCurrent`; die
+Spannung ist Attribut 4. Eine Steckdose an 230 V mit 0,43 A hat als „Spannung"
+den Wert **0,4** veröffentlicht, und der Strom fehlte meist ganz, weil der
+Blindstrom selten vorhanden ist. Gemessen mit der echten Übersetzungsfunktion:
+alt `spannung 0.435`, neu `spannung 230.1, strom 0.435, leistung 100.05`.
+Nachgeprüft an den zap-templates von `project-chip/connectedhomeip`.
+**Wer diesen Cluster benutzt, muss die Loxone-Vorlage neu einlesen.**
+
+**Die Gerätenummer verschob sich.** Sie entstand aus dem Platz in der
+sortierten Knotenliste. Fiel ein Gerät aus der Fabric, rückte jedes
+nachfolgende um eins vor — und `MATTER_3_…`, `geraet3/…` und `&geraet=3`
+zeigten danach auf ein anderes Gerät. Die Zuordnung steht jetzt in
+`data/plugins/matter2lox/nummern.json`, wird nie verändert und auch nach dem
+Entfernen eines Geräts nicht neu vergeben. Bestehende Anlagen behalten ihre
+Nummern: beim ersten Lauf entsteht die Datei genau so, wie die Zählung bisher
+ausfiel. Dazu ist jedes Gerät jetzt auch über `&knoten=<Knotennummer>`
+erreichbar — die vergibt der Matter-Server, sie hängt an keiner Zählung des
+Plugins.
+
+**Das Suchmuster traf die falsche Stelle.** Loxone sucht die Zeichenkette
+wörtlich und nimmt den ersten Treffer; `1_TEMPERATUR=` steckt in
+`11_TEMPERATUR=`. Bei einer Bridge mit beiden Endpunkten las der Eingang für
+Endpunkt 1 den Wert von 11 — ohne Fehlermeldung. Nachgestellt und gemessen:
+`MATTER_1_1_TEMPERATUR` lieferte 22 statt 21. Das Muster trägt jetzt das
+Semikolon (`\i;1_TEMPERATUR=\i\v`). **Auch dafür muss die Vorlage neu
+eingelesen werden**; bestehende Eingänge laufen unverändert weiter, nur eben
+mit dem alten Muster.
+
+**Eine beschädigte Konfiguration vernichtete die Sicherung.** War
+`matter2lox.json` vorhanden, aber kein gültiges JSON, fiel alles auf die
+Werkseinstellung zurück; das leere Aktionstoken löste die Erzeugung eines
+neuen aus, und das Speichern schrieb die Werkseinstellung auch über die
+Zweitschrift. In einem Zug fort waren: Token (womit jede Loxone-Adresse
+ungültig wurde), Steuerungsfreigabe, MQTT-Präfix, WLAN-Passwort und
+Thread-Dataset. Jetzt bleibt die beschädigte Datei einmalig als `.kaputt`
+liegen, die Zweitschrift wird gelesen und die Konfiguration daraus
+wiederhergestellt, und die Sicherung wird nur noch überschrieben, wenn wirklich
+eine Konfiguration mit Token gespeichert wird.
+
+**`abruf` hat nichts abgerufen.** Der Befehl gab „Sofortabruf eingeplant"
+zurück und schickte dem Matter-Server nichts; das Abbild wurde nur aus dem
+Speicher neu geschrieben — war der leer, entstand ein leeres Abbild, also genau
+in der Lage, für die der Befehl gedacht ist. Jetzt: ohne Geräteangabe
+`get_nodes`, mit `&geraet=` oder `&knoten=` ein `interview_node` für diesen
+einen Knoten. Gemeldet wird, was geschah, nicht was geplant war.
+
+**Und der Dienst sendet nicht mehr bei jeder Regung alles.** Bis 0.9.9 löste
+jedes einzelne `attribute_updated` zwei Dateischreibvorgänge und das
+vollständige Neusenden aller Themen aller Geräte aus; ein bewegter Dimmer
+erzeugte damit hunderte Telegramme je Sekunde. Neu:
+
+* **Sendetakt** (Vorgabe 2 s): Änderungen werden gesammelt und dann in einem
+  Zug gesendet — und nur die, die sich wirklich geändert haben. `0` stellt das
+  alte Verhalten wieder her.
+* **Herzschlag** (Vorgabe 60 s): `matter/online` und `matter/ts` kommen auch
+  dann, wenn sich nichts geändert hat — und während einer Störung mit `ok=0`.
+  Ohne dieses Lebenszeichen sieht ein toter Dienst in Loxone genauso aus wie
+  ein ruhiges Haus, weil die zuletzt gesendeten Werte einfach stehen bleiben.
+* `matter/geraetN/knoten` nennt die Knotennummer.
+* Die `cache.json` entfällt. Sie wurde bei jedem Ereignis geschrieben und von
+  niemandem gelesen; eine vorhandene wird beim Start weggeräumt.
+* Der Ereignispfad liest keine Dateien mehr. Bisher wurden je Ereignis die
+  Plugin-Konfiguration und die `general.json` des LoxBerry neu eingelesen.
+
+**Die Oberfläche prüft sich jetzt selbst.** Vier Stellen in `index.php` müssen
+dieselben sechs Reiternamen führen: die Positivliste, die Reiterleiste, die
+`id` der Flächen und die Verweise. Fehlt ein Name in der Positivliste, ist der
+Reiter anklickbar, aber nach jedem Absenden springt die Seite zurück auf
+Einstellungen. Bisher stand darüber nur ein Kommentar, der das zusicherte — ein
+Kommentar ist kein Beleg. Ebenso wird jetzt nachgesehen, ob `mt_vorgaben()` und
+`VORGABEN` in `bin/matter_dienst.py` dieselben Schlüssel führen; auch das
+verlangte die Datei bisher nur im Kommentar. Dazu zwei Zeilen zum Betrieb: ob
+der Dienst noch **lebt** (der Herzschlag hinterlegt seinen Zeitstempel, eine
+Prozessnummer allein sagt nichts) und welche Schemafassung der Matter-Server
+spricht.
+
+Die Reiterleiste steht dafür wieder ausgeschrieben statt als Schleife.
+`hausstandard_pruefen.py` sucht die Reiter wörtlich im Quelltext und konnte sie
+bis 0.9.9 **gar nicht messen** — es meldete „nicht gemessen", was leicht wie
+„in Ordnung" aussieht. Jetzt misst es sie, und die Übereinstimmung prüft
+zusätzlich der Reiter *Test* nach.
+
+**„Keine Geräte" ist kein Fehler mehr, solange nie verbunden wurde.** Die Zeile
+stand bisher auch auf einer frisch installierten Anlage auf Rot, an der noch
+gar nichts angelernt sein kann. Ein Kreuz, das nichts bedeutet, ist schlimmer
+als keine Prüfung — man sucht dann dort.
+
+**Die Oberfläche wartet nicht mehr bei jedem Aufruf auf den Matter-Server.**
+Der Verbindungsversuch der Selbstprüfung lief bei *jedem* Seitenaufruf, mit
+drei Sekunden Zeitüberlauf — auch wenn nur das Protokoll gefragt war. Das
+Ergebnis wird jetzt 30 Sekunden zwischengespeichert, sein Alter steht dabei,
+und nach jedem Eingriff an Dienst oder Container wird es verworfen.
+
+**Der Wurzelordner wird geprüft, bevor er gilt.** Die Ableitung `zwei Ebenen
+über bin/plugins/<ordner>` stimmt installiert, aber nicht im entpackten Archiv;
+der Rückfall darunter griff praktisch nie. Gemessen wurde dort ein Pluginname
+`bin` und Ordner an einer Stelle, an der kein LoxBerry liegt — der Dienst hätte
+in fremde Verzeichnisse geschrieben und trotzdem Erfolg gemeldet. Jetzt muss
+die abgeleitete Wurzel wirklich ein `config/plugins` und ein `webfrontend`
+enthalten, sonst greifen `LBHOMEDIR` und die Suche; der Selbsttest sagt es
+deutlich, wenn nichts passt.
+
+**Szenentaster — und warum sie vorher nicht gehen konnten.** Ein Tastendruck
+kommt bei Matter **ausschließlich als Ereignis** (`node_event`); ein Attribut,
+das man abfragen könnte, gibt es nicht. `_ereignis()` hat `node_event` bis 0.9.9
+stillschweigend verworfen — damit war jeder Szenentaster für dieses Plugin
+unerreichbar, ganz gleich was in der Cluster-Tabelle stand. Jetzt merkt sich der
+Dienst je Endpunkt das letzte Ereignis und veröffentlicht vier Themen:
+
+| Thema | Bedeutung |
+|---|---|
+| `taste` | 0 eingerastet, 1 gedrückt, 2 lang gedrückt, 3 kurz losgelassen, 4 lang losgelassen, 5 Mehrfachdruck läuft, 6 Mehrfachdruck fertig |
+| `taste_zaehler` | zählt jedes Ereignis hoch |
+| `taste_position` | Stellung, auf die sich das Ereignis bezieht — leer, wenn das Gerät keine mitschickt |
+| `taste_zeit` | Unix-Zeit |
+
+**Auf `taste_zaehler` triggert man in Loxone**, nicht auf `taste`: wer zweimal
+dieselbe Taste drückt, erzeugt zweimal denselben Code, und ein Eingang, der auf
+Wertänderung reagiert, sähe den zweiten Druck nicht. Gemessen mit drei
+Ereignissen hintereinander: `taste` bleibt 1, der Zähler geht auf 2.
+Ebenfalls neu behandelt: `endpoint_added` und `endpoint_removed`, die Bridges
+zur Laufzeit schicken.
+
+**Elf neue Cluster.** Alle Nummern am 17.08.2026 einzeln gegen die
+zap-templates von `project-chip/connectedhomeip` geprüft, alle als
+`_ungeprueft` gekennzeichnet — an einem Gerät hat sie niemand gemessen.
+
+| Cluster | Nummer | Wofür |
+|---|---|---|
+| `Switch` | 0x003B | Szenentaster, siehe oben |
+| `SmokeCoAlarm` | 0x005C | Rauch, Kohlenmonoxid, Batterie, Lebensende, Verschmutzung |
+| `CarbonDioxideConcentrationMeasurement` | 0x040D | CO₂ |
+| `Pm25ConcentrationMeasurement` | 0x042A | Feinstaub |
+| `TotalVolatileOrganicCompounds…` | 0x042E | VOC, samt Stufe |
+| `RvcRunMode` | 0x0054 | Saugroboter, Betriebsart |
+| `RvcOperationalState` | 0x0061 | Saugroboter, Zustand und Restzeit |
+| `ValveConfigurationAndControl` | 0x0081 | Ventile, Bewässerung, Wasserstopp |
+| `TemperatureControl` | 0x0056 | Sollwert und Stufe, etwa am Backofen |
+| `ThermostatUserInterfaceConfiguration` | 0x0204 | Tastensperre am Thermostat |
+| `WaterHeaterMode` | 0x009E | Warmwasser-Betriebsart |
+
+Zwei Fallen, die dabei umgangen sind: Bei den Luftgüte-Clustern ist der
+Messwert ein **Gleitkommawert**, keine Ganzzahl — dafür gibt es den neuen Typ
+`gleitkomma`; und die **Einheit** steht in Attribut 8 und wird deshalb **nicht
+angenommen**, sondern als eigenes Thema (`co2_einheit` und so weiter)
+mitveröffentlicht. Bei `RvcOperationalState` gilt die Grenze `max 3` von
+`OperationalState` ausdrücklich **nicht**: das Datenmodell benutzt dort `enum8`,
+damit die gerätespezifischen Werte ab 64 durchkommen.
+
+**Geräte lassen sich umbenennen.** Der Name geht in das **Gerät**, nicht in eine
+Liste des Plugins: `BasicInformation.NodeLabel` (Cluster 40, Attribut 5) ist
+laut Datenmodell beschreibbar, `char_string` mit Länge 32. Das Gerät heißt
+danach auch in Apple Home oder Google Home so, und das Plugin muss keine
+Zuordnung pflegen, die auseinanderlaufen kann. Zu finden im Reiter *Geräte
+anlernen* unter *Angelernte Geräte verwalten*; setzt die Freigabe schreibender
+Befehle voraus.
+
+**Eine Störung löscht die Werte nicht mehr.** Scheiterte schon der
+Verbindungsaufbau — der Container steht —, wurde `loxone.json` mit einer
+**leeren** Geräteliste überschrieben, und weil dabei auch der Zeitstempel neu
+gesetzt wurde, sprang `ALTER` auf 0. Die Oberfläche zeigte 0 Geräte, der
+Endpunkt antwortete `GERAET_UNBEKANNT`, und beides sah taufrisch aus, während
+die Geräte die ganze Zeit in der Fabric standen. Jetzt bleiben die zuletzt
+bekannten Werte stehen und `ALTER` wächst weiter: die Werte sind **alt, nicht
+weg**. Gemessen — Störung nach einer Stunde: alt `0 Geräte, ALTER 0`, neu
+`2 Geräte, ALTER 3600, OK=0`.
+
+**Farbe.** Neu sind `farbton` (0–360 Grad), `saettigung` (0–100 %) und `farbe`
+(beides in einem). Umgerechnet wird im Plugin — Matter zählt 0–254. Dazu
+veröffentlicht das Plugin `farbtemperatur_kelvin` **zusätzlich** zum
+Mired-Wert: Loxone rechnet in Kelvin, Matter in Mired, und wer beides
+nebeneinander sah, hielt es für einen Fehler. Ein zusammengesetztes
+Loxone-Farbformat wird bewusst **nicht** angenommen: wie es an einem virtuellen
+Ausgang ankäme, ist hier nicht gemessen, und geraten wird nicht.
+
+**Türschloss, mit eigenem Haken.** `sperren` und `entsperren` brauchen die
+Freigabe *Schlösser schalten zulassen* — zusätzlich zur allgemeinen. Wer Lampen
+aus Loxone schalten lässt, will damit nicht die Haustür freigeben. Beide
+Befehle gehen als *timed invoke* hinaus; das Datenmodell verlangt es, und ohne
+weist das Gerät ab.
+
+**Weitere Befehle:** `identify` (das Gerät macht sich bemerkbar — die Antwort
+auf „welches ist Knoten 7?"), `luefter` (Sollwert). Der Lüfter-Istwert wird neu
+gelesen: `514/2` ist der **Soll**wert, der Istwert ist `514/3`. Das Thema heißt
+deshalb jetzt `luefter_soll` statt `luefter_prozent`.
+
+**Betrieb:**
+
+* **Matter-Server aktualisieren** — „Abbild holen" allein wirkt nicht, der
+  laufende Container hängt an seiner Kennung. Der neue Knopf zieht, entfernt,
+  legt neu an und nennt die Kennung **vorher und nachher**. Gibt es nichts
+  Neues, wird der Container *nicht* angehalten und das steht ausdrücklich da.
+  Die Kachel zeigt jetzt auch, welches Abbild wirklich läuft.
+* **Fabric sichern** — der Datenordner als `tar.gz` zum Herunterladen. Kein
+  Archiv liefert ihn mit, und wer ihn verliert, muss jedes Gerät neu anlernen.
+  Zurückspielen geht bewusst **nicht** über die Oberfläche: ein Endpunkt, der
+  ein beliebiges Archiv auspackt, wäre eine Hintertür. Der Befehl dafür steht
+  im Reiter.
+* **MQTT-Probewert** — prüft die ganze Kette ohne ein einziges Matter-Gerät.
+* **Nur diese Gerätenummern veröffentlichen** — bei einer Bridge mit fünfzig
+  Endpunkten der Unterschied zwischen benutzbar und unbenutzbar.
+* Die Selbstprüfung **ruft den eigenen Endpunkt jetzt wirklich über HTTP auf.**
+  `html/` und `htmlauth/` liegen installiert in getrennten Bäumen, und keine
+  Leseprüfung sieht das.
+
+**Kleineres:** Die Einheit steht jetzt **am virtuellen Eingang**
+(`Unit="<v.1> °C"`) statt nur im Kommentar — Loxone zeigt sie damit am Wert an.
+Der Gerätetyp steht in der Gerätetabelle (dreizehn übersetzte Namen lagen
+ungenutzt da). Das Kopplungsfenster gibt jetzt auch den **QR-Text** aus, nicht
+nur den manuellen Code. Der Reiter *Geräte anlernen* sagt, dass seine Knöpfe
+ohne die Steuerungsfreigabe nicht wirken — sie ist ab Werk aus. Eine
+Ausgangsvorlage ohne einen einzigen schaltbaren Wert wird nicht mehr
+ausgeliefert, sondern erklärt. `mt_mqtt_senden()` benutzt `stream_socket_client()`
+statt `socket_create()` (eine fehlende Erweiterung wäre dort kein abfangbarer,
+sondern ein fataler Fehler), `mt_cache()` ist entfallen, und es gibt ein
+`dpkg/apt`. `ColorTemperatureMireds` beginnt laut Spezifikation bei 1, nicht 0.
+
+Dazu: `UMR.MWH` und `UMR.ENERGIE_STRUCT` fehlten in beiden Sprachdateien — in
+der Übersetzungstabelle des Reiters MQTT standen dort in drei Zeilen wörtlich
+die Schlüsselnamen. Und die Ereignisthemen kämen in derselben Tabelle gar nicht
+vor, weil sie nicht unter `cluster` stehen; sie haben jetzt eigene Zeilen. 533
+Sprachschlüssel, deutsch und englisch deckungsgleich.
+
+> **Zwei Themen sind umbenannt** (`luefter_prozent` → `luefter_soll`), und die
+> Suchmuster tragen jetzt ein Semikolon. Wer diese Werte benutzt, erzeugt die
+> Loxone-Vorlage neu und liest sie ein; die alten Eingänge laufen unverändert
+> weiter, behalten aber den alten Stand.
 
 ## Neu in 0.9.2
 
@@ -149,7 +387,7 @@ Matter-Spezifikation:
 |---|---|---|
 | OnOff | `schalter` | 0/1 |
 | LevelControl | `helligkeit` | 0–254 → 0–100 % |
-| ColorControl | `farbtemperatur_mired`, `saettigung` | — |
+| ColorControl | `farbtemperatur_mired`, `farbtemperatur_kelvin`, `farbton_roh`, `saettigung` | Kelvin = 1000000 ÷ Mired |
 | TemperatureMeasurement | `temperatur` | ÷100 |
 | RelativeHumidityMeasurement | `feuchte` | ÷100 |
 | IlluminanceMeasurement | `helligkeit_lux` | 10^((v−1)/10000) |
@@ -159,13 +397,26 @@ Matter-Spezifikation:
 | WindowCovering | `position` | ÷100, 0 = ganz offen |
 | PowerSource | `batterie` | ÷2 (halbe Prozent) |
 | ElectricalPowerMeasurement | `leistung`, `spannung`, `strom` | ÷1000 |
+| Switch *(Ereignis)* | `taste`, `taste_zaehler`, `taste_position`, `taste_zeit` | — |
+| SmokeCoAlarm | `rauch_alarm`, `co_alarm`, `rauch_batterie`, `rauch_lebensende` … | — |
+| CO₂ · PM2,5 · VOC | `co2`, `pm25`, `voc` samt `…_einheit` | Gleitkomma, Einheit aus Attribut 8 |
+| RvcRunMode · RvcOperationalState | `rvc_modus`, `rvc_zustand`, `rvc_restzeit` | — |
+| ValveConfigurationAndControl | `ventil_zustand`, `ventil_stellung`, `ventil_rest` | — |
+| FanControl | `luefter_modus`, `luefter_soll`, `luefter_ist` | — |
+| TemperatureControl · ThermostatUI · WaterHeaterMode | `tc_soll`, `tastensperre`, `ww_modus` | ÷100 bzw. — |
 
-Vollständig im Reiter *MQTT*. Unbekannte Attribute lassen sich auf Wunsch roh
-mitveröffentlichen — verloren geht nichts.
+**Alle 33 Cluster stehen im Reiter *MQTT*** — diese Tabelle ist eine Auswahl.
+Unbekannte Attribute lassen sich auf Wunsch roh mitveröffentlichen; verloren
+geht nichts.
 
 ## Endpunkte für Loxone
 
 Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
+
+Jedes Gerät ist auf zwei Wegen ansprechbar: über `&geraet=N`, die Gerätenummer
+des Plugins, oder über `&knoten=M`, die Knotennummer des Matter-Servers. Die
+Gerätenummer ist seit 0.9.10 fest; die Knotennummer hängt an keiner Zählung des
+Plugins. Ist beides angegeben, gewinnt `&knoten=`.
 
 | Aufruf | Zweck |
 |---|---|
@@ -174,12 +425,14 @@ Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
 | `?token=T&aktion=wert&geraet=N&endpunkt=E&thema=X` | **nur die Zahl** — ein virtueller HTTP-Eingang braucht dann keine Befehlserkennung |
 | `?token=T&aktion=liste` | alle Geräte |
 | `?token=T&aktion=roh` | vollständiges Abbild als JSON |
-| `?token=T&aktion=abruf` | Sofortabruf aller Knoten anstoßen — **gerätunabhängig**, braucht kein `&geraet=` und keine Steuerungsfreigabe |
+| `?token=T&aktion=abruf` | ohne Geräteangabe: Bestand neu holen. Mit `&geraet=` oder `&knoten=`: diesen Knoten neu auslesen. Braucht keine Steuerungsfreigabe |
 | `?token=T&aktion=ein\|aus\|umschalten&geraet=N&endpunkt=E` | schalten |
 | `?token=T&aktion=helligkeit&wert=0..100` | dimmen |
 | `?token=T&aktion=farbtemperatur&wert=<Kelvin>` | Farbtemperatur |
 | `?token=T&aktion=rollo&wert=0..100` | Behang (0 = ganz offen) |
-| `?token=T&aktion=soll_heizen&wert=<Grad>` | Thermostat |
+| `?token=T&aktion=rollo_auf\|rollo_zu\|rollo_stopp` | Behang fahren und anhalten |
+| `?token=T&aktion=soll_heizen\|soll_kuehlen&wert=<Grad>` | Thermostat-Sollwerte |
+| `?token=T&aktion=betriebsart&wert=0..9` | Thermostat-Betriebsart |
 | `?token=T&aktion=attribut&pfad=E/C/A&wert=…` | **Rohzugriff**: beliebiges Attribut schreiben |
 | `?token=T&aktion=befehl&cluster=N&name=X&nutzlast=<JSON>` | **Rohzugriff**: beliebiger Cluster-Befehl |
 
@@ -227,7 +480,40 @@ Nachgesehen am 06.08.2026, und der Befund ist deutlicher als erwartet:
 mehr; neue Gerätetypen und Fehlerbehebungen entstehen im Nachfolger. Bestehende
 Installationen laufen weiter, solange das Abbild abrufbar bleibt.
 
-**Was ausdrücklich nicht geprüft ist:** ob `matterjs-server` dieselbe
-WebSocket-Schnittstelle spricht. Sollte er das nicht tun, wäre für den Umstieg
-eine Anpassung des Brückendienstes nötig. Das ist eine offene Frage, keine
-Vermutung in die eine oder andere Richtung.
+**Zum Nachfolger, nachgesehen am 17.08.2026:** `matterjs-server` beschreibt
+sich selbst als „drop-in replacement" für den Python Matter Server mit einer
+kompatiblen WebSocket-Schnittstelle und führt fünf ausdrücklich gewollte
+Abweichungen auf (Test-Knotennummern, Verhalten beim Zurücksetzen des
+Fabric-Labels, Speicherformat, `attribute_subscriptions`, Einspielen eigener
+OTA-Dateien). Keine davon berührt einen Pfad, den dieses Plugin benutzt. Ein
+Praxistest ist das nicht — nur die Auskunft des Projekts, und die war bisher
+nicht nachgesehen worden.
+
+## Was nicht geprüft ist
+
+Damit niemand mehr Verlass in diese Zeilen legt, als sie tragen:
+
+* **Alles, was einen laufenden Matter-Server braucht.** Die Anmeldung, das
+  Anlernen eines Geräts, die Wirkung der Cluster-Befehle am Gerät, das
+  Verhalten unter Last. Geprüft ist gegen eine Attrappe des dokumentierten
+  Protokolls, nicht gegen Hardware.
+* **Die Container-Verwaltung**, weil dafür ein Docker auf einem 64-Bit-LoxBerry
+  nötig ist.
+* **Die MQTT-Weiterleitung an den Miniserver.** Der Sendeweg über den
+  UDP-Eingang des Gateways ist gebaut und gelesen, aber nicht an einer Anlage
+  gemessen.
+* **Wie der Matter-Server die `EnergyMeasurementStruct` über die
+  WebSocket-Schnittstelle benennt.** Belegt ist nur die Spezifikationsseite:
+  Feldname `Energy`, Feldnummer 0, Einheit mWh. Das Plugin nimmt beide Formen
+  an und gibt lieber nichts zurück als eine erfundene Zahl.
+* Die Cluster mit `_ungeprueft` in `templates/matter_cluster.json`
+  (`ElectricalEnergyMeasurement`, `OperationalState`, `EnergyEvse`,
+  `WaterHeaterManagement`, `LaundryWasherMode`). Ihre Nummern stammen aus der
+  Spezifikation, gemessen hat sie an einem Gerät niemand. Der Reiter *Test*
+  weist sie als solche aus.
+
+Geprüft ist dagegen: PHP-Syntax unter 7.4 und 8.4, die Oberfläche gerendert
+unter beiden Fassungen und im Aktualisierungsfall, die erzeugten
+Loxone-Vorlagen auf Wohlgeformtheit, die Formulare auf Vollständigkeit, alle
+Sprachschlüssel in beiden Sprachen, und die Lage im installierten Aufbau mit
+getrennten Bäumen für `html/` und `htmlauth/`.

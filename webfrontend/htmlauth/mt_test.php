@@ -12,6 +12,116 @@ function mt_pruefzeile($stand, $frage, $antwort)
     return array('stand' => $stand, 'frage' => $frage, 'antwort' => $antwort);
 }
 
+/**
+ * Passen Positivliste, Reiterleiste, Flaechen und Verweise zusammen?
+ *
+ * Vier Stellen in derselben Datei muessen dieselben sechs Namen fuehren:
+ *   - die Positivliste, die entscheidet, welcher Reiter nach dem Absenden
+ *     offen bleibt. Fehlt ein Name, springt die Seite jedes Mal zurueck.
+ *   - die Reiterleiste selbst.
+ *   - die id der Flaechen. Stimmt eine nicht, bleibt die Flaeche unsichtbar.
+ *   - der Verweis je Reiter. Stimmt er nicht, ist der Reiter ohne JavaScript
+ *     unerreichbar.
+ *
+ * Gelesen wird STATISCH aus der Datei, verglichen wird ebenfalls statisch -
+ * eine Pruefung, die statisch liest und gegen einen Laufzeitwert vergleicht,
+ * steht dauerhaft auf Rot, ohne dass etwas falsch waere.
+ */
+function mt_pruef_reiter()
+{
+    $datei = __DIR__ . '/index.php';
+    if (!is_file($datei)) {
+        return array(-1, sprintf(mt_t('TEST.A_REITER_UNBEKANNT'), mt_e($datei)));
+    }
+    $t = (string) @file_get_contents($datei);
+
+    // Positivliste: die Zeichenkette zwischen "'/^tab-(" und ")$/'".
+    // Bewusst mit strpos statt einem Ausdruck: ein Suchausdruck, der zu viel
+    // trifft, ist hier schon einmal teuer geworden.
+    $liste = array();
+    $a = strpos($t, "'/^tab-(");
+    if ($a !== false) {
+        $b = strpos($t, ")\$/'", $a);
+        if ($b !== false) {
+            $liste = explode('|', substr($t, $a + 8, $b - $a - 8));
+        }
+    }
+    preg_match_all('/data-ziel="tab-([a-z]+)"/', $t, $m);
+    $leiste = $m[1];
+    preg_match_all('/id="tab-([a-z]+)"/', $t, $m);
+    $flaechen = $m[1];
+    preg_match_all('/href="index\.php\?form=([a-z]+)"/', $t, $m);
+    $verweise = $m[1];
+
+    $mengen = array(
+        'TEST.W_LISTE'    => $liste,
+        'TEST.W_LEISTE'   => $leiste,
+        'TEST.W_FLAECHEN' => $flaechen,
+        'TEST.W_VERWEISE' => $verweise,
+    );
+    foreach ($mengen as $name => $werte) {
+        if (!$werte) {
+            return array(0, sprintf(mt_t('TEST.A_REITER_LEER'), mt_e(mt_t($name))));
+        }
+    }
+    $soll = $liste;
+    sort($soll);
+    $abweichungen = array();
+    foreach ($mengen as $name => $werte) {
+        $ist = array_values(array_unique($werte));
+        sort($ist);
+        if ($ist !== $soll) {
+            $abweichungen[] = mt_t($name) . ': ' . implode(', ', $ist);
+        }
+    }
+    if ($abweichungen) {
+        return array(0, sprintf(mt_t('TEST.A_REITER_FEHL'),
+            mt_e(implode(' | ', $soll)), mt_e(implode(' / ', $abweichungen))));
+    }
+    return array(1, sprintf(mt_t('TEST.A_REITER_OK'), count($soll), mt_e(implode(', ', $soll))));
+}
+
+/**
+ * Fuehren Oberflaeche und Dienst dieselben Vorgabewerte?
+ *
+ * mt_vorgaben() in mt_lib.php verlangt das im Kommentar seit jeher ("Muessen
+ * zu VORGABEN in bin/matter_dienst.py passen"), geprueft hat es niemand. Ein
+ * Schluessel, den nur eine der beiden Seiten kennt, faellt sonst erst auf,
+ * wenn ein Wert unerklaerlich auf die Werkseinstellung zurueckspringt.
+ */
+function mt_pruef_vorgaben()
+{
+    $datei = mt_paths()['bindir'] . '/matter_dienst.py';
+    if (!is_file($datei)) {
+        return array(-1, sprintf(mt_t('TEST.A_VORGABEN_UNBEKANNT'), mt_e($datei)));
+    }
+    $t = (string) @file_get_contents($datei);
+    $a = strpos($t, 'VORGABEN = {');
+    if ($a === false) {
+        return array(-1, sprintf(mt_t('TEST.A_VORGABEN_UNBEKANNT'), mt_e($datei)));
+    }
+    $b = strpos($t, "\n}", $a);
+    if ($b === false) {
+        return array(-1, sprintf(mt_t('TEST.A_VORGABEN_UNBEKANNT'), mt_e($datei)));
+    }
+    preg_match_all('/"([a-z_0-9]+)"\s*:/', substr($t, $a, $b - $a), $m);
+    $dienst = array_values(array_unique($m[1]));
+    $ober = array_keys(mt_vorgaben());
+    sort($dienst);
+    sort($ober);
+    if (!$dienst) {
+        return array(-1, sprintf(mt_t('TEST.A_VORGABEN_UNBEKANNT'), mt_e($datei)));
+    }
+    $nur_dienst = array_diff($dienst, $ober);
+    $nur_ober = array_diff($ober, $dienst);
+    if ($nur_dienst || $nur_ober) {
+        return array(0, sprintf(mt_t('TEST.A_VORGABEN_FEHL'),
+            mt_e($nur_dienst ? implode(', ', $nur_dienst) : '-'),
+            mt_e($nur_ober ? implode(', ', $nur_ober) : '-')));
+    }
+    return array(1, sprintf(mt_t('TEST.A_VORGABEN_OK'), count($ober)));
+}
+
 function mt_pruefungen()
 {
     $cfg = mt_config();
@@ -43,21 +153,45 @@ function mt_pruefungen()
     }
 
     // Nimmt auf dem Port ueberhaupt jemand Verbindungen an?
-    $erreichbar = 0;
-    $fp = @fsockopen($cfg['server_host'], (int) $cfg['server_port'], $errno, $errstr, 3);
-    if ($fp) {
-        $erreichbar = 1;
-        fclose($fp);
+    // Der Verbindungsversuch steckt in mt_erreichbar() und wird kurz
+    // zwischengespeichert - bis 0.9.9 lief er bei JEDEM Seitenaufruf, mit drei
+    // Sekunden Zeitueberlauf, auch wenn nur das Protokoll gefragt war. Damit
+    // die Antwort nicht heimlich alt wird, steht ihr Alter dabei.
+    list($erreichbar, $probe_alter, $probe_fehler) = mt_erreichbar();
+    $adresse = mt_e($cfg['server_host'] . ':' . $cfg['server_port']);
+    $antwort = $erreichbar ? $adresse
+        : sprintf(mt_t('TEST.A_NICHT_ERREICHBAR'), $adresse, mt_e($probe_fehler));
+    if ($probe_alter > 0) {
+        $antwort .= ' ' . sprintf(mt_t('TEST.A_PROBE_ALT'), (int) $probe_alter);
     }
-    $zeilen[] = mt_pruefzeile($erreichbar, mt_t('TEST.F_ERREICHBAR'),
-        $erreichbar ? mt_e($cfg['server_host'] . ':' . $cfg['server_port'])
-                    : sprintf(mt_t('TEST.A_NICHT_ERREICHBAR'),
-                              mt_e($cfg['server_host'] . ':' . $cfg['server_port']), mt_e($errstr)));
+    $zeilen[] = mt_pruefzeile($erreichbar, mt_t('TEST.F_ERREICHBAR'), $antwort);
 
     $pid = mt_dienst_pid();
     $zeilen[] = mt_pruefzeile($pid > 0 ? 1 : 0, mt_t('TEST.F_DIENST'),
         $pid > 0 ? mt_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
                  : (mt_dienst_soll() ? mt_t('TEST.A_DIENST_SOLL_TOT') : mt_t('TEST.A_DIENST_GESTOPPT')));
+
+    // Lebt der Dienst noch, oder steht der Prozess nur da?
+    // Die Prozessnummer beantwortet das nicht: ein Prozess kann laufen und
+    // nichts mehr tun. Der Herzschlag schreibt seinen Zeitstempel in die
+    // zustand.json, unabhaengig von MQTT.
+    $zst = mt_zustand();
+    $hz = (int) $cfg['herzschlag'];
+    $letztes = isset($zst['herzschlag']) ? (int) $zst['herzschlag'] : 0;
+    if ($pid === 0) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_LEBEN'), mt_t('TEST.A_LEBEN_DIENST_AUS'));
+    } elseif ($hz === 0) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_LEBEN'), mt_t('TEST.A_LEBEN_AUS'));
+    } elseif ($letztes === 0) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_LEBEN'), mt_t('TEST.A_LEBEN_KEINS'));
+    } else {
+        $alter = max(0, time() - $letztes);
+        // Drei Takte Luft: ein einzelnes verpasstes Lebenszeichen ist kein
+        // Ausfall. Dieselbe Regel wie bei den Ausfallschwellen in Loxone.
+        $gut = $alter <= 3 * $hz;
+        $zeilen[] = mt_pruefzeile($gut ? 1 : 0, mt_t('TEST.F_LEBEN'),
+            sprintf(mt_t($gut ? 'TEST.A_LEBEN_OK' : 'TEST.A_LEBEN_ALT'), $alter, $hz));
+    }
 
     $srv = mt_serverinfo();
     if ($srv) {
@@ -72,6 +206,15 @@ function mt_pruefungen()
         $zeilen[] = mt_pruefzeile(1, mt_t('TEST.F_SERVERINFO'),
             'SDK ' . mt_e($hol('sdk_version')) . ', Schema ' . mt_e($hol('schema_version'))
             . ', Fabric ' . mt_e($hol('fabric_id')));
+        // Nur eine Auskunft, kein Kreuz: das Plugin fuehrt selbst keine
+        // Schemafassung. Es benutzt eine Handvoll Befehle, und eine Zahl dafuer
+        // zu erfinden waere eine erfundene Zahl. Beim Umstieg auf einen anderen
+        // Matter-Server ist das hier die erste Stelle zum Nachsehen.
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_SCHEMA'),
+            isset($srv['min_schema']) && $srv['min_schema'] !== null
+                ? sprintf(mt_t('TEST.A_SCHEMA'), mt_e($hol('schema_version')),
+                          mt_e($hol('min_schema')))
+                : mt_t('TEST.A_SCHEMA_KEINS'));
         $zeilen[] = mt_pruefzeile(!empty($srv['bluetooth']) ? 1 : -1, mt_t('TEST.F_BT'),
             !empty($srv['bluetooth']) ? mt_t('TEST.A_BT_JA') : mt_t('TEST.A_BT_NEIN'));
         $creds = !empty($srv['wlan_gesetzt']) || !empty($srv['thread_gesetzt']);
@@ -83,10 +226,19 @@ function mt_pruefungen()
         $zeilen[] = mt_pruefzeile(0, mt_t('TEST.F_SERVERINFO'), mt_t('TEST.A_KEINE_SERVERINFO'));
     }
 
+    // "0 Geraete" war bis 0.9.9 immer ein rotes Kreuz - auch auf einer frisch
+    // installierten Anlage, an der noch gar nichts angelernt sein KANN. Ein
+    // Kreuz, das nichts bedeutet, ist schlimmer als keine Pruefung: man sucht
+    // dann dort. Hat der Dienst noch nie verbunden, ist das jetzt ein Hinweis.
     $geraete = mt_geraete();
-    $zeilen[] = mt_pruefzeile(count($geraete) > 0 ? 1 : 0, mt_t('TEST.F_GERAETE'),
-        count($geraete) > 0 ? sprintf(mt_t('TEST.A_GERAETE'), count($geraete))
-                            : mt_t('TEST.A_KEINE_GERAETE'));
+    if (count($geraete) > 0) {
+        $zeilen[] = mt_pruefzeile(1, mt_t('TEST.F_GERAETE'),
+            sprintf(mt_t('TEST.A_GERAETE'), count($geraete)));
+    } elseif (!$zst || !isset($zst['ts'])) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_GERAETE'), mt_t('TEST.A_GERAETE_NIE'));
+    } else {
+        $zeilen[] = mt_pruefzeile(0, mt_t('TEST.F_GERAETE'), mt_t('TEST.A_KEINE_GERAETE'));
+    }
 
     $z = mt_zustand();
     if (!empty($z['fehler'])) {
@@ -155,6 +307,35 @@ function mt_pruefungen()
             sprintf(mt_t('TEST.A_UNGEPRUEFT'), mt_e(implode(', ', $mt_ungeprueft))));
     }
 
+    // --- Antwortet die Seite, die Loxone bedient? ---
+    //
+    // Die teuerste Fehlerklasse dieses Hauses: html/ und htmlauth/ liegen
+    // installiert in getrennten Baeumen, und keine Leseprüfung sieht das. Nur
+    // der echte Aufruf beantwortet es. Kommt gar keine Verbindung zustande,
+    // ist das ein HINWEIS und kein Kreuz - im Pruefaufbau faellt genau dieser
+    // Fall an, und ein rotes Kreuz, das nichts bedeutet, ist schlimmer als
+    // keine Prüfung.
+    list($e_ok, $e_code, $e_text, $e_url, $e_alter) = mt_selbsttest_endpunkt();
+    $e_zusatz = $e_alter > 0 ? ' ' . sprintf(mt_t('TEST.A_PROBE_ALT'), (int) $e_alter) : '';
+    if ($e_ok) {
+        $zeilen[] = mt_pruefzeile(1, mt_t('TEST.F_ENDPUNKT'),
+            sprintf(mt_t('TEST.A_ENDPUNKT_OK'), (int) $e_code,
+                    mt_e(substr($e_text, 0, 70))) . $e_zusatz);
+    } elseif ((int) $e_code === 0) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_ENDPUNKT'),
+            sprintf(mt_t('TEST.A_ENDPUNKT_UNKLAR'), mt_e($e_text), mt_e($e_url)) . $e_zusatz);
+    } else {
+        $zeilen[] = mt_pruefzeile(0, mt_t('TEST.F_ENDPUNKT'),
+            sprintf(mt_t('TEST.A_ENDPUNKT_FEHL'), (int) $e_code, mt_e($e_text),
+                    mt_e($e_url)) . $e_zusatz);
+    }
+
+    // --- Die Oberflaeche gegen sich selbst ---
+    $r = mt_pruef_reiter();
+    $zeilen[] = mt_pruefzeile($r[0], mt_t('TEST.F_REITER'), $r[1]);
+    $vg = mt_pruef_vorgaben();
+    $zeilen[] = mt_pruefzeile($vg[0], mt_t('TEST.F_VORGABEN'), $vg[1]);
+
     return $zeilen;
 }
 
@@ -189,6 +370,7 @@ function mt_test_aktion($aktion)
                                             'endpunkt' => (int) $ep));
 
         case 'helligkeit':
+        case 'luefter':
             if ($knoten === 0) {
                 return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
             }
@@ -196,8 +378,38 @@ function mt_test_aktion($aktion)
             if (!preg_match('/^[0-9]{1,3}$/', $w) || (int) $w > 100) {
                 return array(0, mt_t('TEST.M_PROZENT_UNGUELTIG'));
             }
-            return mt_befehl_absetzen(array('aktion' => 'helligkeit', 'knoten' => $knoten,
+            return mt_befehl_absetzen(array('aktion' => $aktion, 'knoten' => $knoten,
                                             'endpunkt' => (int) $ep, 'wert' => (int) $w));
+
+        case 'farbton':
+            if ($knoten === 0) {
+                return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            // Das Wertfeld des Reiters fuehrt Prozent (0..100); ein Farbton
+            // will Grad. Umgerechnet wird hier - und zwar sichtbar, damit
+            // niemand 50 eingibt und 50 Grad erwartet.
+            $w = isset($_POST['test_wert']) ? (string) $_POST['test_wert'] : '';
+            if (!preg_match('/^[0-9]{1,3}$/', $w) || (int) $w > 100) {
+                return array(0, mt_t('TEST.M_PROZENT_UNGUELTIG'));
+            }
+            return mt_befehl_absetzen(array('aktion' => 'farbton', 'knoten' => $knoten,
+                                            'endpunkt' => (int) $ep,
+                                            'wert' => (int) round((int) $w * 360 / 100)));
+
+        case 'identify':
+            if ($knoten === 0) {
+                return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            return mt_befehl_absetzen(array('aktion' => 'identify', 'knoten' => $knoten,
+                                            'endpunkt' => (int) $ep, 'wert' => 15));
+
+        case 'sperren':
+        case 'entsperren':
+            if ($knoten === 0) {
+                return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            return mt_befehl_absetzen(array('aktion' => $aktion, 'knoten' => $knoten,
+                                            'endpunkt' => (int) $ep), 20);
 
         case 'anlernen':
             $code = isset($_POST['code']) ? trim((string) $_POST['code']) : '';
@@ -244,6 +456,21 @@ function mt_test_aktion($aktion)
                 return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
             }
             return mt_befehl_absetzen(array('aktion' => 'anstupsen', 'knoten' => $knoten), 70);
+
+        case 'name':
+            if ($knoten === 0) {
+                return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            // Nur Steuerzeichen entfernen. Was sonst im Namen stehen darf,
+            // entscheidet nicht die Oberflaeche - der Dienst prueft Laenge und
+            // Form und WEIST AB, statt zurechtzubiegen.
+            $bez = trim(preg_replace('/[\x00-\x1F\x7F]/', '',
+                (string) (isset($_POST['geraetename']) ? $_POST['geraetename'] : '')));
+            if ($bez === '') {
+                return array(0, mt_t('ANLERN.M_NAME_LEER'));
+            }
+            return mt_befehl_absetzen(array('aktion' => 'name', 'knoten' => $knoten,
+                                            'bezeichnung' => $bez), 20);
 
         default:
             return array(0, mt_t('TEST.M_UNBEKANNT'));
