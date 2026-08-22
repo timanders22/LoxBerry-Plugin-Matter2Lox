@@ -10,6 +10,32 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.11
+
+**Eine Korrektur, und sie betrifft die Anleitung, nicht den Code.**
+
+In 0.9.10 trug die Baustein-Liste im Reiter *Einbindung in Loxone* noch das
+alte Suchmuster — `\iALTER=\i\v` statt `\i;ALTER=\i\v`, und ebenso bei
+`1_SCHALTER` und `1_HELLIGKEIT`. Die erzeugte XML-Vorlage war seit 0.9.10
+richtig; die Tabelle daneben, die man **von Hand** in Loxone Config nachbaut,
+war es nicht. Zwei Anleitungen desselben Plugins, die sich widersprachen — und
+wer der Tabelle folgte, baute genau die Verwechslung ein, gegen die die Vorlage
+absichert: `1_TEMPERATUR=` steckt wörtlich in `11_TEMPERATUR=`, und Loxone
+nimmt den ersten Treffer.
+
+Ursache war eine Suche über den halben Ordner: Die Korrektur in 0.9.10 hatte
+nur `webfrontend/` durchsucht, das Muster steht aber auch in den Sprachdateien.
+
+**Berichtigt und zusammengeführt.** Die fünf Texte sind jetzt
+Formatzeichenketten, und die Baustein-Liste füllt sie aus derselben Funktion,
+aus der auch die XML-Vorlage ihr Muster holt. Das Muster steht damit an genau
+einer Stelle im Plugin; eine Suche über den ganzen Ordner findet es nirgends
+mehr wörtlich.
+
+> **Wer 0.9.10 von Hand nachgebaut hat, prüft die fünf Befehlserkennungen der
+> virtuellen Eingänge.** Vor jedem Namen gehört ein Semikolon. Wer die Vorlage
+> importiert hat, ist nicht betroffen — dort war sie schon richtig.
+
 ## Neu in 0.9.10
 
 Aus einer Durchsicht Zeile für Zeile am 17.08.2026. Fünf der sechs Punkte

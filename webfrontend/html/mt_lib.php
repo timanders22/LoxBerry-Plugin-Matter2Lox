@@ -1312,8 +1312,15 @@ function mt_endpunkt_adresse($aktion, $nummer = null)
  * webfrontend/html/index.php von einem Semikolon eingeleitet - auch OK, denn
  * davor steht "MATTER".
  *
- * Bis 0.9.9 stand dieses Muster an fuenf Stellen; drei erzeugten es, zwei
- * zeigten es an. Zwei Wege fuer dieselbe Frage sind einer zu viel.
+ * Bis 0.9.9 stand dieses Muster an ELF Stellen: drei erzeugten es, zwei
+ * zeigten es an - und sechs weitere standen in den Sprachdateien, in den
+ * Parametern der Baustein-Liste. Die Korrektur vom 17.08.2026 hat nur
+ * webfrontend/ durchsucht und die Sprachdateien uebersehen; gemeldet hat
+ * es hinterher ein Bestandslauf von aussen. Eine Suche, die nur den Code
+ * absucht, findet ein Muster nicht, das in einer Datendatei steht.
+ *
+ * Seither holt auch die Baustein-Liste ihr Muster hier - zwei Wege fuer
+ * dieselbe Frage sind einer zu viel.
  */
 function mt_check($marke)
 {

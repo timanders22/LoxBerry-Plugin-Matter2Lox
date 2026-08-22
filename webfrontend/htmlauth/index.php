@@ -1055,22 +1055,33 @@ foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
 function mt_bausteine()
 {
     return array(
-        array(1,  'BAUSTEIN.T_VE',      'BAUSTEIN.N01', 'BAUSTEIN.P01', '&mdash;'),
-        array(2,  'BAUSTEIN.T_VE',      'BAUSTEIN.N02', 'BAUSTEIN.P02', '&mdash;'),
-        array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03', 'BAUSTEIN.P03', '&mdash;'),
-        array(4,  'BAUSTEIN.T_VE',      'BAUSTEIN.N04', 'BAUSTEIN.P04', '&mdash;'),
-        array(5,  'BAUSTEIN.T_VE',      'BAUSTEIN.N05', 'BAUSTEIN.P05', '&mdash;'),
-        array(6,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N06', 'BAUSTEIN.P06', 'I &larr; #3'),
+        // Das Suchmuster kommt aus mt_check() - derselben Funktion, aus der
+        // auch die XML-Vorlage es holt. Bis 0.9.10 stand es hier ein zweites
+        // Mal in den Sprachdateien, und zwar OHNE das fuehrende Semikolon:
+        // wer die Tabelle von Hand nachbaute, bekam das alte, anfaellige
+        // Muster, waehrend die erzeugte Vorlage das richtige trug. Zwei
+        // Quellen fuer dieselbe Angabe sind eine zu viel.
+        array(1,  'BAUSTEIN.T_VE',      'BAUSTEIN.N01',
+              sprintf(mt_t('BAUSTEIN.P01'), mt_check('1_SCHALTER')), '&mdash;'),
+        array(2,  'BAUSTEIN.T_VE',      'BAUSTEIN.N02',
+              sprintf(mt_t('BAUSTEIN.P02'), mt_check('1_HELLIGKEIT')), '&mdash;'),
+        array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03',
+              sprintf(mt_t('BAUSTEIN.P03'), mt_check('ALTER')), '&mdash;'),
+        array(4,  'BAUSTEIN.T_VE',      'BAUSTEIN.N04',
+              sprintf(mt_t('BAUSTEIN.P04'), mt_check('ERREICH')), '&mdash;'),
+        array(5,  'BAUSTEIN.T_VE',      'BAUSTEIN.N05',
+              sprintf(mt_t('BAUSTEIN.P05'), mt_check('OK')), '&mdash;'),
+        array(6,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N06', mt_t('BAUSTEIN.P06'), 'I &larr; #3'),
         array(7,  'BAUSTEIN.T_NICHT',   'BAUSTEIN.N07', '',             'I &larr; #4'),
         array(8,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N08', '',             'I1 &larr; #6, I2 &larr; #7'),
-        array(9,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N09', 'BAUSTEIN.P09', 'I &larr; #8'),
-        array(10, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N10', 'BAUSTEIN.P10', 'I &larr; #9'),
-        array(11, 'BAUSTEIN.T_LICHT',   'BAUSTEIN.N11', 'BAUSTEIN.P11', 'AI &larr; ' . mt_t('BAUSTEIN.TASTER')),
-        array(12, 'BAUSTEIN.T_VA',      'BAUSTEIN.N12', 'BAUSTEIN.P12', 'I &larr; #11 (Q)'),
-        array(13, 'BAUSTEIN.T_VA',      'BAUSTEIN.N13', 'BAUSTEIN.P13', 'I &larr; #11 (AQ)'),
-        array(14, 'BAUSTEIN.T_ENTPRELL','BAUSTEIN.N14', 'BAUSTEIN.P14', 'I &larr; #11 (AQ)'),
-        array(15, 'BAUSTEIN.T_VERGL',   'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I1 &larr; #1, I2 &larr; #11 (AQ)'),
-        array(16, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N16', 'BAUSTEIN.P16', 'I1 &larr; #2, I2 &larr; #5'),
+        array(9,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N09', mt_t('BAUSTEIN.P09'), 'I &larr; #8'),
+        array(10, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N10', mt_t('BAUSTEIN.P10'), 'I &larr; #9'),
+        array(11, 'BAUSTEIN.T_LICHT',   'BAUSTEIN.N11', mt_t('BAUSTEIN.P11'), 'AI &larr; ' . mt_t('BAUSTEIN.TASTER')),
+        array(12, 'BAUSTEIN.T_VA',      'BAUSTEIN.N12', mt_t('BAUSTEIN.P12'), 'I &larr; #11 (Q)'),
+        array(13, 'BAUSTEIN.T_VA',      'BAUSTEIN.N13', mt_t('BAUSTEIN.P13'), 'I &larr; #11 (AQ)'),
+        array(14, 'BAUSTEIN.T_ENTPRELL','BAUSTEIN.N14', mt_t('BAUSTEIN.P14'), 'I &larr; #11 (AQ)'),
+        array(15, 'BAUSTEIN.T_VERGL',   'BAUSTEIN.N15', mt_t('BAUSTEIN.P15'), 'I1 &larr; #1, I2 &larr; #11 (AQ)'),
+        array(16, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N16', mt_t('BAUSTEIN.P16'), 'I1 &larr; #2, I2 &larr; #5'),
     );
 }
 ?>
@@ -1081,7 +1092,7 @@ function mt_bausteine()
     <th><?= mt_e(mt_t('LOX.T_PARAMETER')) ?></th><th><?= mt_e(mt_t('LOX.T_EINGAENGE')) ?></th></tr>
 <?php foreach (mt_bausteine() as $mt_b) { ?>
 <tr><td><?= (int) $mt_b[0] ?></td><td><?= mt_t($mt_b[1]) ?></td><td><?= mt_t($mt_b[2]) ?></td>
-    <td><?= $mt_b[3] !== '' ? mt_t($mt_b[3]) : '&mdash;' ?></td><td><?= $mt_b[4] ?></td></tr>
+    <td><?= $mt_b[3] !== '' ? $mt_b[3] : '&mdash;' ?></td><td><?= $mt_b[4] ?></td></tr>
 <?php } ?>
 </table>
 <?= mt_t('LOX.S7_ERLAEUTERUNG') ?>
