@@ -59,6 +59,23 @@ $mt_fehler = array();
 $mt_testausgabe = '';
 $mt_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($mt_post && isset($_POST['vorlage'])) {
     // 'alle' = Sammelvorlage, 'aus<N>' = virtuelle Ausgaenge, '<N>' = Eingaenge
@@ -355,9 +372,6 @@ if (is_file($mt_p['log'])) {
 }
 
 $mt_rahmen = class_exists('LBWeb', false);
-if ($mt_rahmen) {
-    LBWeb::lbheader('Matter to Loxone', 'https://wiki.loxberry.de/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -404,6 +418,11 @@ if ($mt_post && isset($_POST['mt_zurueck'])) {
             $mt_fehler[] = mt_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($mt_rahmen) {
+    LBWeb::lbheader('Matter to Loxone', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
