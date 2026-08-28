@@ -56,6 +56,24 @@ if (isset($_POST['activetab']) && preg_match($mt_muster, (string) $_POST['active
 
 $mt_meldungen = array();
 $mt_fehler = array();
+
+/* ---------------------------------------------------------------- *
+ * Der Wachposten - EIN Posten, vor allen Handlern.
+ * Abgewiesen heisst gemeldet, und es wird NICHTS ausgefuehrt: $_POST
+ * wird geleert, nur der aktive Reiter bleibt stehen, damit der Bediener
+ * nach der Abweisung dort steht, wo er war.
+ * ---------------------------------------------------------------- */
+$mt_wache = mt_wachposten();
+if ($mt_wache !== '') {
+    $mt_reiter_merk = isset($_POST['activetab']) && is_string($_POST['activetab'])
+        ? (string) $_POST['activetab'] : null;
+    $_POST = array();
+    if ($mt_reiter_merk !== null) {
+        $_POST['activetab'] = $mt_reiter_merk;
+    }
+    $mt_fehler[] = $mt_wache;
+}
+
 $mt_testausgabe = '';
 $mt_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
@@ -586,6 +604,7 @@ if ($mt_rahmen) {
 <div class="sm-knopfreihe">
 <?php foreach (array('start' => 'sm-b-lesen', 'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn <?= $mt_farbe ?>" type="submit" name="dienst" value="<?= $mt_b ?>"><?= mt_e(mt_t('EINST.K_' . strtoupper($mt_b))) ?></button>
   </form>
@@ -622,11 +641,13 @@ if ($mt_rahmen) {
 <?php foreach (array('anlegen' => 'sm-b-lesen', 'start' => 'sm-b-lesen', 'holen' => 'sm-b-technik',
                      'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion', 'entfernen' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn <?= $mt_farbe ?>" type="submit" name="container" value="<?= $mt_b ?>"><?= mt_e(mt_t('EINST.KC_' . strtoupper($mt_b))) ?></button>
   </form>
 <?php } ?>
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="container_akt" value="1"><?= mt_e(mt_t('EINST.KC_AKTUALISIEREN')) ?></button>
   </form>
@@ -640,6 +661,7 @@ if ($mt_rahmen) {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="fabric_sichern" value="1"><?= mt_e(mt_t('EINST.K_FABRIC_SICHERN')) ?></button>
   </form>
@@ -649,6 +671,7 @@ if ($mt_rahmen) {
 </div>
 
 <form action="index.php" method="post" autocomplete="off">
+  <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
@@ -786,10 +809,12 @@ $mt_feld = function ($g, $name, $leer = '') {
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="mt_sichern" value="1"><?= mt_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="mt_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="mt_zurueck" value="1"><?= mt_t('EINST.K_ZURUECK') ?></button>
@@ -824,6 +849,7 @@ $mt_feld = function ($g, $name, $leer = '') {
 <h2><?= mt_e(mt_t('ANLERN.H_NETZ')) ?></h2>
 <div class="sm-hinweis"><?= mt_t('ANLERN.NETZ_ERKLAERUNG') ?></div>
 <form action="index.php" method="post" autocomplete="off">
+  <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="netz_speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
 <div class="sm-feld">
@@ -850,10 +876,12 @@ $mt_feld = function ($g, $name, $leer = '') {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-commission">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="wlan"><?= mt_e(mt_t('ANLERN.K_WLAN')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-commission">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="thread"><?= mt_e(mt_t('ANLERN.K_THREAD')) ?></button>
   </form>
@@ -862,6 +890,7 @@ $mt_feld = function ($g, $name, $leer = '') {
 <h2><?= mt_e(mt_t('ANLERN.H_CODE')) ?></h2>
 <div class="sm-step"><?= mt_t('ANLERN.CODE_ERKLAERUNG') ?></div>
 <form action="index.php" method="post" autocomplete="off">
+  <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
 <div class="sm-feld">
   <label for="code"><?= mt_e(mt_t('ANLERN.L_CODE')) ?></label>
@@ -886,6 +915,7 @@ $mt_feld = function ($g, $name, $leer = '') {
 
 <h2><?= mt_e(mt_t('ANLERN.H_VERWALTEN')) ?></h2>
 <form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
 <div class="sm-feld">
   <label for="test_geraet2"><?= mt_e(mt_t('TEST.L_GERAET')) ?></label>
@@ -913,6 +943,7 @@ $mt_feld = function ($g, $name, $leer = '') {
 
 <h2>MQTT</h2>
 <form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
@@ -963,6 +994,7 @@ $mt_feld = function ($g, $name, $leer = '') {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="mqtt_probe" value="1"><?= mt_e(mt_t('MQTT.K_PROBE')) ?></button>
   </form>
@@ -1061,11 +1093,13 @@ foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
 </table>
 <div class="sm-knopfreihe" style="margin-bottom:10px;">
 <form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="<?= mt_e($mt_nr) ?>">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE')) ?> <?= mt_e($mt_g['name']) ?></button>
 </form>
 <form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="aus<?= mt_e($mt_nr) ?>">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_AUS')) ?> <?= mt_e($mt_g['name']) ?></button>
@@ -1076,6 +1110,7 @@ foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
 <h3 class="sm-h3"><?= mt_e(mt_t('LOX.H_SAMMEL')) ?></h3>
 <div class="sm-hinweis"><?= mt_t('LOX.S_SAMMEL') ?></div>
 <form action="index.php" method="post" style="margin-bottom:10px;">
+  <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="alle">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_ALLE')) ?></button>
@@ -1119,6 +1154,7 @@ foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
 <?= mt_t('LOX.S5_TEXT') ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= mt_e(mt_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
@@ -1230,10 +1266,12 @@ function mt_bausteine()
 <h3><?= mt_e(mt_t('TEST.H_TECHNIK')) ?></h3>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="selbsttest" value="1"><?= mt_e(mt_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="containerlog" value="1"><?= mt_e(mt_t('TEST.K_CONTAINERLOG')) ?></button>
   </form>
@@ -1249,6 +1287,7 @@ function mt_bausteine()
 <div class="sm-hinweis"><?= mt_t('TEST.SCHALTEN_GESPERRT') ?></div>
 <?php } ?>
 <form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
 <div class="sm-feld">
   <label for="test_geraet"><?= mt_e(mt_t('TEST.L_GERAET')) ?></label>
@@ -1304,6 +1343,7 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= mt_e(mt_t('LOG.K_LEEREN')) ?></button>
   </form>
