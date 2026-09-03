@@ -48,11 +48,6 @@ if ($mt_p['home'] !== '' && is_file($mt_p['home'] . '/libs/phplib/loxberry_syste
  * zurueck auf Einstellungen. */
 $mt_muster = '/^tab-(settings|commission|mqtt|loxone|test|log)$/';
 $mt_tab = 'tab-settings';
-if (isset($_POST['activetab']) && preg_match($mt_muster, (string) $_POST['activetab'])) {
-    $mt_tab = (string) $_POST['activetab'];
-} elseif (isset($_GET['form']) && preg_match($mt_muster, 'tab-' . (string) $_GET['form'])) {
-    $mt_tab = 'tab-' . (string) $_GET['form'];
-}
 
 $mt_meldungen = array();
 $mt_fehler = array();
@@ -72,6 +67,17 @@ if ($mt_wache !== '') {
         $_POST['activetab'] = $mt_reiter_merk;
     }
     $mt_fehler[] = $mt_wache;
+}
+
+/* Aktiver Reiter - NACH dem Wachposten. Der leert $_POST bis auf diesen
+ * einen Wert; stuende die Wahl davor, uebernaehme die Seite den Reiter eines
+ * abgewiesenen POST. Die Reihenfolge steht so auch im Kasten darunter. */
+if (isset($_POST['activetab']) && is_string($_POST['activetab'])
+        && preg_match($mt_muster, $_POST['activetab'])) {
+    $mt_tab = $_POST['activetab'];
+} elseif (isset($_GET['form']) && is_string($_GET['form'])
+        && preg_match($mt_muster, 'tab-' . $_GET['form'])) {
+    $mt_tab = 'tab-' . $_GET['form'];
 }
 
 $mt_testausgabe = '';
@@ -112,8 +118,24 @@ if ($mt_post && isset($_POST['vorlage'])) {
             $mt_inhalt = null;
         }
     } else {
-        $mt_nr = preg_match('/^[0-9]{1,3}$/', $mt_wunsch) ? (int) $mt_wunsch : 1;
-        list($mt_name, $mt_inhalt) = mt_vorlage($mt_nr);
+        /* Dieselbe Sorgfalt wie im Ausgangs-Zweig darueber: ein
+         * unbekannter Geraetewunsch wird gemeldet, nicht still durch
+         * Geraet 1 ersetzt, und eine Datei ohne einen einzigen Befehl geht
+         * gar nicht erst hinaus. */
+        $mt_nr = preg_match('/^[0-9]{1,3}$/', $mt_wunsch) ? (int) $mt_wunsch : 0;
+        if ($mt_nr === 0) {
+            $mt_fehler[] = mt_t('LOX.M_VORLAGE_LEER');
+            $mt_tab = 'tab-loxone';
+            $mt_inhalt = null;
+            $mt_name = '';
+        } else {
+            list($mt_name, $mt_inhalt) = mt_vorlage($mt_nr);
+            if (strpos((string) $mt_inhalt, '<VirtualInHttpCmd') === false) {
+                $mt_fehler[] = mt_t('LOX.M_VORLAGE_LEER');
+                $mt_tab = 'tab-loxone';
+                $mt_inhalt = null;
+            }
+        }
     }
     if ($mt_inhalt !== null) {
         header('Content-Type: application/xml; charset=utf-8');
@@ -207,7 +229,6 @@ if ($mt_post && isset($_POST['speichern'])) {
     }
 
     $mt_cfg['eigener_container'] = isset($_POST['eigener_container']) ? 1 : 0;
-    $mt_cfg['roh_ein'] = isset($_POST['roh_ein']) ? 1 : 0;
     $mt_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $mt_cfg['schloss_ein'] = isset($_POST['schloss_ein']) ? 1 : 0;
 
@@ -237,6 +258,13 @@ if ($mt_post && isset($_POST['speichern'])) {
 if ($mt_post && isset($_POST['save_mqtt'])) {
     $mt_mcfg = mt_config();
     $mt_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    /* Der Haken fuer die Rohdurchreichung steht in DIESEM Formular (Reiter
+     * MQTT) und wird deshalb auch hier gelesen. Bis 0.9.16 las ihn der
+     * Handler des Reiters Einstellungen - der ihn nie mitgeschickt bekommt.
+     * Folge: er liess sich gar nicht einschalten, und jedes Speichern der
+     * Einstellungen schaltete ihn ab. Genau die Fehlerklasse, die der
+     * Kommentar am Ende des Einstellungen-Handlers fuer mqtt_ein beschreibt. */
+    $mt_mcfg['roh_ein'] = isset($_POST['roh_ein']) ? 1 : 0;
     $mt_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
         (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
     if ($mt_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $mt_mtopic)) {
@@ -257,6 +285,11 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_mcfg)) {
             $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
+        } else {
+            /* Bis 0.9.16 fehlte dieser Zweig als einzigem der vier
+             * Speichern-Handler: scheiterte das Schreiben, sah der Bediener
+             * weder Erfolg noch Fehler. */
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
         }
     }
     $mt_tab = 'tab-mqtt';
@@ -265,23 +298,34 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
 /* ---------------- Netz-Zugangsdaten speichern ---------------- */
 if ($mt_post && isset($_POST['netz_speichern'])) {
     $mt_cfg = mt_config();
-    $ssid = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $_POST['wlan_ssid']));
+    $ssid = trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
+        (string) (isset($_POST['wlan_ssid']) ? $_POST['wlan_ssid'] : '')));
     if ($ssid !== '') {
         $mt_cfg['wlan_ssid'] = $ssid;
     }
     // Leeres Passwortfeld loescht nichts.
-    $pw = isset($_POST['wlan_passwort']) ? (string) $_POST['wlan_passwort'] : '';
+    $pw = isset($_POST['wlan_passwort']) && is_string($_POST['wlan_passwort'])
+        ? $_POST['wlan_passwort'] : '';
     if ($pw !== '') {
         $mt_cfg['wlan_passwort'] = $pw;
     }
-    $ds = trim(preg_replace('/[^0-9A-Fa-f]/', '', (string) $_POST['thread_dataset']));
+    /* ERST pruefen, DANN uebernehmen. Bis 0.9.16 wurde jedes Nicht-Hex-
+     * Zeichen still entfernt und danach geprueft - die Pruefung konnte dann
+     * nur noch an der Laenge scheitern. Das widerspricht der eigenen Regel
+     * im Endpunkt: was nicht ins Muster passt, wird abgewiesen und gemeldet,
+     * nie zurechtgebogen. */
+    $ds = trim((string) (isset($_POST['thread_dataset']) ? $_POST['thread_dataset'] : ''));
     if ($ds !== '' && !preg_match('/^[0-9A-Fa-f]{20,600}$/', $ds)) {
         $mt_fehler[] = mt_t('ANLERN.FEHLER_THREAD');
     } elseif ($ds !== '') {
         $mt_cfg['thread_dataset'] = $ds;
     }
+    /* Ein HINWEIS, keine Sperre: bis 0.9.16 landete er in der
+     * Beanstandungsliste und verhinderte damit das Speichern der ganzen
+     * Seite - auch des Thread-Datasets, das mit WLAN nichts zu tun hat.
+     * Melden ist richtig, blockieren nicht. */
     if (!empty($mt_cfg['wlan_passwort']) && trim((string) $mt_cfg['wlan_ssid']) === '') {
-        $mt_fehler[] = mt_t('ANLERN.WARN_PW_OHNE_SSID');
+        $mt_meldungen[] = mt_t('ANLERN.WARN_PW_OHNE_SSID');
     }
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_cfg)) {
@@ -338,6 +382,15 @@ if ($mt_post && isset($_POST['token_neu'])) {
 if ($mt_post && isset($_POST['log_leeren'])) {
     @mkdir(dirname($mt_p['log']), 0775, true);
     @file_put_contents($mt_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . mt_t('LOG.GELEERT') . "\n");
+    /* Der Dienst rotiert mit backupCount=1; ohne diese Zeile blieben bis zu
+     * 512 kB in matter2lox.log.1 auf der Ramdisk liegen, und wer den Knopf
+     * zum Platzsparen drueckte, gewann die Haelfte. Dazu die Startdatei. */
+    if (is_file($mt_p['log'] . '.1')) {
+        @unlink($mt_p['log'] . '.1');
+    }
+    if (is_file(dirname($mt_p['log']) . '/matter2lox.start.log')) {
+        @unlink(dirname($mt_p['log']) . '/matter2lox.start.log');
+    }
     $mt_meldungen[] = mt_t('LOG.GELEERT');
     $mt_tab = 'tab-log';
 }
@@ -360,6 +413,69 @@ if ($mt_post && isset($_POST['selbsttest'])) {
 if ($mt_post && isset($_POST['containerlog'])) {
     $mt_testausgabe = mt_container_log(200);
     $mt_tab = 'tab-test';
+}
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
+ *
+ * Der lesbare Kopf (Schluessel mit fuehrendem Unterstrich) gehoert zum
+ * Hausstandard; die Leseseite uebergeht ihn seit 0.9.17. Bis dahin gab es
+ * ihn nicht - und eine Datei MIT Kopf haette die Leseseite abgewiesen. */
+if ($mt_post && isset($_POST['mt_sichern'])) {
+    $mt_sich = array(
+        '_hinweis' => mt_t('EINST.SICH_KOPF'),
+        '_stand'   => date('Y-m-d H:i:s'),
+        '_fassung' => mt_fassung(),
+    ) + mt_config();
+    $mt_js = json_encode($mt_sich,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($mt_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="matter2lox_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $mt_js;
+        exit;
+    }
+    $mt_fehler[] = mt_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen.
+ *
+ * Dieser Handler steht - wie alle anderen - VOR dem Ladeblock. Bis 0.9.16
+ * stand er als einziger dahinter: die Seite meldete Erfolg und zeigte
+ * danach in allen Feldern und in jeder Loxone-Adresse noch den alten Stand
+ * samt altem Aktionstoken. Wer die Adresse dann abschrieb, trug ein Token
+ * nach Loxone, das nicht mehr galt - und ein virtueller Eingang wertet die
+ * 403-Antwort nicht aus. */
+if ($mt_post && isset($_POST['mt_zurueck'])) {
+    if (!isset($_FILES['mt_sicherung']) || !is_array($_FILES['mt_sicherung'])
+        || !isset($_FILES['mt_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['mt_sicherung']['tmp_name'])) {
+        $mt_fehler[] = mt_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['mt_sicherung']['size'] > 262144) {
+        $mt_fehler[] = mt_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($mt_neu, $mt_mangel, $mt_n) = mt_sicherung_lesen(
+            (string) @file_get_contents($_FILES['mt_sicherung']['tmp_name']));
+        if ($mt_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $mt_fehler[] = mt_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $mt_mangel);
+        } elseif (mt_config_speichern($mt_neu)) {
+            $mt_meldungen[] = sprintf(mt_t('EINST.SICH_UEBERNOMMEN'), $mt_n);
+        } else {
+            $mt_fehler[] = mt_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
 }
 
 /* ---------------- Laden ---------------- */
@@ -391,52 +507,7 @@ if (is_file($mt_p['log'])) {
 
 $mt_rahmen = class_exists('LBWeb', false);
 
-/* ---------------- Einstellungen sichern ----------------
- *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
-if ($mt_post && isset($_POST['mt_sichern'])) {
-    $mt_js = json_encode(mt_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($mt_js !== false) {
-        header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename="matter2lox_einstellungen_'
-               . date('Ymd_His') . '.json"');
-        echo $mt_js;
-        exit;
-    }
-    $mt_fehler[] = mt_t('EINST.SICH_SCHREIBFEHLER');
-}
 
-/* ---------------- Einstellungen zurueckspielen ----------------
- *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
-if ($mt_post && isset($_POST['mt_zurueck'])) {
-    if (!isset($_FILES['mt_sicherung']) || !is_array($_FILES['mt_sicherung'])
-        || !isset($_FILES['mt_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['mt_sicherung']['tmp_name'])) {
-        $mt_fehler[] = mt_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['mt_sicherung']['size'] > 262144) {
-        $mt_fehler[] = mt_t('EINST.SICH_ZU_GROSS');
-    } else {
-        list($mt_neu, $mt_mangel, $mt_n) = mt_sicherung_lesen(
-            (string) @file_get_contents($_FILES['mt_sicherung']['tmp_name']));
-        if ($mt_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $mt_fehler[] = mt_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $mt_mangel);
-        } elseif (mt_config_speichern($mt_neu)) {
-            $mt_meldungen[] = sprintf(mt_t('EINST.SICH_UEBERNOMMEN'), $mt_n);
-        } else {
-            $mt_fehler[] = mt_t('EINST.SICH_SCHREIBFEHLER');
-        }
-    }
-}
 
 
 if ($mt_rahmen) {
@@ -602,7 +673,10 @@ if ($mt_rahmen) {
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
-<?php foreach (array('start' => 'sm-b-lesen', 'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
+<?php /* 'start' ist orange, nicht gruen: die Legende sagt bei Gruen
+   "fragt nur ab, veraendert nichts", und ein Dienststart tut beides nicht.
+   Trennlinie ist "kann den Betrieb stoeren". */
+foreach (array('start' => 'sm-b-aktion', 'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
   <form action="index.php" method="post">
     <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -638,7 +712,11 @@ if ($mt_rahmen) {
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
-<?php foreach (array('anlegen' => 'sm-b-lesen', 'start' => 'sm-b-lesen', 'holen' => 'sm-b-technik',
+<?php /* Alle sechs veraendern etwas: 'anlegen' erzeugt einen Container,
+   'holen' zieht ein Abbild von mehreren hundert Megabyte. Bis 0.9.16 trugen
+   drei davon Gruen bzw. Grau - und die Legende darueber erklaerte Gruen mit
+   "veraendert nichts". */
+foreach (array('anlegen' => 'sm-b-aktion', 'start' => 'sm-b-aktion', 'holen' => 'sm-b-aktion',
                      'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion', 'entfernen' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
   <form action="index.php" method="post">
     <?php echo mt_fmt(); ?>
@@ -667,7 +745,7 @@ if ($mt_rahmen) {
   </form>
 </div>
 <div class="sm-step"><?= mt_t('EINST.FABRIC_ZURUECK') ?>
-<p><span class="sm-mono">sudo systemctl stop docker &amp;&amp; tar -xzf matter-fabric-....tar.gz -C <?= mt_e($mt_p['datadir']) ?>/matter</span></p>
+<p><span class="sm-mono">docker stop <?= mt_e(mt_container_name($mt_cfg)) ?> &amp;&amp; tar -xzf matter-fabric-....tar.gz -C <?= mt_e($mt_p['fabric']) ?> &amp;&amp; docker start <?= mt_e(mt_container_name($mt_cfg)) ?></span></p>
 </div>
 
 <form action="index.php" method="post" autocomplete="off">
@@ -1071,18 +1149,21 @@ foreach ((array) (isset($mt_tabelle['ereignisthemen']['themen'])
 <?php if (!$mt_geraete) { ?>
 <div class="sm-warnung"><?= mt_t('LOX.KEINE_GERAETE') ?></div>
 <?php } else { foreach ($mt_geraete as $mt_nr => $mt_g) { ?>
-<p><b><?= mt_e($mt_g['name']) ?></b> (<?= mt_e(mt_t('EINST.T_KNOTEN')) ?> <?= (int) $mt_g['node_id'] ?>)</p>
+<p><b><?= mt_e($mt_feld($mt_g, 'name', '?')) ?></b> (<?= mt_e(mt_t('EINST.T_KNOTEN')) ?> <?= (int) $mt_feld($mt_g, 'node_id', 0) ?>)</p>
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('LOX.T_ADRESSE')) ?></th>
     <td colspan="3"><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=status&amp;geraet=<?= mt_e($mt_nr) ?></span></td></tr>
 <tr><th><?= mt_e(mt_t('LOX.T_TITEL')) ?></th><th><?= mt_e(mt_t('LOX.T_BEFEHL')) ?></th>
     <th><?= mt_e(mt_t('LOX.T_EINZELN')) ?></th><th><?= mt_e(mt_t('LOX.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (mt_status_felder() as $mt_feld => $mt_info) { ?>
-<tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_feld) ?></span></td>
-    <td><span class="sm-mono"><?= mt_e(mt_check($mt_feld)) ?></span></td><td>&mdash;</td>
+<?php /* Die Schleifenvariable heisst NICHT $mt_feld: so hiess der
+   Verschluss aus dem Reiter Einstellungen, und eine Schleife hier haette
+   ihn ueberschrieben. */
+foreach (mt_status_felder() as $mt_sfeld => $mt_info) { ?>
+<tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_sfeld) ?></span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_check($mt_sfeld)) ?></span></td><td>&mdash;</td>
     <td><?= mt_t($mt_info[1]) ?></td></tr>
 <?php }
-foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
+foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) {
     foreach ((array) $mt_felder as $mt_thema => $mt_w) {
         $mt_marke = strtoupper($mt_ep . '_' . $mt_thema); ?>
 <tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_marke) ?></span></td>
@@ -1096,13 +1177,13 @@ foreach ((array) $mt_g['endpunkte'] as $mt_ep => $mt_felder) {
   <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="<?= mt_e($mt_nr) ?>">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE')) ?> <?= mt_e($mt_g['name']) ?></button>
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE')) ?> <?= mt_e($mt_feld($mt_g, 'name', '?')) ?></button>
 </form>
 <form action="index.php" method="post">
   <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="aus<?= mt_e($mt_nr) ?>">
-  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_AUS')) ?> <?= mt_e($mt_g['name']) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_AUS')) ?> <?= mt_e($mt_feld($mt_g, 'name', '?')) ?></button>
 </form>
 </div>
 <?php } } ?>
@@ -1240,13 +1321,21 @@ function mt_bausteine()
 <p class="sm-hilfe"><?= mt_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
 <tr><th style="width:36px;">&nbsp;</th><th><?= mt_e(mt_t('TEST.T_FRAGE')) ?></th><th><?= mt_e(mt_t('TEST.T_BEFUND')) ?></th></tr>
-<?php foreach (mt_pruefungen() as $mt_z) { ?>
+<?php /* Nur wenn dieser Reiter serverseitig der offene ist. Alle Reiter
+   werden bei jedem Aufruf mitgerendert; bis 0.9.16 liefen deshalb bei JEDEM
+   Seitenaufruf ein fsockopen zum Matter-Server (3 s), ein HTTP-Aufruf des
+   eigenen Endpunkts (5 s Verbindung) und drei docker-Aufrufe - auch im
+   Reiter Logdateien. Die Zwischenspeicher federten das nur ab. */
+if ($mt_tab !== 'tab-test') { ?>
+<p class="sm-hilfe"><?= mt_e(mt_t('TEST.NUR_HIER')) ?></p>
+<?php } else {
+foreach (mt_pruefungen() as $mt_z) { ?>
 <tr><td style="text-align:center;"><?php
     if ($mt_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($mt_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
     else { echo '<span style="color:#888;">&#9679;</span>'; }
 ?></td><td><?= $mt_z['frage'] ?></td><td><?= $mt_z['antwort'] ?></td></tr>
-<?php } ?>
+<?php } } ?>
 </table>
 
 <div class="sm-warnung"><?= mt_t('TEST.NETZ_WARNUNG') ?></div>

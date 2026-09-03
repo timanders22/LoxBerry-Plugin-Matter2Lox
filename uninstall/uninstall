@@ -120,10 +120,32 @@ else
 fi
 
 # ----------------------------------------------------------------- Reste
-echo "<WARNING> Mit dem Datenordner verschwindet auch die Matter-Fabric"
-echo "<INFO> ($PDATA/matter). Jedes Geraet, das ueber dieses Plugin"
-echo "<INFO> angelernt wurde, muss danach neu angelernt werden. Wer das"
-echo "<INFO> vermeiden will, sichert den Ordner VOR der Deinstallation."
+# Fabric und Geraetenummern liegen NEBEN dem Plugin-Ordner (seit 0.9.17,
+# damit sie ein Update ueberstehen). Genau deshalb raeumt der Installer sie
+# NICHT mit ab - das muss dieses Skript tun, sonst bleiben sie als Waisen
+# liegen. Bei einer Deinstallation ist das Loeschen richtig; gesagt wird es
+# ausdruecklich, und zwar VORHER.
+FABRIC="$BASE/data/plugins/$PDIR.matter"
+NUMMERN="$BASE/data/plugins/$PDIR.nummern.json"
+LIEFMARKE="$BASE/data/plugins/$PDIR.lief"
+
+echo "<WARNING> Die Matter-Fabric wird jetzt entfernt ($FABRIC)."
+echo "<INFO> Jedes Geraet, das ueber dieses Plugin angelernt wurde, muss"
+echo "<INFO> danach neu angelernt werden. Wer das vermeiden will, bricht hier"
+echo "<INFO> ab und sichert den Ordner - eine Deinstallation ist der einzige"
+echo "<INFO> Vorgang, bei dem er verschwindet; ein Update ueberlebt er."
+if [ -d "$FABRIC" ]; then
+    rm -rf "$FABRIC" && echo "<OK> Matter-Fabric entfernt." \
+        || echo "<WARNING> Die Fabric liess sich nicht entfernen: $FABRIC"
+else
+    echo "<INFO> Keine Fabric am neuen Ort vorhanden."
+fi
+if [ -f "$NUMMERN" ]; then
+    rm -f "$NUMMERN" && echo "<OK> Geraetenummern entfernt: $PDIR.nummern.json"
+fi
+rm -f "$LIEFMARKE" 2>/dev/null
+# Der alte Ort bis 0.9.16 - liegt im Datenordner und geht mit ihm.
+[ -d "$PDATA/matter" ] && echo "<INFO> Ein alter Fabric-Ordner ($PDATA/matter) geht mit dem Datenordner."
 echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
 echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
 echo "<INFO> (Vorgabe: matter/...). Zum Aufraeumen: LoxBerry -> System ->"

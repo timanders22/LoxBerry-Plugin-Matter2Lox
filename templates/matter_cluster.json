@@ -972,6 +972,15 @@
     "max": 10000,
     "einheit": "K",
     "_quelle": "ausgerechnet aus ColorControl.ColorTemperatureMireds; die Grenzen entsprechen dem Bereich, den die Aktion farbtemperatur annimmt"
+   },
+   "farbton_grad": {
+    "thema": "farbton_grad",
+    "typ": "zahl",
+    "text": "MT_ATTR.HUE_GRAD",
+    "min": 0,
+    "max": 360,
+    "einheit": "Grad",
+    "_quelle": "ausgerechnet aus ColorControl.CurrentHue (0..254) mal 360/254; die Aktion farbton nimmt Grad entgegen, gelesen wurde bis 0.9.16 nur der Rohwert"
    }
   }
  }

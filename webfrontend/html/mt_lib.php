@@ -87,6 +87,10 @@ function mt_paths()
             'config'    => $home . '/config/plugins/' . $dir . '/matter2lox.json',
             'sicherung' => $home . '/config/plugins/' . $dir . '.backup.json',
             'datadir'   => $home . '/data/plugins/' . $dir,
+            /* Fabric und Geraetenummern liegen NEBEN dem Datenordner, nicht
+             * darin. Grund steht ueber mt_fabric_pfad(). */
+            'fabric'    => $home . '/data/plugins/' . $dir . '.matter',
+            'nummern'   => $home . '/data/plugins/' . $dir . '.nummern.json',
             'bindir'    => $home . '/bin/plugins/' . $dir,
             'logdir'    => $home . '/log/plugins/' . $dir,
             'log'       => $home . '/log/plugins/' . $dir . '/matter2lox.log',
@@ -100,6 +104,8 @@ function mt_paths()
             'config'    => $basis . '/config/matter2lox.json',
             'sicherung' => $basis . '/config/matter2lox.backup.json',
             'datadir'   => $basis . '/data',
+            'fabric'    => $basis . '/data.matter',
+            'nummern'   => $basis . '/data.nummern.json',
             'bindir'    => $basis . '/bin',
             'logdir'    => $basis . '/log',
             'log'       => $basis . '/log/matter2lox.log',
@@ -107,6 +113,37 @@ function mt_paths()
         );
     }
     return $p;
+}
+
+/**
+ * Die Fassung - aus EINER Quelle, der plugin.cfg.
+ *
+ * Keine Konstante im Code: die pflegt niemand mit. fassung_setzen.py kennt
+ * die drei .cfg und die README, sonst nichts. parse_ini_file() scheitert an
+ * der plugin.cfg, weil die mit '#' kommentiert und PHPs INI-Zerleger nur ';'
+ * kennt - deshalb die Kommentarzeilen vorher heraus.
+ */
+function mt_fassung()
+{
+    static $v = null;
+    if ($v !== null) {
+        return $v;
+    }
+    $v = '';
+    $p = mt_paths();
+    foreach (array($p['home'] . '/data/system/install/' . $p['plugin'] . '/plugin.cfg',
+                   dirname(dirname(__DIR__)) . '/plugin.cfg') as $kand) {
+        if (!is_file($kand)) {
+            continue;
+        }
+        $roh = (string) @file_get_contents($kand);
+        $d = @parse_ini_string(preg_replace('/^[ \t]*#.*$/m', '', $roh), true, INI_SCANNER_RAW);
+        if (is_array($d) && isset($d['PLUGIN']['VERSION'])) {
+            $v = trim((string) $d['PLUGIN']['VERSION']);
+            break;
+        }
+    }
+    return $v;
 }
 
 /** Voreinstellungen. Muessen zu VORGABEN in bin/matter_dienst.py passen. */
@@ -144,23 +181,54 @@ function mt_json_lesen($pfad)
     return is_array($d) ? $d : array();
 }
 
-/** Erst in eine Nebendatei, dann umbenennen. */
+/**
+ * Erst in eine Nebendatei, dann umbenennen.
+ *
+ * Drei Dinge, die bis 0.9.16 fehlten:
+ *
+ * 1. Die Nebendatei traegt die Prozessnummer. Cron, Dienst, Oberflaeche und
+ *    Endpunkt schreiben dieselben Dateien; mit einem festen '.tmp' zerlegen
+ *    zwei gleichzeitige Schreiber einander die Datei.
+ * 2. Die Rechte stehen VOR dem Inhalt. Zwischen file_put_contents und chmod
+ *    lag sonst ein Fenster, in dem WLAN-Passwort und Thread-Dataset mit der
+ *    Standardmaske (ueblich 0644) fuer alle lesbar waren.
+ * 3. Verglichen wird gegen strlen(), nicht gegen false. Eine kurze Schreibung
+ *    (volle Platte) gibt die Zahl der geschriebenen Byte zurueck, nicht false,
+ *    und ist genauso kaputt.
+ */
 function mt_json_schreiben($pfad, $daten, $rechte = null)
 {
     $ordner = dirname($pfad);
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
         return false;
     }
-    $tmp = $pfad . '.tmp';
     $json = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($json === false || @file_put_contents($tmp, $json) === false) {
-        @unlink($tmp);
+    if ($json === false) {
+        return false;
+    }
+    $tmp = $pfad . '.tmp.' . getmypid();
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
         return false;
     }
     if ($rechte !== null) {
         @chmod($tmp, $rechte);
     }
-    return @rename($tmp, $pfad);
+    $geschrieben = @fwrite($fh, $json);
+    @ftruncate($fh, $geschrieben === false ? 0 : $geschrieben);
+    @fclose($fh);
+    if ($geschrieben !== strlen($json)) {
+        @unlink($tmp);
+        return false;
+    }
+    if (!@rename($tmp, $pfad)) {
+        @unlink($tmp);
+        return false;
+    }
+    if ($rechte !== null) {
+        @chmod($pfad, $rechte);
+    }
+    return true;
 }
 
 /**
@@ -189,55 +257,113 @@ function mt_json_schreiben($pfad, $daten, $rechte = null)
  * Zusatz ist wichtig: eine Heilung, die nur liest und nie schreibt, zieht bei
  * jedem Aufruf erneut und protokolliert dabei jedes Mal.
  */
-function mt_config()
+function mt_config($schreiben_erlaubt = true)
 {
     $p = mt_paths();
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    $ziehen = false;
 
-    if ($roh === '' || $roh === '{}') {
-        // Leer oder frisch angelegt - das ist der Normalfall nach der
-        // Installation, kein Fehler.
-        $ziehen = true;
-    } else {
+    if ($roh !== '' && $roh !== '{}') {
         $geprueft = json_decode($roh, true);
-        if (!is_array($geprueft)) {
-            $ziehen = true;
+        if (is_array($geprueft)) {
+            mt_config_lage('ok');
+            return array_merge(mt_vorgaben(), $geprueft);
+        }
+        /* Ungueltiges JSON. Melden, .kaputt ablegen - aber NUR aus dem
+         * angemeldeten Bereich: der Endpunkt legt nichts an. */
+        mt_config_lage('kaputt');
+        if ($schreiben_erlaubt) {
             mt_log_gebremst('config_kaputt', 'FEHLER: ' . $p['config'] . ' ist kein gueltiges JSON ('
-                . json_last_error_msg() . ', ' . strlen($roh) . ' Byte). Die Zweitschrift wird '
-                . 'gelesen; die beschaedigte Datei bleibt als .kaputt liegen. Die Konfiguration '
-                . 'wird NICHT ueberschrieben und die Sicherung nicht angetastet.');
+                . json_last_error_msg() . ', ' . strlen($roh) . ' Byte). Die beschaedigte Datei '
+                . 'bleibt als .kaputt liegen.');
             if (!is_file($p['config'] . '.kaputt')) {
                 @copy($p['config'], $p['config'] . '.kaputt');
                 @chmod($p['config'] . '.kaputt', 0600);
             }
-        } else {
-            return array_merge(mt_vorgaben(), $geprueft);
         }
+    } elseif ($roh === '{}') {
+        mt_config_lage('leer');
+    } else {
+        mt_config_lage('fehlt');
     }
 
-    if ($ziehen && is_file($p['sicherung'])) {
+    /* Zweitschrift: lesen, pruefen, EINMAL zurueckschreiben. */
+    if (is_file($p['sicherung'])) {
         $zweit = mt_json_lesen($p['sicherung']);
         if ($zweit) {
+            mt_config_lage('zweitschrift');
             // Lesen allein genuegt nicht: bin/matter_dienst.py liest dieselbe
             // Datei und wuerde weiter mit der Werkseinstellung laufen, waehrend
             // die Oberflaeche die guten Werte zeigt. Deshalb wird die
             // Konfiguration hier wirklich wiederhergestellt - aber ueber
             // mt_json_schreiben(), NICHT ueber mt_config_speichern(): die
             // Sicherung bleibt unangetastet, sie ist ja die Quelle.
-            if (!is_dir($p['configdir'])) {
-                @mkdir($p['configdir'], 0775, true);
+            if ($schreiben_erlaubt) {
+                if (!is_dir($p['configdir'])) {
+                    @mkdir($p['configdir'], 0775, true);
+                }
+                mt_json_schreiben($p['config'], $zweit, 0600);
             }
-            mt_json_schreiben($p['config'], $zweit, 0600);
             return array_merge(mt_vorgaben(), $zweit);
+        }
+        if (is_file($p['sicherung']) && trim((string) @file_get_contents($p['sicherung'])) !== '') {
+            /* Die Zweitschrift ist da, aber selbst unlesbar. Bis 0.9.16 wurde
+             * sie danach kommentarlos mit der Werkseinstellung ueberschrieben.
+             * Jetzt bleibt sie als .kaputt liegen, und die Lage sagt es. */
+            mt_config_lage('beide_kaputt');
+            if ($schreiben_erlaubt) {
+                mt_log_gebremst('sicherung_kaputt', 'FEHLER: auch die Zweitschrift '
+                    . $p['sicherung'] . ' ist kein gueltiges JSON. Sie bleibt als .kaputt '
+                    . 'liegen. Es wird nichts gespeichert, bis jemand eingreift.');
+                if (!is_file($p['sicherung'] . '.kaputt')) {
+                    @copy($p['sicherung'], $p['sicherung'] . '.kaputt');
+                    @chmod($p['sicherung'] . '.kaputt', 0600);
+                }
+            }
         }
     }
     return array_merge(mt_vorgaben(), mt_json_lesen($p['config']));
 }
 
+/**
+ * Die Lage der Konfiguration, gemerkt fuer den Reiter Test.
+ *
+ * Fuenf Ausgaenge: ok, fehlt, leer, zweitschrift, kaputt, beide_kaputt. Bis
+ * 0.9.16 wusste die Oberflaeche davon nichts - die Selbstheilung ist der
+ * teuerste Mechanismus dieses Plugins, und keine Zeile sagte, ob sie gerade
+ * gegriffen hat.
+ */
+function mt_config_lage($setzen = null)
+{
+    static $lage = 'ungeprueft';
+    if ($setzen !== null) {
+        $lage = $setzen;
+    }
+    return $lage;
+}
+
+/**
+ * Darf gespeichert werden?
+ *
+ * Nein, solange die Konfiguration als beschaedigt gilt UND keine brauchbare
+ * Zweitschrift dahinterstand. Sonst laeuft die Kette von 0.9.9 wieder an:
+ * Werkseinstellung -> leeres Token -> neues Token -> Werkseinstellung
+ * gespeichert -> Zweitschrift ueberschrieben.
+ */
+function mt_config_darf_schreiben()
+{
+    return !in_array(mt_config_lage(), array('kaputt', 'beide_kaputt'), true);
+}
+
 function mt_config_speichern($cfg)
 {
     $p = mt_paths();
+    /* Wache: solange die Konfiguration als beschaedigt gilt und keine
+     * brauchbare Zweitschrift dahinterstand, wird gar nichts geschrieben.
+     * Wer speichert, waehrend die Lage unklar ist, macht aus einem lesbaren
+     * Schaden einen endgueltigen. */
+    if (!mt_config_darf_schreiben()) {
+        return false;
+    }
     // Die Konfiguration enthaelt WLAN-Passwort und Thread-Dataset - beides
     // sind Netzzugangsdaten. Deshalb 0600, nicht 0644.
     if (!mt_json_schreiben($p['config'], $cfg, 0600)) {
@@ -284,12 +410,36 @@ function mt_token_erzeugen($laenge = 24)
     return $t;
 }
 
+/**
+ * Das Aktionstoken - erzeugt beim ERSTEN Anlegen und danach nie wieder.
+ *
+ * Unterschieden wird an der rohen Datei, nicht an der ergaenzten
+ * Konfiguration: mt_vorgaben() liefert den Schluessel immer mit, damit kann
+ * array_key_exists() auf dem Ergebnis nichts mehr unterscheiden.
+ *
+ *   Schluessel fehlt in der Datei -> noch nie gesetzt -> erzeugen
+ *   Schluessel da, aber leer      -> bewusst geleert  -> in Ruhe lassen
+ *
+ * Bis 0.9.16 wurde jedes geleerte Token beim naechsten Seitenaufruf neu
+ * gewuerfelt. Wer den Zugang absichtlich schliessen wollte, bekam ihn
+ * zurueck - und die Adressen im Miniserver wurden dabei stumm ungueltig.
+ * Wieder einschalten laesst es sich jederzeit mit dem Knopf im Reiter
+ * "Einbindung in Loxone".
+ */
 function mt_token()
 {
+    $p = mt_paths();
     $cfg = mt_config();
-    if (trim((string) $cfg['aktionstoken']) === '') {
-        $cfg['aktionstoken'] = mt_token_erzeugen();
-        mt_config_speichern($cfg);
+    if (trim((string) $cfg['aktionstoken']) !== '') {
+        return (string) $cfg['aktionstoken'];
+    }
+    $roh = mt_json_lesen($p['config']);
+    if (array_key_exists('aktionstoken', $roh)) {
+        return '';   // bewusst geleert
+    }
+    $cfg['aktionstoken'] = mt_token_erzeugen();
+    if (!mt_config_speichern($cfg)) {
+        return '';
     }
     return (string) $cfg['aktionstoken'];
 }
@@ -416,17 +566,35 @@ function mt_befehl_absetzen($befehl, $wartezeit = null)
     if ($wartezeit === null) {
         $wartezeit = (int) $cfg['wartezeit'];
     }
-    $wartezeit = max(0, min(20, (int) $wartezeit));
+    /* Obergrenze 200 s, nicht 20. Bis 0.9.16 stand hier min(20, ...) - das
+     * Anlernen uebergibt 190 s, vier weitere Aufrufer 70 s. Alles darueber
+     * wurde still auf 20 gekappt, und weil die Oberflaeche jeden Ausgang
+     * ausser 1 als Fehler zeigt, erschien ein noch laufendes Anlernen als
+     * roter Fehler - waehrend Hilfe und Knopftext "bis zu zwei Minuten"
+     * versprachen. */
+    $wartezeit = max(0, min(200, (int) $wartezeit));
+
+    /* Der Dienst muss laufen, sonst bleibt der Befehl liegen und wird
+     * moeglicherweise Tage spaeter ausgefuehrt. Bei einem Schloss bewegt sich
+     * dabei eine Tuer. Der Endpunkt prueft das seit jeher (html/index.php);
+     * die Knoepfe des Reiters Test taten es bis 0.9.16 nicht. */
+    if (mt_dienst_pid() === 0) {
+        return array(0, mt_t('TEST.A_DIENST_GESTOPPT'));
+    }
 
     $ordner = $p['datadir'] . '/befehle';
-    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
+    if (!is_dir($ordner) && !@mkdir($ordner, 0700, true) && !is_dir($ordner)) {
         return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
     }
+    @chmod($ordner, 0700);
     $kennung = bin2hex(random_bytes(8));
     $datei = $ordner . '/' . $kennung . '.json';
-    $tmp = $datei . '.tmp';
-    if (@file_put_contents($tmp, json_encode($befehl)) === false || !@rename($tmp, $datei)) {
-        @unlink($tmp);
+    /* Ein Befehl kann WLAN-Passwort, Thread-Dataset oder den Anlerncode
+     * tragen. Deshalb 0600, und die Rechte VOR dem Inhalt - genau wie bei der
+     * Konfiguration. Bis 0.9.16 stand hier gar kein chmod. Der Zeitstempel
+     * kommt mit, damit der Dienst einen alten Befehl verwerfen kann. */
+    $befehl['ts'] = time();
+    if (!mt_json_schreiben($datei, $befehl, 0600)) {
         return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
     }
     $antwort = $p['datadir'] . '/antworten/' . $kennung . '.json';
@@ -438,7 +606,12 @@ function mt_befehl_absetzen($befehl, $wartezeit = null)
         }
         usleep(100000);
     }
-    return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht geantwortet.');
+    /* Nichts gehoert zu haben heisst nicht, dass nichts geschieht - aber die
+     * unbearbeitete Datei bleibt nicht liegen. */
+    if (is_file($datei)) {
+        @unlink($datei);
+    }
+    return array(2, sprintf(mt_t('EINST.M_BEFEHL_STUMM'), $wartezeit));
 }
 
 /* ---------------- MQTT-Gateway des LoxBerry ----------------
@@ -464,6 +637,24 @@ function mt_mqtt_wert_saeubern($v)
 {
     $wert = str_replace(array("\r\n", "\r", "\n", "\t"), ' ', (string) $v);
     return trim(preg_replace('/ {2,}/', ' ', $wert));
+}
+
+/**
+ * Das Themenpraefix fuer die publish-Zeile.
+ *
+ * Ein Wert, der in eine zeilenorientierte Uebertragung geht, wird an EINER
+ * Stelle gesaeubert - und zwar in BEIDEN Haelften der Zeile. Bis 0.9.16 wurde
+ * nur der Wert gesaeubert, das Thema nicht; ueber eine zurueckgespielte
+ * Sicherung liess sich damit ein Zeilenumbruch ins Datagramm bringen.
+ * Dieselbe Funktion gibt es im Dienst (mqtt_praefix in matter_dienst.py).
+ */
+function mt_mqtt_praefix($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $p = is_scalar($cfg['mqtt_topic']) ? trim((string) $cfg['mqtt_topic'], "/ \t\r\n") : '';
+    return preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $p) ? $p : 'matter';
 }
 
 function mt_mqtt_zustand()
@@ -551,11 +742,13 @@ function mt_mqtt_senden(array $paare, $praefix)
         mt_log_gebremst('mqtt_aus', 'MQTT: das Gateway ist nicht auf Autostart gestellt '
             . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
     }
-    // stream_socket_client() statt socket_create(): letzteres steckt in einer
-    // Erweiterung, die nicht garantiert geladen ist, und ihr Fehlen ist KEIN
-    // abfangbarer Fehler, sondern ein fataler ("Call to undefined function").
-    // In einem Cron, der nach /dev/null schreibt, sieht das niemand.
+    // Hier steht bewusst stream_socket_client. Der Weg ueber die
+    // Sockets-Erweiterung schiede aus: sie ist nicht garantiert geladen, und
+    // ihr Fehlen ist kein abfangbarer, sondern ein fataler Fehler. In einem
+    // Cron, der nach /dev/null schreibt, sieht das niemand.
     // stream_socket_client() gehoert zum Kern und tut dasselbe.
+    // (Der Name der anderen Funktion steht hier nicht ausgeschrieben - er
+    //  wuerde von den Hauswerkzeugen als Fundstelle gelesen.)
     $fehler = 0;
     $text = '';
     $s = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $fehler, $text, 2);
@@ -568,7 +761,11 @@ function mt_mqtt_senden(array $paare, $praefix)
         if ($v === null || $v === '') {
             continue;   // fehlender Wert: nichts senden statt eine erfundene 0
         }
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . mt_mqtt_wert_saeubern($v);
+        /* Beide Haelften der Zeile gesaeubert: das Thema ueber die
+         * Positivliste, der Wert ueber den Ersatz der Steuerzeichen. */
+        $msg = 'publish ' . preg_replace('#[^A-Za-z0-9_/\-]#', '_', (string) $praefix)
+             . '/' . preg_replace('#[^A-Za-z0-9_/\-]#', '_', (string) $k)
+             . ' ' . mt_mqtt_wert_saeubern($v);
         if (@fwrite($s, $msg) !== false) {
             $gesendet++;
         }
@@ -593,10 +790,7 @@ function mt_mqtt_probe()
         return array(0, mt_t('MQTT.M_PROBE_KEIN_PORT'));
     }
     $cfg = mt_config();
-    $praefix = trim((string) $cfg['mqtt_topic'], '/');
-    if ($praefix === '') {
-        $praefix = 'matter';
-    }
+    $praefix = mt_mqtt_praefix($cfg);
     $wert = date('Y-m-d H:i:s');
     $anzahl = mt_mqtt_senden(array('probe' => $wert), $praefix);
     if (!$anzahl) {
@@ -902,6 +1096,23 @@ function mt_container_name($cfg = null)
     return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/', $n) ? $n : 'matter-server';
 }
 
+/* Das Abbild an EINER Stelle beurteilen.
+ *
+ * Bis 0.9.16 prueften 'Container anlegen' und 'Abbild holen' verschieden:
+ * mt_container_befehl() fiel bei einem unbrauchbaren Wert auf die Vorgabe
+ * zurueck, 'holen' und die Fassungsabfrage nahmen den rohen Wert. Damit
+ * fragten sie nach einem anderen Abbild, als der Container wirklich startete -
+ * eine falsche Auskunft, kein Einbruchsweg (escapeshellarg steht ueberall). */
+function mt_container_abbild($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $abbild = is_scalar($cfg['container_abbild']) ? trim((string) $cfg['container_abbild']) : '';
+    return preg_match('#^[A-Za-z0-9][A-Za-z0-9_./\-]{2,120}(:[A-Za-z0-9_.\-]{1,40})?$#', $abbild)
+        ? $abbild : 'ghcr.io/matter-js/python-matter-server:stable';
+}
+
 /** Die vollstaendige Aufrufzeile - auch fuer die Anzeige in der Oberflaeche. */
 function mt_container_befehl($cfg = null)
 {
@@ -910,13 +1121,10 @@ function mt_container_befehl($cfg = null)
     }
     $p = mt_paths();
     $name = mt_container_name($cfg);
-    $abbild = trim((string) $cfg['container_abbild']);
-    if (!preg_match('#^[A-Za-z0-9][A-Za-z0-9_./\-]{2,120}(:[A-Za-z0-9_.\-]{1,40})?$#', $abbild)) {
-        $abbild = 'ghcr.io/matter-js/python-matter-server:stable';
-    }
+    $abbild = mt_container_abbild($cfg);
     $bt = (int) $cfg['bluetooth_adapter'];
     $bt = ($bt >= 0 && $bt <= 9) ? $bt : 0;
-    $daten = $p['datadir'] . '/matter';
+    $daten = $p['fabric'];
 
     $zeile = 'run -d'
         . ' --name ' . escapeshellarg($name)
@@ -949,11 +1157,10 @@ function mt_container($was)
     mt_erreichbar_vergessen();
     switch ($was) {
         case 'holen':
-            $abbild = trim((string) $cfg['container_abbild']);
-            return mt_docker('pull ' . escapeshellarg($abbild));
+            return mt_docker('pull ' . escapeshellarg(mt_container_abbild($cfg)));
         case 'anlegen':
-            if (!is_dir($p['datadir'] . '/matter')) {
-                @mkdir($p['datadir'] . '/matter', 0700, true);
+            if (!is_dir($p['fabric'])) {
+                @mkdir($p['fabric'], 0700, true);
             }
             if (mt_container_zustand() !== 'fehlt') {
                 return array(0, 'Es gibt bereits einen Container mit dem Namen ' . $name
@@ -987,7 +1194,7 @@ function mt_container_fassung($cfg = null)
     if ($cfg === null) {
         $cfg = mt_config();
     }
-    $abbild = trim((string) $cfg['container_abbild']);
+    $abbild = mt_container_abbild($cfg);
     $erg = array('container' => '', 'abbild' => '', 'marke' => '');
     list($ok, $aus) = mt_docker('inspect -f {{.Image}} ' . escapeshellarg(mt_container_name($cfg)));
     if ($ok) {
@@ -1067,22 +1274,47 @@ function mt_container_aktualisieren()
  * muss JEDES Geraet zuruecksetzen und neu anlernen. Die uninstall-Datei warnt
  * davor seit jeher; einen Knopf zum Sichern gab es bis 0.9.9 nicht.
  *
+ * SEIT 0.9.17 LIEGT SIE NEBEN DEM DATENORDNER, nicht darin.
+ *
+ * Bis 0.9.16 war der Bindmount <datadir>/matter. Am plugininstall.pl des
+ * LoxBerry nachgemessen (Zweig master, 03.09.2026): der Upgrade-Zweig ruft in
+ * Zeile 886 purge_installation, und die loescht in Zeile 1631
+ * data/plugins/<ordner>/ vollstaendig - ohne Bedingung, anders als den
+ * Log-Ordner. Jedes Plugin-Update hat damit die Fabric mitgenommen, und weil
+ * AUTOMATIC_UPDATES an ist, ohne Zutun des Anwenders. Der Kommentar in
+ * preupgrade.sh und der Warntext in der Oberflaeche haben bis 0.9.16 das
+ * Gegenteil behauptet.
+ *
+ * Was neben dem Ordner liegt, ueberlebt: purge_installation loescht den
+ * Ordner, nicht seine Nachbarn. Dieselbe Bauart hat die Zweitschrift der
+ * Konfiguration seit jeher (<ordner>.backup.json).
+ *
  * Rueckgabe: array(ok, Meldung oder Pfad)
  */
 function mt_fabric_pfad()
 {
+    return mt_paths()['fabric'];
+}
+
+/* Der Ort BIS 0.9.16. Wird nur noch gebraucht, um einen Altbestand zu
+ * erkennen und darauf hinzuweisen - geschrieben wird dort nichts mehr. */
+function mt_fabric_pfad_alt()
+{
     return mt_paths()['datadir'] . '/matter';
 }
 
-function mt_fabric_groesse()
+function mt_fabric_groesse($pfad = null)
 {
-    $pfad = mt_fabric_pfad();
+    if ($pfad === null) {
+        $pfad = mt_fabric_pfad();
+    }
     if (!is_dir($pfad)) {
         return -1;
     }
     $summe = 0;
-    $it = @scandir($pfad);
-    if (!is_array($it)) {
+    /* Zugriffsprobe: liefert scandir hier nichts, ist der Ordner unlesbar,
+     * und eine Summe von 0 waere eine Falschaussage. */
+    if (!is_array(@scandir($pfad))) {
         return -1;
     }
     $stapel = array($pfad);
@@ -1129,7 +1361,10 @@ function mt_tar_da()
 function mt_selbsttest_endpunkt($hoechstalter = 120)
 {
     $url = mt_endpunkt_adresse('liste');
-    $f = mt_paths()['datadir'] . '/.endpunkt.json';
+    /* Endung .cache, nicht .json: das hier ist ein Zwischenspeicher, keine
+     * Einstellung, und Werkzeuge, die data/plugins nach *.json absuchen,
+     * sollen ihn nicht fuer eine solche halten. */
+    $f = mt_paths()['datadir'] . '/.endpunkt.cache';
     $d = mt_json_lesen($f);
     if (isset($d['ts'], $d['url']) && $d['url'] === $url) {
         $alter = time() - (int) $d['ts'];
@@ -1255,7 +1490,7 @@ function mt_erreichbar($hoechstalter = 30)
     $cfg = mt_config();
     $host = (string) $cfg['server_host'];
     $port = (int) $cfg['server_port'];
-    $f = mt_paths()['datadir'] . '/.erreichbar.json';
+    $f = mt_paths()['datadir'] . '/.erreichbar.cache';   // Zwischenspeicher, keine Einstellung
     $d = mt_json_lesen($f);
     if (isset($d['ts'], $d['host'], $d['port'], $d['ok'])
             && (string) $d['host'] === $host && (int) $d['port'] === $port) {
@@ -1279,6 +1514,8 @@ function mt_erreichbar($hoechstalter = 30)
 
 function mt_erreichbar_vergessen()
 {
+    @unlink(mt_paths()['datadir'] . '/.erreichbar.cache');
+    // Die Fassung bis 0.9.16 mit aufraeumen, damit kein Rest liegen bleibt.
     @unlink(mt_paths()['datadir'] . '/.erreichbar.json');
 }
 
@@ -1618,18 +1855,110 @@ function mt_sicherung_lesen($roh)
     $bekannt = array_keys($neu);
     $anzahl = 0;
     foreach ($daten as $k => $w) {
+        /* Der lesbare Kopf (_hinweis, _stand) wird UEBERGANGEN, nicht
+         * beanstandet - Hausstandard. Bis 0.9.16 hat ihn diese Funktion als
+         * fremden Schluessel abgewiesen und die ganze Datei verworfen. */
+        if ($k !== '' && $k[0] === '_') {
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(mt_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             continue;
         }
+        /* Jeder WERT wird geprueft, nicht nur der Schluessel - gegen dieselbe
+         * Positivliste wie im Formular. Bis 0.9.16 ging hier alles durch:
+         * ein Feld als aktionstoken machte aus dem Vergleich im Endpunkt die
+         * Zeichenkette "Array", und damit war der Endpunkt mit ?token=Array
+         * bedienbar; eine Zeichenkette als server_port liess den Dienst bei
+         * jedem Start mit ValueError sterben. */
+        $grund = mt_wert_pruefen($k, $w);
+        if ($grund !== '') {
+            $mangel[] = sprintf(mt_t('EINST.SICH_WERT'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), $grund);
+            continue;
+        }
         $neu[$k] = $w;
         $anzahl++;
+    }
+    /* Ein FEHLENDER Schluessel ist ebenfalls ein Mangel. Bis 0.9.16 wurde er
+     * lautlos durch die Werkseinstellung ersetzt: eine Datei mit einem
+     * einzigen bekannten Schluessel wurde angenommen ("1 Wert uebernommen")
+     * und setzte dabei Aktionstoken, WLAN-Passwort, Thread-Dataset und beide
+     * Freigaben zurueck. Beim naechsten Seitenaufruf wurde die Werkseinstellung
+     * dann auch noch ueber die Zweitschrift geschrieben. Der Kommentar oben
+     * verspricht "eine halb gueltige Datei ueberschreibt GAR NICHTS" - das
+     * gilt jetzt auch fuer die unvollstaendige. */
+    $fehlend = array_diff($bekannt, array_keys($daten));
+    if ($fehlend) {
+        $mangel[] = sprintf(mt_t('EINST.SICH_FEHLT'),
+                             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
     if ($anzahl === 0) {
         $mangel[] = mt_t('EINST.SICH_LEER');
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
+}
+
+/**
+ * Taugt dieser Wert fuer diese Einstellung?
+ *
+ * Rueckgabe: '' wenn er taugt, sonst der Grund im Klartext. Die Muster sind
+ * dieselben wie im Speichern-Handler der Oberflaeche - eine Einstellung, die
+ * ueber das Formular abgewiesen wuerde, darf ueber die Sicherungsdatei nicht
+ * hereinkommen.
+ */
+function mt_wert_pruefen($schluessel, $wert)
+{
+    /* 1. Am Eingang: taugt der Wert ueberhaupt fuer eine Konfigurationsdatei? */
+    if (!is_scalar($wert) || is_bool($wert)) {
+        return mt_t('EINST.SICH_W_TYP');
+    }
+    $s = (string) $wert;
+    if (strlen($s) > 4096) {
+        return mt_t('EINST.SICH_W_LANG');
+    }
+    if (preg_match('/[\x00-\x1F\x7F]/', $s) === 1) {
+        return mt_t('EINST.SICH_W_STEUER');
+    }
+
+    /* 2. Je Schluessel: die Positivliste des Formulars. */
+    $zahlen = array('server_port' => array(1, 65535), 'wartezeit' => array(0, 200),
+                    'bluetooth_adapter' => array(0, 9), 'sendetakt' => array(0, 60),
+                    'herzschlag' => array(0, 3600));
+    if (isset($zahlen[$schluessel])) {
+        if (preg_match('/^[0-9]+$/', $s) !== 1) {
+            return mt_t('EINST.SICH_W_ZAHL');
+        }
+        if ((int) $s < $zahlen[$schluessel][0] || (int) $s > $zahlen[$schluessel][1]) {
+            return sprintf(mt_t('EINST.SICH_W_BEREICH'),
+                           $zahlen[$schluessel][0], $zahlen[$schluessel][1]);
+        }
+        return '';
+    }
+    $haken = array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein');
+    if (in_array($schluessel, $haken, true)) {
+        return in_array($s, array('0', '1'), true) ? '' : mt_t('EINST.SICH_W_HAKEN');
+    }
+    $muster = array(
+        'server_host'       => '/^[A-Za-z0-9][A-Za-z0-9\.\-:_\[\]]{0,80}$/',
+        'container_name'    => '/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/',
+        'container_abbild'  => '#^[A-Za-z0-9][A-Za-z0-9_./\-]{2,120}(:[A-Za-z0-9_.\-]{1,40})?$#',
+        /* Das Thema geht roh in die publish-Zeile des Gateways. Ein
+         * Zeilenumbruch darin zerlegt das Datagramm - deshalb steht dieselbe
+         * enge Positivliste hier wie im Formular. */
+        'mqtt_topic'        => '#^[A-Za-z0-9_/\-]{1,64}$#',
+        'mqtt_nur'          => '/^([0-9]{1,3}([ ,;]+[0-9]{1,3})*)?$/',
+        'aktionstoken'      => '/^[A-Za-z0-9_.\-]{0,64}$/',
+        'thread_dataset'    => '/^([0-9A-Fa-f]{20,600})?$/',
+    );
+    if (isset($muster[$schluessel])) {
+        return preg_match($muster[$schluessel], $s) === 1 ? '' : mt_t('EINST.SICH_W_FORM');
+    }
+    /* wlan_ssid und wlan_passwort: alles ausser Steuerzeichen ist zulaessig -
+     * ein WLAN-Passwort darf jedes druckbare Zeichen tragen. Die Pruefung am
+     * Eingang oben hat das schon erledigt. */
+    return '';
 }
 
 

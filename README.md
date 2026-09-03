@@ -10,6 +10,137 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.17
+
+**Die Matter-Fabric überlebte kein Plugin-Update.** Der Container bekam
+`data/plugins/matter2lox/matter` als `/data` eingehängt — und genau diesen
+Baum räumt der LoxBerry-Installer bei jedem Upgrade vollständig ab. Am
+`plugininstall.pl` nachgemessen (Zweig `master`, 03.09.2026): der
+Upgrade-Zweig ruft in Zeile 886 `purge_installation`, und die löscht in Zeile
+1631 `data/plugins/<ordner>/` ohne jede Bedingung — anders als den Log-Ordner,
+der an `"all"` hängt und ein Upgrade übersteht. `preupgrade.sh` sicherte davon
+nichts. Weil `AUTOMATIC_UPDATES` an ist, wäre das ohne Zutun des Anwenders
+passiert: **jedes angelernte Gerät hätte nach jedem Update neu angelernt
+werden müssen.** Drei Texte im Plugin behaupteten dabei das Gegenteil, unter
+anderem der Warnkasten „Der Datenordner wird nie mitgelöscht".
+
+Fabric und Zertifikate liegen jetzt **neben** dem Datenordner
+(`data/plugins/matter2lox.matter`). Was neben dem Ordner liegt, überlebt —
+dieselbe Bauart hat die Zweitschrift der Konfiguration seit jeher.
+`preupgrade.sh` zieht einen vorhandenen Bestand einmalig um.
+
+> **Nach dem Update auf 0.9.17 einmal Hand anlegen:** Der laufende Container
+> zeigt noch auf den alten Pfad. Im Reiter *Einstellungen* einmal
+> *Container entfernen* und dann *Container anlegen* drücken. Die angelernten
+> Geräte bleiben dabei erhalten — die Fabric ist ja umgezogen, nicht gelöscht.
+> Der Reiter *Test* sagt in der Zeile „Liegt die Matter-Fabric an der
+> richtigen Stelle?", ob das noch aussteht.
+
+**Dieselbe Falle traf die Gerätenummern.** `nummern.json` lag im selben
+gelöschten Baum. Nach jedem Update entstanden die Nummern neu aus der
+sortierten Knotenliste — und war zwischenzeitlich ein Gerät aus der Fabric
+gefallen, zeigten `MATTER_3_…`, `geraet3/…` und `&geraet=3` danach still auf
+ein anderes Gerät. Genau der Fehler, den 0.9.10 behoben hat, kehrte bei jedem
+Update zurück. Auch diese Datei liegt jetzt neben dem Ordner.
+
+**Eine unvollständige Sicherungsdatei setzte alles zurück.** Beim
+Zurückspielen wurden nur *unbekannte* Schlüssel beanstandet; ein *fehlender*
+wurde lautlos durch die Werkseinstellung ersetzt. Eine Datei mit einem
+einzigen bekannten Schlüssel wurde angenommen („1 Wert übernommen") und
+räumte dabei Aktionstoken, WLAN-Passwort, Thread-Dataset und beide Freigaben
+ab. Beim nächsten Seitenaufruf wurde der Werkszustand dann auch noch über die
+Zweitschrift geschrieben. Jetzt gilt die eigene Regel auch hier: **eine halb
+gültige Datei ändert gar nichts.**
+
+**Beim Zurückspielen wurde kein einziger Wert geprüft.** Nur die Schlüssel.
+Ein Feld statt einer Zeichenkette im `aktionstoken` machte aus dem Vergleich
+im Endpunkt die Zeichenkette `Array` — der Endpunkt war damit mit
+`?token=Array` bedienbar, samt allen schaltenden Befehlen. Eine Zeichenkette
+statt einer Zahl im `server_port` ließ den Dienst bei jedem Start mit
+`ValueError` sterben, und der minütliche Wächter startete ihn endlos neu.
+Jetzt läuft jeder Wert durch dieselbe Prüfung wie im Formular.
+
+**Der unangemeldete Endpunkt legte Dateien an, bevor das Token geprüft war.**
+Gemessen: ein Aufruf ohne Token hinterließ bei beschädigter Konfiguration drei
+neue Dateien und schrieb die Konfiguration aus der Zweitschrift zurück. Die
+Lesefunktion hat jetzt einen Schalter; der Endpunkt ruft sie nur lesend auf.
+
+**Die Rohdurchreichung ließ sich nicht einschalten.** Ihr Haken steht im
+Reiter *MQTT*, gelesen wurde er im Handler des Reiters *Einstellungen* — der
+ihn nie mitgeschickt bekommt. Folge: jedes Speichern der Einstellungen
+schaltete sie ab, und der Haken selbst tat nichts.
+
+**Zustände gehen jetzt retained hinaus.** Bis 0.9.16 wurde gar nichts
+retained veröffentlicht: nach einem Neustart des Brokers, des Gateways oder
+des Miniservers war ein Fensterkontakt, der sich zwei Tage nicht bewegt, zwei
+Tage lang unbekannt. Zustände (Schalter, Kontakt, Schloss, Erreichbarkeit)
+sind jetzt retained, Messwerte mit Zeitbezug nicht, und das Lebenszeichen
+bleibt es nie — retained zeigte es immer „lebt".
+
+Dazu, kürzer:
+
+* Der Dienst wird nach einem Update wieder gestartet, wenn er vorher lief;
+  `preupgrade.sh` hält ihn sauber an (erst der Sollmerker, dann der Prozess) —
+  bis 0.9.16 startete ihn der Wächter mitten ins Update hinein, und danach
+  lief er gar nicht wieder an.
+* `?selftest=1&token=…` am Endpunkt, mit den drei festgelegten Antworten.
+* Vier Pflichtzeilen im Reiter *Test*: Konfigurationslage, Formularmerkmal,
+  Themenliste gegen Sendecode, Eindeutigkeit der Suchmuster. Dazu die Zeile
+  zur Fabric.
+* Die Selbstprüfung läuft nur noch, wenn der Reiter *Test* der offene ist.
+  Bis 0.9.16 liefen ihre Netzabrufe bei **jedem** Seitenaufruf.
+* Der Merker „zuletzt gesendet" wird erst nach dem Senden fortgeschrieben und
+  nur für das, was wirklich hinausging.
+* Ein Verbindungsabriss bleibt nicht mehr stumm: der Lauschauftrag wird
+  ausgewertet. Ein Fehler im eigenen Code wird nicht mehr als
+  Verbindungsstörung etikettiert.
+* Die Warteschlange trägt einen Zeitstempel; ein Stellbefehl verfällt nach
+  fünf Minuten, statt Tage später überraschend zu wirken. Ihre Dateien
+  bekommen `0600` — sie tragen WLAN-Passwort und Anlerncode.
+* Die Wartezeit wird nicht mehr still auf 20 s gekappt; das Anlernen darf
+  seine zwei Minuten haben, wie Hilfe und Knopftext es sagen.
+* Prozesserkennung argumentweise statt als Teilzeichenkette.
+* Der Farbton kommt zusätzlich in Grad (`farbton_grad`), passend zum
+  schreibenden Befehl — wie schon die Farbtemperatur in Kelvin.
+* Die Knopffarben stimmen wieder mit der Legende überein; „Log leeren" räumt
+  auch die rotierte Hälfte.
+
+## Neu in 0.9.16
+
+Der Abo-Satz im Reiter *MQTT* und im Reiter *Einbindung in Loxone* greift der
+Gateway-Fassung nicht mehr vor: unter V2 steht dort, dass nichts einzutragen
+ist. Dazu der Abstieg auf den Benutzer `loxberry` in `bin/dienst.sh`.
+(0.9.17 hat die Ortsangabe nachgetragen, die dabei im Fall „Fassung nicht
+feststellbar" verlorengegangen war.)
+
+## Neu in 0.9.15
+
+`clearstatcache()` vor der Log-Kappung. In einem langlebigen Prozess hält PHP
+die Antwort von `stat()` zwischen, und die Kappung öffnet dann nie. Folgen
+hatte das hier nicht — die PHP-Aufrufer dieses Plugins sind alle kurzlebig,
+und der Dauerläufer ist Python und rotiert selbst.
+
+## Neu in 0.9.14
+
+Ein Wachposten gegen fremde Formulare: jedes der Formulare trägt ein Merkmal,
+das aus einem Merkwort abgeleitet wird, und eine zentrale Prüfung steht vor
+allen Handlern. Ohne sie genügte ein einziger fremder POST im Browser eines
+angemeldeten Bedieners, um das Aktionstoken neu zu würfeln — danach
+beantwortet der Endpunkt jeden virtuellen Eingang mit 403, und ein virtueller
+Eingang wertet die Antwort nicht aus. Der Ausfall bliebe still.
+
+## Neu in 0.9.13
+
+Die Handler der Sicherungsknöpfe stehen vor `LBWeb::lbheader()`. Dahinter ist
+der Seitenkopf geschrieben, `header()` kommt zu spät, und der Knopf lieferte
+eine HTML-Seite mit angehängtem JSON statt einer Datei.
+
+## Neu in 0.9.12
+
+Die Knöpfe *Einstellungen sichern* und *Einstellungen zurückspielen*. Zweck
+ist der Umzug auf einen zweiten LoxBerry; die Datei trägt deshalb das
+Aktionstoken und alle Zugangsdaten, und der Hinweis am Knopf sagt das.
+
 ## Neu in 0.9.11
 
 **Eine Korrektur, und sie betrifft die Anleitung, nicht den Code.**
@@ -56,8 +187,10 @@ Nachgeprüft an den zap-templates von `project-chip/connectedhomeip`.
 sortierten Knotenliste. Fiel ein Gerät aus der Fabric, rückte jedes
 nachfolgende um eins vor — und `MATTER_3_…`, `geraet3/…` und `&geraet=3`
 zeigten danach auf ein anderes Gerät. Die Zuordnung steht jetzt in
-`data/plugins/matter2lox/nummern.json`, wird nie verändert und auch nach dem
-Entfernen eines Geräts nicht neu vergeben. Bestehende Anlagen behalten ihre
+`data/plugins/matter2lox.nummern.json` — seit 0.9.17 **neben** dem
+Datenordner, weil der Installer den Ordner bei jedem Upgrade abräumt (bis
+0.9.16 lag sie darin und ging bei jedem Update verloren). Sie wird nie
+verändert und auch nach dem Entfernen eines Geräts nicht neu vergeben. Bestehende Anlagen behalten ihre
 Nummern: beim ersten Lauf entsteht die Datei genau so, wie die Zählung bisher
 ausfiel. Dazu ist jedes Gerät jetzt auch über `&knoten=<Knotennummer>`
 erreichbar — die vergibt der Matter-Server, sie hängt an keiner Zählung des
@@ -309,8 +442,10 @@ sind über `?form=…` auch ohne JavaScript erreichbar.
 
 **Sechs PHP-8-Warnungen mitten in der Seite.**
 Zugriffe wie `$mt_g['hersteller']` und `$srv['schema_version']` gingen davon
-aus, dass `loxone.json` alle Schlüssel enthält. Die Datei überdauert
-Aktualisierungen und kann aus einer älteren Fassung stammen. Fehlt dann ein
+aus, dass `loxone.json` alle Schlüssel enthält. Die Datei kann aus einer älteren Fassung des Dienstes stammen, der im selben
+Lauf noch geschrieben hat. Ein Plugin-Update übersteht sie **nicht** — sie
+liegt im Datenordner, den der Installer abräumt; der Dienst schreibt sie beim
+nächsten Lauf neu. Fehlt dann ein
 Schlüssel, ist das unter PHP 7.4 eine Notice, die das `error_reporting`
 verschluckt — unter PHP 8 eine Warning, und die steht im Seitenkörper, einmal
 je Gerät und Spalte. Beide Fassungen liefern jetzt zeichengleiche Ausgabe ohne
@@ -500,8 +635,11 @@ fährt 7.4. Wer nur unter 8.4 misst, sieht den Fehler nie. Folgen hatte das
 hier nicht: die Aufrufer sind kurzlebig, und ein **frischer** Prozess kappt
 richtig. Eine Funktion darf aber nicht davon abhängen, wer sie wie oft ruft.
 
-Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
-beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
+Abhilfe: `clearstatcache(true, …)` **vor** dem Tor. Der zweite Parameter
+räumt zusätzlich den `realpath`-Eintrag dieser einen Datei; der
+`stat`-Zwischenspeicher wird ohnehin vollständig verworfen (unter PHP 7.4.33
+nachgemessen — ein `clearstatcache(true, $a)` verwarf auch den Wert einer
+Datei `$b`). Dasselbe Muster tragen Robonect,
 Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
 länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
 
@@ -557,10 +695,10 @@ Damit niemand mehr Verlass in diese Zeilen legt, als sie tragen:
   Feldname `Energy`, Feldnummer 0, Einheit mWh. Das Plugin nimmt beide Formen
   an und gibt lieber nichts zurück als eine erfundene Zahl.
 * Die Cluster mit `_ungeprueft` in `templates/matter_cluster.json`
-  (`ElectricalEnergyMeasurement`, `OperationalState`, `EnergyEvse`,
-  `WaterHeaterManagement`, `LaundryWasherMode`). Ihre Nummern stammen aus der
-  Spezifikation, gemessen hat sie an einem Gerät niemand. Der Reiter *Test*
-  weist sie als solche aus.
+  — zurzeit **16 Cluster**. Ihre Nummern stammen aus der Spezifikation,
+  gemessen hat sie an einem Gerät niemand. Aufgezählt werden sie nicht hier,
+  sondern im Reiter *Test*: eine zweite Liste läuft auseinander, und genau das
+  war bis 0.9.16 der Fall (die README nannte fünf, die Datei führte sechzehn).
 
 Geprüft ist dagegen: PHP-Syntax unter 7.4 und 8.4, die Oberfläche gerendert
 unter beiden Fassungen und im Aktualisierungsfall, die erzeugten

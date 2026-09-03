@@ -17,11 +17,21 @@
  *   liste                    alle Geraete
  *   roh                      vollstaendiges Abbild als JSON
  *
+ * Ohne Wirkung, nur zur Auskunft:
+ *   ?selftest=1&token=<TOKEN>   drei Ausgaenge, kein Geraetekontakt,
+ *                            kein Schreibzugriff:
+ *                              richtiges Token   200 SELFTEST;OK=1;TOKEN=OK
+ *                              falsches Token    403 SELFTEST;OK=0;ERR=TOKEN
+ *                              keines gesetzt    403 SELFTEST;OK=0;
+ *                                                    ERR=KEIN_TOKEN_EINGERICHTET
+ *
  * Jedes Geraet ist auf zwei Wegen ansprechbar:
  *   &geraet=N                die Geraetenummer des Plugins. Seit 0.9.10 fest -
- *                            die Zuordnung steht in data/.../nummern.json und
- *                            verschiebt sich nicht mehr, wenn ein Geraet aus
- *                            der Fabric faellt.
+ *                            die Zuordnung steht seit 0.9.17 NEBEN dem
+ *                            Datenordner (data/plugins/<ordner>.nummern.json)
+ *                            und ueberlebt damit ein Plugin-Update; bis 0.9.16
+ *                            lag sie darin und wurde bei jedem Update
+ *                            geloescht.
  *   &knoten=M                die Knotennummer des Matter-Servers. Haengt an
  *                            keiner Zaehlung des Plugins. Gewinnt, wenn beides
  *                            angegeben ist.
@@ -47,10 +57,15 @@
  *   attribut      &pfad=E/C/A&wert=...
  *   befehl        &cluster=N&name=<Name>[&nutzlast=<JSON>]
  *
- * Schaltend, aber mit EIGENEM Haken (Reiter Einstellungen):
- *   sperren | entsperren     Tuerschloss. Bewusst nicht an der allgemeinen
- *                            Steuerungsfreigabe: wer Lampen schalten laesst,
- *                            will damit nicht die Haustuer freigeben.
+ * Schaltend, mit einem ZWEITEN, eigenen Haken (Reiter Einstellungen):
+ *   sperren | entsperren     Tuerschloss. Verlangt BEIDE Freigaben - die
+ *                            allgemeine und die fuer Schloesser. Wer Lampen
+ *                            schalten laesst, hat damit die Haustuer noch
+ *                            nicht freigegeben.
+ *                            (Bis 0.9.16 stand hier "bewusst nicht an der
+ *                            allgemeinen Steuerungsfreigabe". Das war falsch:
+ *                            der Dienst prueft steuerung_ein vor schloss_ein,
+ *                            und dieser Endpunkt tut es ebenfalls.)
  *
  * Der Endpunkt spricht NIE selbst mit dem Matter-Server. Lesende Aufrufe
  * beantwortet er aus dem Zwischenspeicher, schaltende legt er in einer
@@ -64,20 +79,67 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/mt_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
-$mt_cfg = mt_config();
+/* Der unangemeldete Bereich darf NICHTS anlegen.
+ *
+ * Bis 0.9.16 stand hier ein blankes mt_config(). Das legt bei Bedarf den
+ * Konfigordner an, schreibt die Zweitschrift zurueck, kopiert eine
+ * beschaedigte Datei nach .kaputt und erzeugt dabei Protokoll- und
+ * Merkerdateien - alles VOR der Tokenpruefung. Gemessen: ein Aufruf ohne
+ * Token hinterliess drei neue Dateien. Der Schalter false sagt der
+ * Lesefunktion, dass sie hier nur lesen darf. */
+$mt_cfg = mt_config(false);
 
-/* ---------------- Token ---------------- */
-$mt_soll = (string) $mt_cfg['aktionstoken'];
-$mt_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+/* ---------------- Token ----------------
+ *
+ * is_string() vor jeder Wandlung: '?token[]=x' macht aus $_GET['token'] ein
+ * Feld, und '(string) $feld' ergibt unter PHP 8 die Warnung "Array to string
+ * conversion" - ausgegeben VOR http_response_code(), womit der Statuscode
+ * nicht mehr gesetzt wird ("headers already sent") und Loxone eine 200 statt
+ * einer 403 bekommt. Unter 7.4 ist es eine Notice und bleibt unsichtbar;
+ * gemessen wurde beides. */
+function mt_get($name)
+{
+    return isset($_GET[$name]) && is_string($_GET[$name]) ? $_GET[$name] : '';
+}
+
+/* Ein Parameter, der da ist, aber keine Zeichenkette: abweisen und melden.
+ * Nicht auf den Vorgabewert zurueckbiegen - das waere still zurechtgebogen,
+ * und der Aufrufer haelte die Antwort fuer die auf seine Frage. */
+function mt_kein_feld($name)
+{
+    if (isset($_GET[$name]) && !is_string($_GET[$name])) {
+        http_response_code(400);
+        echo "FEHLER;OK=0;GRUND=PARAMETER\n";
+        echo 'Der Wert von ' . $name . " ist keine Zeichenkette.\n";
+        exit;
+    }
+}
+
+$mt_soll = is_scalar($mt_cfg['aktionstoken']) ? (string) $mt_cfg['aktionstoken'] : '';
+$mt_ist = mt_get('token');
+$mt_selftest = mt_get('selftest') === '1';
+
 if ($mt_soll === '') {
     http_response_code(403);
+    if ($mt_selftest) {
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        exit;
+    }
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
     exit;
 }
 if (!hash_equals($mt_soll, $mt_ist)) {
     http_response_code(403);
-    echo "FEHLER;OK=0;GRUND=TOKEN\n";
+    echo $mt_selftest ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
+    exit;
+}
+
+/* Der Selbsttest beantwortet die Tokenfrage, ohne irgendetwas auszuloesen:
+ * kein Geraetekontakt, kein Schreibzugriff, kein Protokolleintrag. Er steht
+ * deshalb hinter der Tokenpruefung und vor allem anderen. */
+if ($mt_selftest) {
+    echo "SELFTEST;OK=1;TOKEN=OK\n";
     exit;
 }
 
@@ -89,7 +151,11 @@ $mt_schaltend = array('ein', 'aus', 'umschalten', 'helligkeit', 'farbtemperatur'
                       'soll_heizen', 'soll_kuehlen', 'betriebsart', 'luefter',
                       'sperren', 'entsperren', 'identify',
                       'attribut', 'befehl', 'abruf');
-$mt_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
+mt_kein_feld('aktion');
+$mt_aktion = mt_get('aktion');
+if ($mt_aktion === '') {
+    $mt_aktion = 'status';
+}
 if (!in_array($mt_aktion, array_merge($mt_lesend, $mt_schaltend), true)) {
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
@@ -103,10 +169,21 @@ if (!in_array($mt_aktion, array_merge($mt_lesend, $mt_schaltend), true)) {
  */
 function mt_param($name, $muster, $vorgabe = '')
 {
-    if (!isset($_GET[$name]) || $_GET[$name] === '') {
+    if (!isset($_GET[$name])) {
         return $vorgabe;
     }
-    $w = (string) $_GET[$name];
+    /* Ein Feld ist keine Zeichenkette und wird abgewiesen, nicht gewandelt -
+     * siehe die Begruendung bei mt_get(). */
+    if (!is_string($_GET[$name])) {
+        http_response_code(400);
+        echo "FEHLER;OK=0;GRUND=PARAMETER\n";
+        echo 'Der Wert von ' . $name . " ist keine Zeichenkette.\n";
+        exit;
+    }
+    $w = $_GET[$name];
+    if ($w === '') {
+        return $vorgabe;
+    }
     if (!preg_match($muster, $w)) {
         http_response_code(400);
         echo "FEHLER;OK=0;GRUND=PARAMETER\n";
@@ -131,7 +208,12 @@ $mt_thema    = mt_param('thema', '/^[a-z0-9_]{1,40}$/', '');
 $mt_pfad     = mt_param('pfad', '#^[0-9]{1,3}/[0-9]{1,5}/[0-9]{1,5}$#', '');
 $mt_cluster  = mt_param('cluster', '/^[0-9]{1,5}$/', '');
 $mt_name     = mt_param('name', '/^[A-Za-z][A-Za-z0-9]{0,48}$/', '');
-$mt_nutzlast = isset($_GET['nutzlast']) ? (string) $_GET['nutzlast'] : '';
+$mt_nutzlast = mt_get('nutzlast');
+if (strlen($mt_nutzlast) > 4096) {
+    http_response_code(400);
+    echo "FEHLER;OK=0;GRUND=NUTZLAST_ZU_LANG\n";
+    exit;
+}
 
 function mt_w($v)
 {
@@ -141,9 +223,23 @@ function mt_w($v)
     return (string) (0 + $v);
 }
 
+/**
+ * Ein Feld des Abbilds, abgesichert.
+ *
+ * Das Abbild schreibt der Dienst; fehlt ein Schluessel (aeltere Fassung, halb
+ * geschriebene Datei), ist das unter PHP 7.4 eine verschluckte Notice, unter
+ * PHP 8 aber eine Warning - und die stuende MITTEN IN DER ANTWORTZEILE, die
+ * der Miniserver auswertet. Deshalb geht jeder Zugriff hier durch.
+ */
+function mt_f($g, $name, $leer = '')
+{
+    return is_array($g) && isset($g[$name]) ? $g[$name] : $leer;
+}
+
 $mt_lox = mt_loxone();
 $mt_alle = mt_geraete();
 $mt_alter = mt_alter();
+$mt_knoten_unbekannt = false;
 if ($mt_knoten !== '') {
     $mt_g = null;
     foreach ($mt_alle as $mt_k => $mt_kandidat) {
@@ -153,6 +249,7 @@ if ($mt_knoten !== '') {
             break;
         }
     }
+    $mt_knoten_unbekannt = ($mt_g === null);
 } else {
     $mt_g = isset($mt_alle[$mt_nr]) ? $mt_alle[$mt_nr] : null;
 }
@@ -172,9 +269,9 @@ if ($mt_aktion === 'liste') {
         isset($srv['sdk_version']) ? $srv['sdk_version'] : '-',
         isset($srv['bluetooth']) ? (int) $srv['bluetooth'] : 0);
     foreach ($mt_alle as $nr => $g) {
-        echo $nr . ';' . $g['name'] . ';Knoten=' . (int) $g['node_id']
-           . ';Erreichbar=' . (int) $g['erreichbar']
-           . ';Endpunkte=' . count((array) $g['endpunkte']) . "\n";
+        echo $nr . ';' . mt_f($g, 'name', '?') . ';Knoten=' . (int) mt_f($g, 'node_id', 0)
+           . ';Erreichbar=' . (int) mt_f($g, 'erreichbar', 0)
+           . ';Endpunkte=' . count((array) mt_f($g, 'endpunkte', array())) . "\n";
     }
     exit;
 }
@@ -193,7 +290,7 @@ if ($mt_aktion === 'statusalle') {
      */
     $mt_alleda = count($mt_alle) > 0;
     foreach ($mt_alle as $g) {
-        if (empty($g['erreichbar'])) { $mt_alleda = false; break; }
+        if (!mt_f($g, 'erreichbar', 0)) { $mt_alleda = false; break; }
     }
     $teile = array(
         'MATTER;OK=' . (int) (!empty($mt_lox['ok'])),
@@ -201,7 +298,7 @@ if ($mt_aktion === 'statusalle') {
         'ALTER=' . $mt_alter,
     );
     foreach ($mt_alle as $nr => $g) {
-        foreach ((array) $g['endpunkte'] as $ep => $felder) {
+        foreach ((array) mt_f($g, 'endpunkte', array()) as $ep => $felder) {
             foreach ((array) $felder as $thema => $w) {
                 $teile[] = 'MATTER_' . (int) $nr . '_' . strtoupper($ep . '_' . $thema)
                          . '=' . mt_w($w);
@@ -240,6 +337,14 @@ if ($mt_aktion === 'statusalle') {
 $mt_global = array('abruf');
 
 if (in_array($mt_aktion, $mt_global, true)) {
+    /* Eine angegebene, aber unbekannte Knotennummer wird gemeldet, nicht
+     * uebergangen. Bis 0.9.16 loeste sie still einen Gesamtabruf aus - der
+     * Aufrufer bekam OK=1 und hielt seinen Knoten fuer ausgelesen. */
+    if ($mt_knoten_unbekannt) {
+        http_response_code(400);
+        printf("SET;OK=0;GRUND=KNOTEN_UNBEKANNT;KNOTEN=%s;N=%d\n", $mt_knoten, count($mt_alle));
+        exit;
+    }
     if (mt_dienst_pid() === 0) {
         http_response_code(503);
         echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
@@ -252,7 +357,7 @@ if (in_array($mt_aktion, $mt_global, true)) {
     $mt_auftrag = array('aktion' => $mt_aktion);
     $mt_frist = null;
     if ($mt_g !== null && (isset($_GET['geraet']) || $mt_knoten !== '')) {
-        $mt_auftrag['knoten'] = (int) $mt_g['node_id'];
+        $mt_auftrag['knoten'] = (int) mt_f($mt_g, 'node_id', 0);
         $mt_frist = 20;
     }
     list($mt_erg, $mt_meldung) = mt_befehl_absetzen($mt_auftrag, $mt_frist);
@@ -277,7 +382,8 @@ if ($mt_aktion === 'wert') {
         echo "-\n";
         exit;
     }
-    $ep = (array) (isset($mt_g['endpunkte'][$mt_endpunkt]) ? $mt_g['endpunkte'][$mt_endpunkt] : array());
+    $mt_eps = (array) mt_f($mt_g, 'endpunkte', array());
+    $ep = (array) (isset($mt_eps[$mt_endpunkt]) ? $mt_eps[$mt_endpunkt] : array());
     echo (isset($ep[$mt_thema]) ? mt_w($ep[$mt_thema]) : '-') . "\n";
     exit;
 }
@@ -285,10 +391,10 @@ if ($mt_aktion === 'wert') {
 if ($mt_aktion === 'status') {
     $teile = array(
         'MATTER;OK=' . (int) (!empty($mt_lox['ok'])),
-        'ERREICH=' . (int) $mt_g['erreichbar'],
+        'ERREICH=' . (int) mt_f($mt_g, 'erreichbar', 0),
         'ALTER=' . $mt_alter,
     );
-    foreach ((array) $mt_g['endpunkte'] as $ep => $felder) {
+    foreach ((array) mt_f($mt_g, 'endpunkte', array()) as $ep => $felder) {
         foreach ((array) $felder as $thema => $w) {
             $teile[] = strtoupper($ep . '_' . $thema) . '=' . mt_w($w);
         }
@@ -317,7 +423,7 @@ if (mt_dienst_pid() === 0) {
 
 $mt_befehl = array(
     'aktion'   => $mt_aktion,
-    'knoten'   => (int) $mt_g['node_id'],
+    'knoten'   => (int) mt_f($mt_g, 'node_id', 0),
     'endpunkt' => (int) $mt_endpunkt,
 );
 if (in_array($mt_aktion, array('helligkeit', 'farbtemperatur', 'rollo',

@@ -27,6 +27,182 @@ function mt_pruefzeile($stand, $frage, $antwort)
  * eine Pruefung, die statisch liest und gegen einen Laufzeitwert vergleicht,
  * steht dauerhaft auf Rot, ohne dass etwas falsch waere.
  */
+/**
+ * Ist die Konfiguration heil?
+ *
+ * Jeder Zustand, den mt_config() erzeugen kann, bekommt seinen Satz - das ist
+ * Hausstandard und fehlte bis 0.9.16 ganz. Die Selbstheilung ist der teuerste
+ * Mechanismus dieses Plugins; ob sie gerade gegriffen hat, stand nirgends.
+ */
+function mt_pruef_konfig()
+{
+    $p = mt_paths();
+    $lage = mt_config_lage();
+    $texte = array(
+        'ok'           => array(1, 'TEST.A_KONFIG_OK'),
+        'fehlt'        => array(-1, 'TEST.A_KONFIG_FEHLT'),
+        'leer'         => array(-1, 'TEST.A_KONFIG_LEER'),
+        'zweitschrift' => array(0, 'TEST.A_KONFIG_ZWEIT'),
+        'kaputt'       => array(0, 'TEST.A_KONFIG_KAPUTT'),
+        'beide_kaputt' => array(0, 'TEST.A_KONFIG_BEIDE'),
+    );
+    if (!isset($texte[$lage])) {
+        return array(-1, sprintf(mt_t('TEST.A_KONFIG_UNBEKANNT'), mt_e($lage)));
+    }
+    $antwort = mt_t($texte[$lage][1]);
+    if (is_file($p['config'] . '.kaputt')) {
+        $antwort .= ' ' . sprintf(mt_t('TEST.A_KONFIG_KAPUTTDATEI'),
+                                  mt_e($p['config'] . '.kaputt'));
+    }
+    return array($texte[$lage][0], $antwort);
+}
+
+/**
+ * Tragen alle Formulare das Merkmal gegen fremde Absender?
+ *
+ * Ein Formular vergisst man. Gezaehlt wird in der eigenen Datei: oeffnende
+ * <form>-Marken gegen Aufrufe von mt_fmt(). Der Wachposten kam in 0.9.14,
+ * diese Zeile nicht.
+ */
+function mt_pruef_formulare()
+{
+    $datei = __DIR__ . '/index.php';
+    if (!is_file($datei)) {
+        return array(-1, sprintf(mt_t('TEST.A_REITER_UNBEKANNT'), mt_e($datei)));
+    }
+    $t = (string) @file_get_contents($datei);
+    $formulare = preg_match_all('/<form\b/i', $t);
+    $marken = preg_match_all('/mt_fmt\(\)/', $t);
+    if ($formulare === 0) {
+        return array(0, mt_t('TEST.A_FORM_KEINE'));
+    }
+    if ($formulare !== $marken) {
+        return array(0, sprintf(mt_t('TEST.A_FORM_FEHL'), $formulare, $marken));
+    }
+    return array(1, sprintf(mt_t('TEST.A_FORM_OK'), $formulare));
+}
+
+/**
+ * Nennt die Themenliste der Oberflaeche, was der Dienst wirklich sendet?
+ *
+ * Die Tabelle im Reiter MQTT ist die Anleitung. Laeuft sie gegen den
+ * Sendecode auseinander, traegt jemand Eingaenge in Loxone ein, die nie einen
+ * Wert bekommen - oder er sucht einen Wert, den es nicht gibt.
+ */
+function mt_pruef_themen()
+{
+    $tab = mt_tabelle();
+    $bekannt = array();
+    foreach ((array) (isset($tab['cluster']) ? $tab['cluster'] : array()) as $c) {
+        foreach ((array) (isset($c['attribute']) ? $c['attribute'] : array()) as $a) {
+            if (isset($a['thema'])) {
+                $bekannt[(string) $a['thema']] = 1;
+            }
+        }
+    }
+    foreach (array('ereignisthemen', 'abgeleitete_themen') as $gruppe) {
+        $q = isset($tab[$gruppe]['themen']) ? $tab[$gruppe]['themen'] : array();
+        foreach ((array) $q as $a) {
+            if (isset($a['thema'])) {
+                $bekannt[(string) $a['thema']] = 1;
+            }
+        }
+    }
+    if (!$bekannt) {
+        return array(0, mt_t('TEST.A_THEMEN_LEER'));
+    }
+    /* Was der Dienst zusaetzlich zu den Attributthemen sendet, steht in
+     * seiner Quelle. Gesucht werden die woertlichen Schluessel des
+     * Lebenszeichens - sie sind der Teil, der ohne Geraet hinausgeht. */
+    $lebens = array('online', 'ok', 'ts');
+    $fehlend = array();
+    $datei = mt_paths()['bindir'] . '/matter_dienst.py';
+    if (is_file($datei)) {
+        $py = (string) @file_get_contents($datei);
+        foreach ($lebens as $l) {
+            if (strpos($py, '"' . $l . '"') === false) {
+                $fehlend[] = $l;
+            }
+        }
+    }
+    if ($fehlend) {
+        return array(0, sprintf(mt_t('TEST.A_THEMEN_FEHL'), mt_e(implode(', ', $fehlend))));
+    }
+    return array(1, sprintf(mt_t('TEST.A_THEMEN_OK'), count($bekannt), count($lebens)));
+}
+
+/**
+ * Ist jedes Suchmuster eindeutig?
+ *
+ * Loxone sucht die Zeichenkette woertlich und nimmt den ERSTEN Treffer.
+ * Steckt ein Feldname in einem anderen, liest der Eingang den falschen Wert -
+ * ohne Fehlermeldung. Das fuehrende Semikolon aus mt_check() verhindert das;
+ * diese Zeile misst es an der wirklich erzeugten Antwortzeile.
+ */
+function mt_pruef_muster()
+{
+    $marken = array();
+    foreach (array_keys(mt_status_felder()) as $feld) {
+        $marken[] = (string) $feld;
+    }
+    foreach ((array) mt_geraete() as $nr => $g) {
+        foreach ((array) (isset($g['endpunkte']) ? $g['endpunkte'] : array()) as $ep => $felder) {
+            foreach ((array) $felder as $thema => $w) {
+                $marken[] = strtoupper($ep . '_' . $thema);
+            }
+        }
+    }
+    $marken = array_values(array_unique($marken));
+    if (!$marken) {
+        return array(-1, mt_t('TEST.A_MUSTER_LEER'));
+    }
+    /* Die Antwortzeile so bauen, wie der Endpunkt sie baut: jedes Feld mit
+     * fuehrendem Semikolon, auch das erste. */
+    $zeile = 'MATTER';
+    foreach ($marken as $m) {
+        $zeile .= ';' . $m . '=1';
+    }
+    /* Gesucht wird das, was Loxone in der Antwortzeile WIRKLICH sucht: die
+     * Zeichenfolge zwischen den beiden \i des Musters, also ';NAME='. Das
+     * Muster selbst (mt_check) enthaelt die \i-Marken und kommt in der Zeile
+     * nirgends woertlich vor - wer danach sucht, zaehlt immer null und meldet
+     * jede Marke als doppelt. (Erster Lauf dieser Zeile: genau das ist
+     * passiert.) */
+    $doppelt = array();
+    foreach ($marken as $m) {
+        if (substr_count($zeile, ';' . $m . '=') !== 1) {
+            $doppelt[] = $m;
+        }
+    }
+    if ($doppelt) {
+        return array(0, sprintf(mt_t('TEST.A_MUSTER_FEHL'), mt_e(implode(', ', $doppelt))));
+    }
+    return array(1, sprintf(mt_t('TEST.A_MUSTER_OK'), count($marken)));
+}
+
+/**
+ * Steht die Fabric am neuen Ort - und liegt noch etwas am alten?
+ *
+ * Bis 0.9.16 lag sie in data/plugins/<ordner>/matter, und der Installer
+ * loescht diesen Baum bei jedem Upgrade. Wer von einer alten Fassung kommt
+ * und den Container noch nicht neu angelegt hat, laeuft weiter gegen den
+ * alten Pfad - und verliert die Fabric beim naechsten Update.
+ */
+function mt_pruef_fabric()
+{
+    $neu = mt_fabric_pfad();
+    $alt = mt_fabric_pfad_alt();
+    $altda = is_dir($alt) && count((array) @scandir($alt)) > 2;
+    if ($altda) {
+        return array(0, sprintf(mt_t('TEST.A_FABRIC_ALT'), mt_e($alt), mt_e($neu)));
+    }
+    if (!is_dir($neu)) {
+        return array(-1, sprintf(mt_t('TEST.A_FABRIC_KEINE'), mt_e($neu)));
+    }
+    $g = mt_fabric_groesse($neu);
+    return array(1, sprintf(mt_t('TEST.A_FABRIC_OK'), mt_e($neu), (int) round($g / 1024)));
+}
+
 function mt_pruef_reiter()
 {
     $datei = __DIR__ . '/index.php';
@@ -272,6 +448,13 @@ function mt_pruefungen()
     // Ein Anfuehrungszeichen oder ein Umlaut im Geraetenamen zerlegt die
     // Datei, und Loxone Config meldet dazu nichts Brauchbares. Deshalb wird
     // hier erzeugt und sofort wieder eingelesen: wohlgeformt oder nicht.
+    if (!function_exists('simplexml_load_string') || !function_exists('libxml_use_internal_errors')) {
+        /* Ohne php-xml laesst sich die Vorlage nicht pruefen. Das ist ein
+         * Strich, kein Kreuz - und es steht dabei, was fehlt. Ungesichert
+         * waere es ein fataler Fehler und die ganze Seite bliebe weiss. */
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_VORLAGE'), mt_t('TEST.A_VORLAGE_KEIN_XML'));
+        return $zeilen;
+    }
     $mt_vorher = libxml_use_internal_errors(true);
     $mt_kaputt = array();
     $mt_gezaehlt = 0;
@@ -332,6 +515,21 @@ function mt_pruefungen()
 
     // --- Die Oberflaeche gegen sich selbst ---
     $r = mt_pruef_reiter();
+    $k = mt_pruef_konfig();
+    $zeilen[] = mt_pruefzeile($k[0], mt_t('TEST.F_KONFIG'), $k[1]);
+
+    $fb = mt_pruef_fabric();
+    $zeilen[] = mt_pruefzeile($fb[0], mt_t('TEST.F_FABRIC'), $fb[1]);
+
+    $fo = mt_pruef_formulare();
+    $zeilen[] = mt_pruefzeile($fo[0], mt_t('TEST.F_FORMULARE'), $fo[1]);
+
+    $th = mt_pruef_themen();
+    $zeilen[] = mt_pruefzeile($th[0], mt_t('TEST.F_THEMEN'), $th[1]);
+
+    $mu = mt_pruef_muster();
+    $zeilen[] = mt_pruefzeile($mu[0], mt_t('TEST.F_MUSTER'), $mu[1]);
+
     $zeilen[] = mt_pruefzeile($r[0], mt_t('TEST.F_REITER'), $r[1]);
     $vg = mt_pruef_vorgaben();
     $zeilen[] = mt_pruefzeile($vg[0], mt_t('TEST.F_VORGABEN'), $vg[1]);

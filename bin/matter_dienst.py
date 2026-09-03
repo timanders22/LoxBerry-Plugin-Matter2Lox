@@ -145,7 +145,18 @@ DATEI_LOXONE = PDATA / "loxone.json"
 # Start einmal weggeraeumt.
 DATEI_ALTCACHE = PDATA / "cache.json"
 # Zuordnung Knotennummer -> Geraetenummer. Siehe nummern_zuordnen().
-DATEI_NUMMERN = PDATA / "nummern.json"
+#
+# Sie liegt seit 0.9.17 NEBEN dem Datenordner, nicht darin. Der LoxBerry-
+# Installer raeumt data/plugins/<ordner>/ bei jedem Upgrade vollstaendig ab
+# (plugininstall.pl, Zweig master: purge_installation in Zeile 886 des
+# Upgrade-Zweigs, die Loeschung in Zeile 1631). Bis 0.9.16 war die Datei damit
+# nach jedem Update fort, und die Geraetenummern entstanden neu aus der
+# sortierten Knotenliste - genau der Fehler, den 0.9.10 behoben hat.
+# Nachbarn des Ordners ueberleben; preupgrade.sh zieht eine alte Datei um.
+DATEI_NUMMERN = PDATA.parent / (PNAME + ".nummern.json")
+DATEI_NUMMERN_ALT = PDATA / "nummern.json"
+# Fabric und Zertifikate des Containers - aus demselben Grund daneben.
+ORDNER_FABRIC = PDATA.parent / (PNAME + ".matter")
 DATEI_ZUSTAND = PDATA / "zustand.json"
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
@@ -174,11 +185,41 @@ VORGABEN = {
     "herzschlag": 60,
     # Geraetenummern, die ueber MQTT hinausgehen sollen. Leer = alle.
     "mqtt_nur": "",
-    # Schloesser schalten. Bewusst NICHT an steuerung_ein gehaengt: wer Lampen
-    # aus Loxone schalten will, will damit nicht zwangslaeufig auch die
-    # Haustuer aufsperren koennen.
+    # Schloesser schalten. Ein ZWEITER Haken ZUSAETZLICH zu steuerung_ein:
+    # befehl_ausfuehren() prueft steuerung_ein, bevor es schloss_ein prueft,
+    # und der Endpunkt tut dasselbe. Wer Lampen aus Loxone schalten will, hat
+    # damit die Haustuer noch nicht freigegeben. (Bis 0.9.16 stand hier
+    # "bewusst NICHT an steuerung_ein gehaengt" - das war eine Beschreibung,
+    # die der Code an zwei Stellen widerlegt.)
     "schloss_ein": 0,
 }
+
+# Wie lange ein Stellbefehl in der Warteschlange gueltig bleibt. Was laenger
+# liegt, wird verworfen und gemeldet, statt spaeter ueberraschend zu wirken.
+BEFEHL_VERFALL_S = 300
+
+# Was wirklich eine Verbindungsstoerung ist. OSError deckt die Netzschicht ab
+# (ConnectionError erbt davon), dazu Zeitueberschreitung, fehlendes Paket und
+# ein abgerissener Strom.
+VERBINDUNGSFEHLER = (OSError, asyncio.TimeoutError, ImportError, EOFError)
+
+
+def ist_verbindungsfehler(err: BaseException) -> bool:
+    """Verbindungsstoerung oder Fehler im eigenen Code?
+
+    Die Unterscheidung entscheidet, wie gemeldet wird. Bis 0.9.16 fing ein
+    einziger except-Zweig alles und schrieb jeden KeyError als "Verbindung zum
+    Matter-Server: ..." ins Protokoll - eine behauptete Ursache, keine
+    gemessene, und gedrosselt auf eine Meldung je Viertelstunde.
+
+    Die Ausnahmen der websockets-Bibliothek erben nicht von OSError; sie
+    werden am Modulnamen ihrer Klasse erkannt, damit hier kein Import noetig
+    ist (websockets wird bewusst erst in verbinden() geladen).
+    """
+    if isinstance(err, VERBINDUNGSFEHLER):
+        return True
+    modul = str(getattr(type(err), "__module__", ""))
+    return modul.split(".", 1)[0] == "websockets"
 
 _LAUF = True
 _LOG = logging.getLogger("matter2lox")
@@ -251,7 +292,15 @@ def config() -> dict:
         # waehrend die Oberflaeche aus der Zweitschrift die richtigen Werte
         # zeigte. Zwei Herren an einer Datei.
         try:
-            leer = DATEI_CONFIG.stat().st_size == 0
+            roh_text = ""
+            try:
+                roh_text = DATEI_CONFIG.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+            # "{}" ist tadelloses JSON, nur leer - so legt postinstall.sh
+            # die Datei an. Bis 0.9.16 meldete jede frische Installation
+            # deshalb "laesst sich nicht als JSON lesen".
+            leer = roh_text in ("", "{}")
         except OSError:
             leer = True
         zweit = PCONFIG.parent / (PNAME + ".backup.json")
@@ -271,8 +320,21 @@ def config() -> dict:
                 "brauchbare Zweitschrift. Der Dienst laeuft mit der Werkseinstellung - "
                 "Steuerung aus, Themenpraefix 'matter'.", 3600)
     c.update(gelesen)
-    c["server_port"] = max(1, min(65535, int(c.get("server_port") or 5580)))
-    c["wartezeit"] = max(0, min(60, int(c.get("wartezeit") or 8)))
+    # Dieselbe try-Form wie bei sendetakt/herzschlag zwei Zeilen tiefer.
+    # Bis 0.9.16 stand hier ein blankes int(): ein nicht numerischer Wert
+    # in der Konfiguration (von Hand gesetzt oder aus einer Sicherung
+    # zurueckgespielt) liess den Dienst bei JEDEM Start mit ValueError
+    # sterben, und der minuetliche Waechter startete ihn endlos neu.
+    for feld, klein, gross, vorgabe in (("server_port", 1, 65535, 5580),
+                                        ("wartezeit", 0, 200, 8)):
+        try:
+            c[feld] = max(klein, min(gross, int(c.get(feld) or vorgabe)))
+        except (TypeError, ValueError):
+            melde_gebremst(
+                "config_" + feld,
+                f"{feld} in der Konfiguration ist keine Zahl "
+                f"({c.get(feld)!r}) - es gilt die Vorgabe {vorgabe}.")
+            c[feld] = vorgabe
     # 0 ist hier ein zulaessiger Wert und heisst "aus" - deshalb NICHT ueber
     # "or", das die 0 verschluckte und stillschweigend die Vorgabe naehme.
     for feld, klein, gross, vorgabe in (("sendetakt", 0, 60, 2),
@@ -402,12 +464,62 @@ def mqtt_zustand() -> dict:
     }
 
 
-def mqtt_senden(paare: dict, praefix: str) -> None:
+def mqtt_praefix(cfg: dict) -> str:
+    """Das Themenpraefix, gesaeubert.
+
+    Ein Wert, der in eine zeilenorientierte Uebertragung geht, wird an EINER
+    Stelle gesaeubert - und in BEIDEN Haelften der Zeile. Bis 0.9.16 wurde nur
+    der Wert gesaeubert; ein Zeilenumbruch im Praefix (moeglich ueber eine
+    zurueckgespielte Sicherung) zerlegte das Datagramm.
+    """
+    roh = cfg.get("mqtt_topic")
+    p = str(roh).strip("/ \t\r\n") if isinstance(roh, (str, int, float)) else ""
+    return p if re.match(r"^[A-Za-z0-9_/\-]{1,64}$", p) else "matter"
+
+
+# Themen, die einen ZUSTAND tragen und deshalb retained gesendet werden:
+# Loxone hat damit nach einem Neustart des Brokers, des Gateways oder des
+# Miniservers sofort wieder den Stand. Alles Uebrige - Messwerte mit
+# Zeitbezug und das Lebenszeichen - geht ohne Retain hinaus, damit kein alter
+# Wert als aktueller erscheint. Hausstandard vom 03.09.2026.
+#
+# Bis 0.9.16 gab es gar kein Retain: ein Fensterkontakt, der sich zwei Tage
+# nicht bewegt, war nach einem Broker-Neustart zwei Tage lang unbekannt.
+ZUSTANDSTHEMEN = (
+    "erreichbar", "name", "knoten", "schalter", "kontakt", "verschlossen",
+    "besetzt", "rauch", "co", "batterie_niedrig", "ventil", "betriebsart",
+    "luefter_stufe", "regen", "wasser", "tuer", "fenster", "bewegung",
+    "sperre", "kindersicherung", "warmwasser", "programm", "zustand",
+)
+
+
+def ist_zustand(schluessel: str) -> bool:
+    """Traegt dieses Thema einen Zustand (retained) oder einen Messwert?
+
+    Der Vergleich laeuft ueber den letzten Pfadteil, weil die Themen
+    'geraet3/1/schalter' heissen. Das Lebenszeichen (online, ok, ts, zaehler)
+    ist NIE retained - retained zeigte es immer 'lebt'.
+    """
+    letzter = schluessel.rsplit("/", 1)[-1]
+    if letzter in ("online", "ok", "ts", "zaehler", "probe"):
+        return False
+    return letzter in ZUSTANDSTHEMEN
+
+
+def mqtt_senden(paare: dict, praefix: str) -> set:
+    """Veroeffentlichen. Rueckgabe: die Schluessel, die WIRKLICH hinausgingen.
+
+    Bis 0.9.16 gab die Funktion nichts zurueck, und der Aufrufer schrieb den
+    Merker 'zuletzt gesendet' trotzdem fort - auch wenn gar nichts gesendet
+    wurde (kein UDP-Port, kein Socket, Abbruch mitten in der Schleife). Weil
+    danach nur noch Aenderungen hinausgehen, fehlten diese Werte dauerhaft.
+    """
+    gesendet: set = set()
     z = mqtt_zustand()
     if not z["udpport"]:
         melde_gebremst("mqtt_kein_port",
                        "MQTT: kein UDP-Eingangsport in der general.json gefunden - nichts gesendet.")
-        return
+        return gesendet
     if not z["autostart"]:
         melde_gebremst("mqtt_aus",
                        "MQTT: das Gateway ist nicht auf Autostart gestellt (System, MQTT Gateway). "
@@ -416,17 +528,27 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError as err:
         melde_gebremst("mqtt_socket", f"MQTT: Socket nicht moeglich ({err}).")
-        return
+        return gesendet
+    sauber_praefix = re.sub(r"[^A-Za-z0-9_/\-]", "_", str(praefix))
     try:
         for k, v in paare.items():
             if v is None or v == "":
                 continue    # fehlender Wert: nichts senden statt einer erfundenen 0
-            nachricht = f"publish {praefix}/{k} {mqtt_wert_saeubern(v)}".encode("utf-8")
-            s.sendto(nachricht, ("127.0.0.1", z["udpport"]))
-    except OSError as err:
-        melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
+            sauber_k = re.sub(r"[^A-Za-z0-9_/\-]", "_", str(k))
+            befehl = "retain" if ist_zustand(sauber_k) else "publish"
+            nachricht = (f"{befehl} {sauber_praefix}/{sauber_k} "
+                         f"{mqtt_wert_saeubern(v)}").encode("utf-8")
+            try:
+                s.sendto(nachricht, ("127.0.0.1", z["udpport"]))
+            except OSError as err:
+                # Ein Fehler bei EINEM Thema beendet nicht den ganzen Durchgang;
+                # gemeldet wird er, und der Schluessel gilt als nicht gesendet.
+                melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
+                continue
+            gesendet.add(k)
     finally:
         s.close()
+    return gesendet
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +645,13 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         mired = felder.get("farbtemperatur_mired")
         if isinstance(mired, (int, float)) and mired > 0:
             felder["farbtemperatur_kelvin"] = int(round(1000000 / mired))
+        # Dasselbe fuer den Farbton: gelesen wird er als 0..254 (Matter),
+        # geschrieben in Grad 0..360 (Aktion 'farbton', befehl_ausfuehren).
+        # Bis 0.9.16 standen die beiden Einheiten unverbunden nebeneinander -
+        # genau die Lage, die der Absatz darueber fuer Kelvin beschreibt.
+        roh = felder.get("farbton_roh")
+        if isinstance(roh, (int, float)) and 0 <= roh <= 254:
+            felder["farbton_grad"] = int(round(roh * 360 / 254))
 
     bezeichnung = info.get("bezeichnung") or info.get("produkt") or f"Knoten {node_id}"
     return {
@@ -1114,6 +1243,22 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
 # ---------------------------------------------------------------------------
 # Abbild schreiben und veroeffentlichen
 # ---------------------------------------------------------------------------
+def nummern_umziehen() -> None:
+    """Eine Zuordnung vom alten Ort einmal an den neuen holen.
+
+    Der Regelweg ist preupgrade.sh - der laeuft vor dem Abraeumen. Diese Zeile
+    ist der Rueckfall fuer den Fall, dass jemand von Hand ausgepackt hat.
+    """
+    if DATEI_NUMMERN.is_file() or not DATEI_NUMMERN_ALT.is_file():
+        return
+    try:
+        DATEI_NUMMERN.write_bytes(DATEI_NUMMERN_ALT.read_bytes())
+        _LOG.info("Geraetenummern vom alten Ort uebernommen: %s -> %s",
+                  DATEI_NUMMERN_ALT, DATEI_NUMMERN)
+    except OSError as err:
+        _LOG.warning("Geraetenummern liessen sich nicht uebernehmen: %s", err)
+
+
 def nummern_zuordnen(knoten_ids) -> dict:
     """Feste Geraetenummern, die sich nicht mehr verschieben.
 
@@ -1130,6 +1275,7 @@ def nummern_zuordnen(knoten_ids) -> dict:
     Beim ERSTEN Lauf entsteht sie genau so, wie sie bis 0.9.9 entstanden waere:
     sortiert, ab 1. Eine bestehende Anlage behaelt damit ihre Loxone-Adressen.
     """
+    nummern_umziehen()
     d = json_lesen(DATEI_NUMMERN)
     karte: dict[int, int] = {}
     for k, w in (d.get("nummern") or {}).items():
@@ -1198,7 +1344,7 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
     json_schreiben(DATEI_LOXONE, lox)
 
     if cfg.get("mqtt_ein"):
-        praefix = str(cfg.get("mqtt_topic") or "matter").strip("/") or "matter"
+        praefix = mqtt_praefix(cfg)
         # Auswahl, was ueberhaupt hinausgeht. Eine Bridge mit fuenfzig
         # Endpunkten ist sonst der Unterschied zwischen benutzbar und
         # unbenutzbar. Leer heisst: alles - das ist die Vorgabe, damit sich
@@ -1231,10 +1377,16 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
             senden = paare
         else:
             senden = {k: w for k, w in paare.items() if _LETZTE_PAARE.get(k) != str(w)}
-        _LETZTE_PAARE.clear()
-        _LETZTE_PAARE.update({k: str(w) for k, w in paare.items()})
         if senden:
-            mqtt_senden(senden, praefix)
+            # Fortgeschrieben wird NUR, was wirklich hinausging. Bis 0.9.16
+            # stand der Merker vor dem Senden und wurde bedingungslos auf
+            # alle Paare gesetzt - fiel das Gateway kurz aus, galten die
+            # Werte als gesendet und fehlten danach dauerhaft, weil nur
+            # noch Aenderungen hinausgehen.
+            for k in mqtt_senden(senden, praefix):
+                _LETZTE_PAARE[k] = str(paare[k])
+        else:
+            _LETZTE_PAARE.update({k: str(w) for k, w in paare.items()})
     return geraete
 
 
@@ -1263,12 +1415,12 @@ def abbild_stoerung(cfg: dict, fehler: str) -> None:
         lox["stoerung_seit"] = int(time.time())
     json_schreiben(DATEI_LOXONE, lox)
     if cfg.get("mqtt_ein"):
-        praefix = str(cfg.get("mqtt_topic") or "matter").strip("/") or "matter"
+        praefix = mqtt_praefix(cfg)
         # Nur das Signal, nicht die Werte: die stehen im Broker und sind das
         # Letzte, was gemessen wurde. Sie jetzt zu ueberschreiben hiesse, eine
         # Stoerung als Messwert auszugeben.
-        mqtt_senden({"ok": 0}, praefix)
-        _LETZTE_PAARE["ok"] = "0"
+        if "ok" in mqtt_senden({"ok": 0}, praefix):
+            _LETZTE_PAARE["ok"] = "0"
 
 
 def herzschlag_senden(cfg: dict, ok: int) -> None:
@@ -1290,7 +1442,7 @@ def herzschlag_senden(cfg: dict, ok: int) -> None:
     zustand_schreiben(herzschlag=int(time.time()), herzschlag_ok=int(ok))
     if not cfg.get("mqtt_ein"):
         return
-    praefix = str(cfg.get("mqtt_topic") or "matter").strip("/") or "matter"
+    praefix = mqtt_praefix(cfg)
     mqtt_senden({"online": 1, "ok": int(ok), "ts": int(time.time())}, praefix)
 
 
@@ -1332,6 +1484,24 @@ async def warteschlange(v: MatterVerbindung, cfg: dict, tab: dict) -> bool:
         if not b:
             antwort_schreiben(kennung, 0, "Befehlsdatei war leer oder unlesbar.")
             continue
+        # Ein Befehl verfaellt. Bis 0.9.16 trug die Datei keinen Zeitstempel,
+        # und diese Schleife arbeitete beim naechsten Verbindungsaufbau alles
+        # ab, was im Ordner lag - auch das, was jemand vor Tagen bei stehendem
+        # Dienst eingereiht hatte. Bei 'sperren'/'entsperren' bewegt sich dabei
+        # eine Tuer. Einstellungen (wlan, thread) verfallen NICHT, sie sind
+        # keine Stellbefehle.
+        bleibt = ("wlan", "thread", "anlernen", "entfernen", "name")
+        ts = b.get("ts")
+        if b.get("aktion") not in bleibt and isinstance(ts, (int, float)):
+            alter = time.time() - float(ts)
+            if alter > BEFEHL_VERFALL_S:
+                antwort_schreiben(kennung, 0,
+                                  f"Verfallen: der Befehl lag {int(alter)} s in der "
+                                  f"Warteschlange (Grenze {BEFEHL_VERFALL_S} s). "
+                                  "Er wurde NICHT ausgefuehrt.")
+                _LOG.info("Befehl %s (%s) verfallen, Alter %d s - nicht ausgefuehrt.",
+                          kennung, b.get("aktion"), alter)
+                continue
         try:
             ok, meldung = await befehl_ausfuehren(v, b, cfg, tab)
         except Exception as err:  # noqa: BLE001
@@ -1370,6 +1540,12 @@ async def dienst(einmal: bool = False) -> int:
         _LOG.warning("cache.json liess sich nicht entfernen: %s", err)
 
     fehler_folge = 0
+    # Beide Uhren VOR der Schleife setzen. Sie werden im Erfolgsfall neu
+    # gesetzt, aber der Wartezweig nach einem Fehlschlag liest sie auch dann,
+    # wenn schon der erste verbinden() gescheitert ist - und das ist der
+    # Normalfall, solange kein Matter-Server laeuft.
+    letzte_sendung = 0.0
+    letzter_herzschlag = 0.0
     while _LAUF:
         cfg = config()
         v = MatterVerbindung(cfg)
@@ -1434,6 +1610,16 @@ async def dienst(einmal: bool = False) -> int:
                 if einmal:
                     break
                 await asyncio.sleep(1)
+            # Der Ausgang des Lauschauftrags wird AUSGEWERTET. Bis 0.9.16
+            # stand hier nur cancel(): warf lauschen() einen Fehler, endete
+            # die innere Schleife, der Fehler wurde verworfen, der
+            # except-Zweig lief nicht - keine Protokollzeile, kein
+            # Stoerungsabbild, loxone.json behielt ok=1, und die Bremse
+            # griff nicht, weil fehler_folge auf 0 stehenblieb.
+            if aufgabe.done() and not aufgabe.cancelled():
+                lausch_fehler = aufgabe.exception()
+                if lausch_fehler is not None:
+                    raise lausch_fehler
             aufgabe.cancel()
             if einmal:
                 abbild_schreiben(v, lauf["cfg"], tab, 1, voll=True)
@@ -1442,7 +1628,13 @@ async def dienst(einmal: bool = False) -> int:
         except Exception as err:  # noqa: BLE001
             fehler_folge += 1
             text = fehlertext(err)
-            melde_gebremst("verbindung", f"Verbindung zum Matter-Server: {text}", 900)
+            if ist_verbindungsfehler(err):
+                melde_gebremst("verbindung", f"Verbindung zum Matter-Server: {text}", 900)
+            else:
+                # Ein Fehler im eigenen Code wird nicht als Verbindungsstoerung
+                # etikettiert und nicht gedrosselt - er bekommt die volle
+                # Ablaufverfolgung, sonst sucht ihn jemand im Netz.
+                _LOG.exception("Fehler im Dienst (KEINE Verbindungsstoerung): %s", text)
             abbild_stoerung(cfg, text)
             zustand_schreiben(ok=0, fehler=text, fehler_folge=fehler_folge)
             if einmal:
@@ -1463,11 +1655,18 @@ async def dienst(einmal: bool = False) -> int:
         # der Matter-Server nicht. Ohne das Lebenszeichen waere in Loxone
         # nicht zu unterscheiden, ob die Bruecke steht oder nur nichts passiert.
         hz = int(cfg.get("herzschlag") or 0)
-        for i in range(pause):
+        # An der Uhr, nicht am Schleifenzaehler. Bis 0.9.16 stand hier
+        # 'i % hz == 0'; bei pause=5 und hz=60 traf das nur bei i=0, also
+        # einmal je Durchgang - der Herzschlag ging in den ersten Minuten
+        # einer Stoerung alle 5 s hinaus statt alle 60. Die Hauptschleife
+        # macht es seit jeher richtig.
+        for _ in range(pause):
             if not _LAUF:
                 break
-            if hz and i % hz == 0:
+            jetzt = time.time()
+            if hz and jetzt - letzter_herzschlag >= hz:
                 herzschlag_senden(cfg, 0)
+                letzter_herzschlag = jetzt
             await asyncio.sleep(1)
 
     _LOG.info("Dienst beendet.")

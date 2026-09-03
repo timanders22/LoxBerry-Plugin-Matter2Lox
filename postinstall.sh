@@ -21,19 +21,49 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
+    echo "<FAIL> Ohne ihn wuerden Ordner im Wurzelverzeichnis des Systems"
+    echo "<FAIL> angelegt. Die Installation wird abgebrochen."
+    exit 1
+fi
+
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 VENV="$PBIN/venv"
+# Fabric und Geraetenummern liegen NEBEN dem Datenordner. Der Installer
+# loescht data/plugins/<ordner>/ bei jedem Upgrade vollstaendig
+# (plugininstall.pl, purge_installation); Nachbarn ueberleben. Bis 0.9.16 lag
+# die Fabric darin, und jedes Update kostete alle angelernten Geraete.
+PFABRIC="$BASE/data/plugins/$PFOLDER.matter"
+PNUMMERN="$BASE/data/plugins/$PFOLDER.nummern.json"
 
-mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PDATA/matter" "$PLOG" "$PCONFIG" || {
+mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PFABRIC" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
     exit 1
 }
 chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+# In der Warteschlange liegen WLAN-Passwort, Thread-Dataset und Anlerncode.
+chmod 700 "$PDATA/befehle" 2>/dev/null
 # Hier liegen Fabric und Zertifikate des Matter-Controllers.
-chmod 700 "$PDATA/matter" 2>/dev/null
+chmod 700 "$PFABRIC" 2>/dev/null
+
+# Rueckfall, falls preupgrade.sh nicht lief (Neuinstallation ueber einen alten
+# Bestand, von Hand ausgepackt): einen Altbestand einmal uebernehmen.
+if [ -d "$PDATA/matter" ] && [ ! -e "$PFABRIC/.initialized" ]; then
+    if [ -z "$(ls -A "$PFABRIC" 2>/dev/null)" ]; then
+        if cp -a "$PDATA/matter/." "$PFABRIC/" 2>/dev/null; then
+            chmod 700 "$PFABRIC" 2>/dev/null
+            echo "<OK> Fabric vom alten Ort uebernommen."
+        fi
+    fi
+fi
+if [ -f "$PDATA/nummern.json" ] && [ ! -f "$PNUMMERN" ]; then
+    cp -p "$PDATA/nummern.json" "$PNUMMERN" 2>/dev/null \
+        && echo "<OK> Geraetenummern vom alten Ort uebernommen."
+fi
 
 [ -f "$PCONFIG/matter2lox.json" ] || echo '{}' > "$PCONFIG/matter2lox.json"
 chmod 600 "$PCONFIG/matter2lox.json"
@@ -132,10 +162,42 @@ fi
 
 chmod 755 "$PBIN/dienst.sh" "$PBIN/matter_dienst.py" 2>/dev/null
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+chown -R loxberry:loxberry "$PFABRIC" 2>/dev/null
+[ -f "$PNUMMERN" ] && chown loxberry:loxberry "$PNUMMERN" 2>/dev/null
 chmod 600 "$PCONFIG/matter2lox.json"
-chmod 700 "$PDATA/matter" 2>/dev/null
+chmod 700 "$PFABRIC" 2>/dev/null
+chmod 700 "$PDATA/befehle" 2>/dev/null
+
+# ---------- Dienst wieder anwerfen, wenn er vorher lief ----------
+# Der Sollmerker liegt in data/plugins/<ordner>/ und wird vom Installer
+# mitgeloescht. Bis 0.9.16 lief der Dienst nach einem Update deshalb gar
+# nicht wieder an - bis jemand die Oberflaeche oeffnete und Start drueckte.
+# In Loxone sah das aus wie ein ruhiges Haus: der Herzschlag, der genau das
+# verhindern soll, schwieg ja ebenfalls.
+LIEF="$BASE/data/plugins/$PFOLDER.lief"
+if [ -f "$LIEF" ]; then
+    rm -f "$LIEF"
+    if [ -x "$PBIN/dienst.sh" ]; then
+        if su -s /bin/bash loxberry -c "$(printf '%q ' "$PBIN/dienst.sh" start)" >/dev/null 2>&1 \
+           || "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+            echo "<OK> Der Dienst lief vor dem Update und wurde wieder gestartet."
+        else
+            echo "<INFO> Der Dienst lief vor dem Update, liess sich aber nicht"
+            echo "<INFO> starten. Reiter Einstellungen, Knopf 'Dienst starten'."
+        fi
+    fi
+else
+    echo "<INFO> Der Dienst lief vorher nicht und wurde nicht gestartet."
+fi
 
 echo "<OK> Installation abgeschlossen."
+if [ -d "$PDATA/matter" ]; then
+    echo "<INFO> ACHTUNG: Der Matter-Container zeigt noch auf den alten"
+    echo "<INFO> Datenpfad ($PDATA/matter), der beim naechsten Update"
+    echo "<INFO> geloescht wird. Bitte im Reiter Einstellungen einmal"
+    echo "<INFO> 'Container entfernen' und dann 'Container anlegen' druecken."
+    echo "<INFO> Die angelernten Geraete bleiben dabei erhalten."
+fi
 echo "<INFO> Weiter in der Plugin-Oberflaeche: Reiter Einstellungen, dort entweder"
 echo "<INFO> den Container anlegen lassen oder die Adresse eines vorhandenen"
 echo "<INFO> Matter-Servers eintragen."
