@@ -525,6 +525,16 @@ sind**: Container, Brücke und Loxone-Anbindung liegen in einem Plugin.
 Thread-Geräte brauchen zusätzlich einen Thread-Border-Router im Haus (Apple TV,
 HomePod, Google Nest Hub, eigener Router). Der LoxBerry ist keiner.
 
+Was das Plugin seit 0.9.18 abnimmt, ist das Abschreiben des Datasets. Wer einen
+eigenen Border-Router auf Grundlage von OpenThread betreibt (`ot-br-posix`, das
+Abbild `openthread/otbr`, der Border-Router von Home Assistant), trägt im Reiter
+*Anlernen* dessen Adresse ein und holt das aktive Dataset auf Knopfdruck: das
+Plugin fragt dort den REST-Dienst (ab Werk Port 8081, `GET /node/dataset/active`
+mit `Accept: text/plain`) und legt die zurückgegebene Hexkette in das Feld
+darüber. **Apple und Google geben ihr Dataset auf diesem Weg nicht heraus** —
+dort bleibt es beim Abschreiben von Hand. An den Matter-Server übergeben wird
+das Dataset auch danach erst auf Knopfdruck; der Abruf schaltet nichts ein.
+
 ## Aufbau
 
     bin/matter_dienst.py      Brückendienst: WebSocket, Übersetzung,
@@ -687,6 +697,13 @@ Damit niemand mehr Verlass in diese Zeilen legt, als sie tragen:
   Protokolls, nicht gegen Hardware.
 * **Die Container-Verwaltung**, weil dafür ein Docker auf einem 64-Bit-LoxBerry
   nötig ist.
+* **Der Abruf des Thread-Datasets beim Border-Router.** Gebaut nach der
+  Schnittstellenbeschreibung von `ot-br-posix` (`GET /node/dataset/active`,
+  Port 8081, TLV-Hexkette bei `Accept: text/plain`); an einem laufenden
+  Border-Router hat ihn niemand gemessen. Gemessen sind die Wege daneben: eine
+  abgewiesene Adresse, eine ausbleibende Antwort und eine Antwort, die kein
+  Dataset ist, führen jeweils zu ihrer eigenen Meldung und ändern nichts an der
+  Konfiguration.
 * **Die MQTT-Weiterleitung an den Miniserver.** Der Sendeweg über den
   UDP-Eingang des Gateways ist gebaut und gelesen, aber nicht an einer Anlage
   gemessen.

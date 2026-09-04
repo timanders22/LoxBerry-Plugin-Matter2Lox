@@ -337,6 +337,41 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
     $mt_tab = 'tab-commission';
 }
 
+/* ---------------- Thread-Dataset beim Border-Router holen ----------------
+ *
+ * Ein eigener Handler und ein eigenes Formular, nicht der Speichern-Knopf
+ * darueber: sonst liefen beide Handler an einem Klick, und der Bediener
+ * bekaeme zwei Meldungen zu einer Handlung.
+ *
+ * Die Adresse wird gemerkt, sobald sie die Formpruefung bestanden hat - auch
+ * wenn der Abruf danach scheitert (Stand 2). Wer einen Border-Router
+ * eintraegt, der gerade aus ist, soll die Adresse beim naechsten Anlauf
+ * vorfinden und nicht neu tippen. Bei Stand 0 wurde die Adresse abgewiesen;
+ * dann wird nichts gespeichert.
+ */
+if ($mt_post && isset($_POST['br_holen'])) {
+    $mt_cfg = mt_config();
+    $mt_adr = trim((string) (isset($_POST['thread_br']) ? $_POST['thread_br'] : ''));
+    list($mt_stand, $mt_text) = mt_thread_dataset_holen($mt_adr);
+    if ($mt_stand !== 0 && $mt_cfg['thread_br'] !== $mt_adr) {
+        $mt_cfg['thread_br'] = $mt_adr;
+        if (!mt_config_speichern($mt_cfg)) {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+        }
+    }
+    if ($mt_stand === 1) {
+        $mt_cfg['thread_dataset'] = $mt_text;
+        if (mt_config_speichern($mt_cfg)) {
+            $mt_meldungen[] = sprintf(mt_t('ANLERN.BR_GEHOLT'), strlen($mt_text));
+        } else {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+        }
+    } else {
+        $mt_fehler[] = mt_e($mt_text);
+    }
+    $mt_tab = 'tab-commission';
+}
+
 /* ---------------- Dienst ---------------- */
 if ($mt_post && isset($_POST['dienst'])) {
     list($mt_ok, $mt_ausgabe) = mt_dienst((string) $_POST['dienst']);
@@ -947,6 +982,20 @@ $mt_feld = function ($g, $name, $leer = '') {
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+<form action="index.php" method="post" autocomplete="off">
+  <?php echo mt_fmt(); ?>
+<input data-role="none" type="hidden" name="br_holen" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-commission">
+<div class="sm-feld">
+  <label for="thread_br"><?= mt_e(mt_t('ANLERN.L_BR')) ?></label>
+  <input data-role="none" type="text" id="thread_br" name="thread_br"
+         value="<?= mt_e($mt_cfg['thread_br']) ?>" placeholder="border-router:8081">
+  <div class="sm-hilfe"><?= mt_t('ANLERN.H_BR') ?></div>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ANLERN.K_BR')) ?></button>
 </div>
 </form>
 <div class="sm-legende">

@@ -165,6 +165,7 @@ function mt_vorgaben()
         'wlan_ssid'         => '',
         'wlan_passwort'     => '',
         'thread_dataset'    => '',
+        'thread_br'         => '',
         'sendetakt'         => 2,
         'herzschlag'        => 60,
         'mqtt_nur'          => '',
@@ -1416,6 +1417,108 @@ function mt_selbsttest_endpunkt($hoechstalter = 120)
 }
 
 /**
+ * Das aktive Thread-Dataset beim Border-Router abholen.
+ *
+ * Bis 0.9.17 musste der Bediener die Hexkette von Hand abschreiben - aus der
+ * Weboberflaeche seines Border-Routers, aus einem Containerprotokoll oder aus
+ * der Oberflaeche von Home Assistant. Der OpenThread-Border-Router
+ * (ot-br-posix und alles, was davon abstammt) fuehrt selbst einen
+ * REST-Dienst, ab Werk auf Port 8081: GET /node/dataset/active gibt mit
+ * 'Accept: text/plain' genau die TLV-Hexkette zurueck, die das Feld hier
+ * erwartet.
+ *
+ * Was dieser Weg NICHT kann, und so steht es auch in der Hilfe: einen
+ * Border-Router von Apple oder Google auslesen. Beide geben ihr Dataset nur
+ * ueber die Schnittstelle ihres eigenen Oekosystems heraus. Das Feld bleibt
+ * deshalb von Hand befuellbar - der Abruf ist die Abkuerzung fuer einen
+ * eigenen Border-Router, nicht ihr Ersatz.
+ *
+ * Der Aufbau ist der von mt_selbsttest_endpunkt(): curl, wenn vorhanden,
+ * sonst ein Stromkontext. Ausdruecklich ohne Umleitungen - die Antwort soll
+ * von genau der Adresse kommen, die der Bediener eingetragen hat.
+ *
+ * Uebergeben wird nichts: das Dataset landet in der Konfiguration, nicht im
+ * Matter-Server. Dafuer bleibt der Knopf daneben zustaendig. Eine neue
+ * Funktion schaltet nichts ein.
+ *
+ * Rueckgabe: array(stand, text)
+ *   1 = Dataset geholt, der Text traegt es
+ *   0 = schon die Adresse taugt nicht, es wurde nichts abgerufen
+ *   2 = abgerufen, aber nichts Brauchbares bekommen
+ */
+function mt_thread_dataset_holen($adresse)
+{
+    $adr = trim((string) $adresse);
+    if ($adr === '') {
+        return array(0, mt_t('ANLERN.BR_LEER'));
+    }
+    /* Rechnername oder IP, wahlweise mit Port. Eine IPv6-Adresse gehoert in
+     * eckige Klammern, sonst laesst sich ihr Doppelpunkt nicht vom Port
+     * unterscheiden. Eine vollstaendige Adresse mit http:// davor wird
+     * abgewiesen und NICHT zurechtgeschnitten - der Bediener soll die
+     * erwartete Form sehen, nicht raten, was das Feld aus seiner Eingabe
+     * gemacht hat. */
+    if (!preg_match('#^(\[[0-9A-Fa-f:]{2,45}\]|[A-Za-z0-9][A-Za-z0-9.\-]{0,80})(?::([0-9]{1,5}))?$#',
+                    $adr, $teile)) {
+        return array(0, mt_t('ANLERN.BR_FORM'));
+    }
+    $port = (isset($teile[2]) && $teile[2] !== '') ? (int) $teile[2] : 8081;
+    if ($port < 1 || $port > 65535) {
+        return array(0, mt_t('ANLERN.BR_FORM'));
+    }
+    $url = 'http://' . $teile[1] . ':' . $port . '/node/dataset/active';
+    $kopf = array('User-Agent: LoxBerry-Matter2Lox', 'Accept: text/plain');
+    $body = false;
+    $code = 0;
+    $netzfehler = '';
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_HTTPHEADER => $kopf,
+        ));
+        $body = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $netzfehler = (string) curl_error($ch);
+        curl_close($ch);
+    } else {
+        $ctx = stream_context_create(array('http' => array(
+            'method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
+            'max_redirects' => 0, 'header' => implode("\r\n", $kopf))));
+        $body = @file_get_contents($url, false, $ctx);
+        if (isset($http_response_header[0])
+                && preg_match('#\s(\d{3})\s#', $http_response_header[0], $m)) {
+            $code = (int) $m[1];
+        }
+    }
+    if ($body === false) {
+        return array(2, sprintf(mt_t('ANLERN.BR_KEINE_ANTWORT'),
+                     $netzfehler !== '' ? $netzfehler : $url));
+    }
+    $ds = trim((string) $body);
+    /* 204 ist die Antwort eines Border-Routers, der laeuft, aber noch kein
+     * Thread-Netz gebildet hat. Das ist kein Fehler der Adresse und keine
+     * Stoerung - deshalb eine eigene Meldung, die sagt, was dort fehlt. */
+    if ($code === 204 || ($code === 200 && $ds === '')) {
+        return array(2, sprintf(mt_t('ANLERN.BR_KEIN_DATASET'), $code));
+    }
+    if ($code !== 200) {
+        return array(2, sprintf(mt_t('ANLERN.BR_HTTP'), $code));
+    }
+    /* Manche Aufbauten geben die Zeichenkette als JSON heraus, obwohl
+     * text/plain erbeten war - dann stehen Anfuehrungszeichen darum. Das ist
+     * das Auspacken einer fremden Antwort, nicht das Zurechtbiegen einer
+     * Eingabe: was danach kein Dataset ist, wird abgewiesen. */
+    $ds = trim($ds, "\"'");
+    if (!preg_match('/^[0-9A-Fa-f]{20,600}$/', $ds)) {
+        return array(2, sprintf(mt_t('ANLERN.BR_KEIN_HEX'),
+                     substr(mt_mqtt_wert_saeubern($ds), 0, 80)));
+    }
+    return array(1, $ds);
+}
+
+/**
  * Klartext zu den Geraetetypen eines Endpunkts.
  *
  * Der Dienst rechnet sie seit jeher aus und schreibt sie ins Abbild, und die
@@ -1951,6 +2054,11 @@ function mt_wert_pruefen($schluessel, $wert)
         'mqtt_nur'          => '/^([0-9]{1,3}([ ,;]+[0-9]{1,3})*)?$/',
         'aktionstoken'      => '/^[A-Za-z0-9_.\-]{0,64}$/',
         'thread_dataset'    => '/^([0-9A-Fa-f]{20,600})?$/',
+        /* Rechnername oder IP des Border-Routers, wahlweise mit Port. Leer
+         * ist zulaessig: das Feld ist ein Weg zum Dataset, keine Pflicht.
+         * Dasselbe Muster steht in mt_thread_dataset_holen() - dort mit den
+         * Klammergruppen, die den Port herausloesen. */
+        'thread_br'         => '#^(\[[0-9A-Fa-f:]{2,45}\]|[A-Za-z0-9][A-Za-z0-9.\-]{0,80})(:[0-9]{1,5})?$|^$#',
     );
     if (isset($muster[$schluessel])) {
         return preg_match($muster[$schluessel], $s) === 1 ? '' : mt_t('EINST.SICH_W_FORM');
