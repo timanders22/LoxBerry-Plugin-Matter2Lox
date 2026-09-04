@@ -188,6 +188,77 @@ function mt_pruef_muster()
  * und den Container noch nicht neu angelegt hat, laeuft weiter gegen den
  * alten Pfad - und verliert die Fabric beim naechsten Update.
  */
+/**
+ * Antwortet der Border-Router - ohne irgendetwas zu speichern?
+ *
+ * Der Knopf im Reiter "Anlernen" holt das Dataset UND legt es in die
+ * Konfiguration. Diese Zeile tut nur das Erste. mt_thread_dataset_holen() ist
+ * dafuer schon gebaut: sie fragt ab und gibt zurueck, gespeichert wird erst im
+ * Handler. Hier wird nichts weitergereicht - der Rueckgabewert wandert in
+ * einen Zwischenspeicher und in den Antworttext, nicht in mt_config().
+ *
+ * Zwischengespeichert wie die beiden anderen Netzzeilen: ein Abruf haengt an
+ * einer Zeitschranke von fuenf Sekunden fuer den Verbindungsaufbau, und die
+ * Selbstpruefung laeuft bei jedem Aufruf des Reiters Test. Der Schluessel des
+ * Zwischenspeichers ist die Adresse - wer sie aendert, bekommt sofort eine
+ * frische Messung.
+ *
+ * Drei Ausgaenge, und der dritte ist der wichtige:
+ *   1  der Border-Router hat ein Dataset geliefert
+ *   0  eine Adresse steht da, aber es kam keins  (Kreuz - der Bediener hat
+ *      das Feld ausgefuellt, also soll es auch tragen)
+ *  -1  gar keine Adresse eingetragen            (Strich - trifft nicht zu)
+ */
+function mt_pruef_border($hoechstalter = 120)
+{
+    $cfg = mt_config();
+    $adr = is_scalar($cfg['thread_br']) ? trim((string) $cfg['thread_br']) : '';
+    if ($adr === '') {
+        return array(-1, mt_t('TEST.A_BR_LEER'));
+    }
+
+    $f = mt_paths()['datadir'] . '/.border.cache';   // Zwischenspeicher, keine Einstellung
+    $d = mt_json_lesen($f);
+    if (isset($d['ts'], $d['adr'], $d['stand'], $d['text']) && (string) $d['adr'] === $adr) {
+        $alter = time() - (int) $d['ts'];
+        if ($alter >= 0 && $alter <= $hoechstalter) {
+            return mt_pruef_border_satz((int) $d['stand'], (string) $d['text'], $alter, $cfg);
+        }
+    }
+
+    list($stand, $text) = mt_thread_dataset_holen($adr);
+    /* Was zurueckkommt, ist bei Erfolg das Dataset selbst - ein Geheimnis der
+     * Anlage. Es geht NICHT in den Zwischenspeicher und NICHT in die Anzeige;
+     * gemerkt wird nur seine Laenge und, ob es zum gespeicherten passt. */
+    $merk = $stand === 1
+        ? (strlen($text) . ' ' . (hash_equals((string) $cfg['thread_dataset'], $text) ? 'gleich' : 'anders'))
+        : $text;
+    mt_json_schreiben($f, array('adr' => $adr, 'stand' => (int) $stand,
+                                'text' => $merk, 'ts' => time()));
+    return mt_pruef_border_satz((int) $stand, $merk, 0, $cfg);
+}
+
+/** Den Satz zum gemerkten Ergebnis bilden. Getrennt, damit der Zwischen-
+ *  speicher und der frische Abruf durch dieselbe Stelle gehen. */
+function mt_pruef_border_satz($stand, $merk, $alter, $cfg)
+{
+    $zusatz = $alter > 0 ? ' ' . sprintf(mt_t('TEST.A_PROBE_ALT'), (int) $alter) : '';
+    if ($stand !== 1) {
+        /* Stand 0 = die Adresse passt nicht ins Muster, Stand 2 = sie passt,
+         * aber es kam kein Dataset. Beides ist hier ein Kreuz: das Feld ist
+         * ausgefuellt, also soll der Abruf tragen. Der Text kommt aus
+         * mt_thread_dataset_holen() und nennt schon, woran es lag. */
+        return array(0, sprintf(mt_t('TEST.A_BR_FEHL'), mt_e($merk)) . $zusatz);
+    }
+    list($laenge, $gleich) = array_pad(explode(' ', $merk, 2), 2, '');
+    $gespeichert = trim((string) $cfg['thread_dataset']);
+    if ($gespeichert === '') {
+        return array(1, sprintf(mt_t('TEST.A_BR_NEU'), (int) $laenge) . $zusatz);
+    }
+    return array(1, sprintf(mt_t($gleich === 'gleich' ? 'TEST.A_BR_GLEICH' : 'TEST.A_BR_ANDERS'),
+                            (int) $laenge) . $zusatz);
+}
+
 function mt_pruef_fabric()
 {
     $neu = mt_fabric_pfad();
@@ -520,6 +591,9 @@ function mt_pruefungen()
 
     $fb = mt_pruef_fabric();
     $zeilen[] = mt_pruefzeile($fb[0], mt_t('TEST.F_FABRIC'), $fb[1]);
+
+    $br = mt_pruef_border();
+    $zeilen[] = mt_pruefzeile($br[0], mt_t('TEST.F_BORDER'), $br[1]);
 
     $fo = mt_pruef_formulare();
     $zeilen[] = mt_pruefzeile($fo[0], mt_t('TEST.F_FORMULARE'), $fo[1]);

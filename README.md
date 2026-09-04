@@ -10,6 +10,32 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.19
+
+**Eine Prüfzeile im Reiter *Test*: „Antwortet der Border-Router?"** Sie fragt
+dieselbe Adresse ab wie der Knopf im Reiter *Geräte anlernen* — und
+**speichert nichts**. Das ist ihr ganzer Zweck: der Vorbehalt aus 0.9.18 („an
+einem laufenden Border-Router hat den Abruf niemand gemessen") lässt sich
+damit ausräumen, ohne dass ein Prüflauf die hinterlegten Netzdaten anfasst.
+
+Drei Ausgänge, und der Strich ist einer davon:
+
+| Lage | Zeile |
+|---|---|
+| keine Adresse eingetragen | Strich — die Zeile trifft nicht zu; das Dataset lässt sich auch von Hand eintragen |
+| Dataset geliefert | Häkchen, mit der Länge und dem Hinweis, ob es zum gespeicherten passt, davon abweicht oder ob noch keines gespeichert ist |
+| Adresse steht da, Abruf trägt nicht | Kreuz, mit der Meldung, woran es lag — abgewiesene Adresse, keine Antwort, HTTP-Code, kein Dataset |
+
+Ein abweichendes Dataset ist ausdrücklich **kein** Kreuz: es heißt, dass am
+Border-Router ein neues Thread-Netz angelegt wurde. Ob man es übernehmen will,
+entscheidet der Bediener mit dem Knopf, nicht die Prüfzeile.
+
+Das Dataset selbst erscheint **weder im Antworttext noch im
+Zwischenspeicher** — es ist ein Netzschlüssel, und die Zeile merkt sich nur
+seine Länge und ob es zum gespeicherten passt. Zwischengespeichert wird wie
+bei den beiden anderen Netzzeilen (120 Sekunden, Schlüssel ist die Adresse),
+und wie sie läuft sie nur, wenn der Reiter *Test* der offene ist.
+
 ## Neu in 0.9.17
 
 **Die Matter-Fabric überlebte kein Plugin-Update.** Der Container bekam
@@ -704,6 +730,15 @@ Damit niemand mehr Verlass in diese Zeilen legt, als sie tragen:
   abgewiesene Adresse, eine ausbleibende Antwort und eine Antwort, die kein
   Dataset ist, führen jeweils zu ihrer eigenen Meldung und ändern nichts an der
   Konfiguration.
+
+  Seit 0.9.19 lässt sich das ohne Risiko nachholen: die Zeile *Antwortet der
+  Border-Router?* im Reiter *Test* fragt ab, ohne zu speichern. Zu beachten
+  ist, dass **fertige Border-Router aus dem Handel diese Schnittstelle nicht
+  anbieten** — Apple, Google und Amazon halten das Dataset hinter Konto und
+  Schlüsselbund. Es antwortet nur ein selbst betriebener OpenThread-Border-
+  Router, etwa das Add-on von Home Assistant oder `ot-br-posix` auf einem
+  Raspberry Pi mit 802.15.4-Funkmodul. Dessen Abrufdienst ist unangemeldet und
+  gehört deshalb ins lokale Netz.
 * **Die MQTT-Weiterleitung an den Miniserver.** Der Sendeweg über den
   UDP-Eingang des Gateways ist gebaut und gelesen, aber nicht an einer Anlage
   gemessen.
