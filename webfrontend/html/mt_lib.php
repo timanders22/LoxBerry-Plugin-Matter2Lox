@@ -1871,7 +1871,7 @@ function mt_vorlage_out($nummer = 1)
         mt_xml_virtual_out(array(
             'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . ' Befehle',
             'address' => $adresse,
-            'comment' => 'Schreibende Befehle muessen im Reiter Einstellungen freigegeben '
+            'comment' => 'Schreibende Befehle müssen im Reiter Einstellungen freigegeben '
                        . 'sein. Erzeugt vom LoxBerry-Plugin Matter to Loxone ('
                        . date('d.m.Y') . ')',
         ), $cmds),

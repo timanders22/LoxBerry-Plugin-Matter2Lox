@@ -10,6 +10,50 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.20
+
+- **Der Reiter Test sagt jetzt, ob die MQTT-Veröffentlichung dieses Plugins
+  eingeschaltet ist.** Bis 0.9.19 stand dort nur der Zustand des MQTT-Gateways
+  von LoxBerry — das ist eine Aussage über den LoxBerry, nicht über dieses
+  Plugin. Wer die Veröffentlichung ausgeschaltet hatte, sah trotzdem einen
+  grünen Haken und konnte am Reiter nicht erkennen, dass nichts an den Broker
+  geht. Die neue Zeile steht vor der Gateway-Zeile und ist **grau**, wenn
+  ausgeschaltet — das ist eine Entscheidung, kein Fehler. Anlass: derselbe
+  Befund an BatterieBMS 0.9.17, dort am Gerät gemessen (`Regeln/04`).
+
+Ein Wort in der erzeugten Loxone-Vorlage: „muessen" heißt jetzt „müssen".
+Sichtbar war es in Loxone Config als Anzeigename.
+
+### Der Dienst konnte sein Protokoll verlieren, ohne dass es auffiel
+
+`log/plugins` liegt auf einer Ramdisk (`/dev/zram0`). Wird sie geleert — beim
+Neustart, durch LoxBerrys `log_maint`, oder von Hand —, ist die Datei fort. Ein
+`RotatingFileHandler`, der sie beim Start **einmal** geöffnet hat, schreibt
+danach bis zum nächsten Neustart in einen gelöschten Inode: keine
+Fehlermeldung, keine Datei, kein Hinweis. Auch die Rotation greift dann nicht
+mehr.
+
+Diese Fassung benutzt deshalb `WachsameRotation` in `bin/matter_dienst.py` — einen
+umlaufenden Handler, der vor jeder Zeile Gerätenummer und Inode vergleicht und
+nötigenfalls neu öffnet. Die Standardbibliothek hat für den einen Fall den
+`WatchedFileHandler` und für den anderen den `RotatingFileHandler`, aber
+nichts, was beides kann; deshalb die eigene Klasse.
+
+Auf dem LoxBerry geeicht, vier Prüfungen und in beide Richtungen: schreiben,
+nach dem Löschen weiterschreiben, Umlauf bei Überlänge, nach dem Umlauf erneut
+löschen. Mit dem alten Handler ist die Zeile nach dem Löschen verloren und
+bleibt es, mit dem neuen steht sie in der wieder angelegten Datei. Auf einem
+Windows-Arbeitsplatz lässt sich das nicht messen — dort kann eine offene Datei
+gar nicht gelöscht werden.
+
+Aufgefallen ist die Bauart am Heimkino-Plugin, dessen Dienst sieben Stunden
+ohne Protokolldatei lief, und am laufenden Gerät belegt: der
+Midea2Lox-Dienst hielt `midea2lox.log (deleted)` offen, während unter
+demselben Namen längst eine neue Datei fortgeschrieben wurde — von außen sah
+das Plugin gesund aus. Elf Linien tragen dieselbe Bauart; alle elf sind am
+06.09.2026 nachgezogen worden.
+
+
 ## Neu in 0.9.19
 
 **Eine Prüfzeile im Reiter *Test*: „Antwortet der Border-Router?"** Sie fragt
