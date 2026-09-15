@@ -10,6 +10,85 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.23
+
+**Die Retain-Liste traf die Themen nicht.** Seit 0.9.17 gehen Zustände
+zurückbehalten (retained) an den Broker, damit Loxone nach einem Neustart des
+Miniservers, des Gateways oder des Brokers sofort wieder den Stand hat. Die
+Liste dafür stand im Dienst — und war gegen eine **frühere Namensgebung**
+geschrieben: `rauch` statt `rauch_alarm`, `verschlossen` statt `schloss`,
+`ventil` statt `ventil_zustand`, `programm` statt `waschen_modus`.
+
+Am 15.09.2026 am Gerät nachgemessen und gegen `matter_cluster.json`
+ausgezählt: **19 der 23 Einträge kamen als Thema überhaupt nicht vor**, und
+von 87 Themen gingen **83 flüchtig** hinaus. Zurückbehalten wurden nur
+`schalter`, `kontakt`, `bewegung` und `betriebsart`. Nach einem Neustart des
+Brokers fehlten Loxone damit Schlosszustand, Behangposition, Rauch- und
+CO-Alarm, Wallbox-Zustand, Ventilstellung und die Kennung jedes Geräts —
+genau der Mangel, für den es Retain gibt.
+
+Jetzt sind es **64 zurückbehaltene und 23 flüchtige Themen**. Flüchtig
+bleiben die Messwerte mit Zeitbezug (`temperatur`, `feuchte`, `luftdruck`,
+`helligkeit_lux`, `leistung`, `spannung`, `strom`, `co2`, `pm25`, `voc`,
+`ist_temperatur`, `heizanforderung`, `ww_heizanforderung`), die Restzeiten
+und Dauern (`betrieb_restzeit`, `rvc_restzeit`, `evse_dauer`, `evse_energie`,
+`ventil_dauer`, `ventil_rest`) und die vier Tastenereignisse (`taste`,
+`taste_position`, `taste_zeit`, `taste_zaehler`) — ein zurückbehaltener
+Tastendruck löste nach jedem Neustart erneut aus. Das Lebenszeichen war und
+bleibt nie zurückbehalten.
+
+**Damit das nicht wieder unbemerkt auseinanderläuft:**
+
+- Die Themen-Tabelle im Reiter *MQTT* hat eine **Spalte „Zurückbehalten"**.
+  Bis 0.9.22 kam das Wort in der Oberfläche überhaupt nicht vor, obwohl der
+  Hausstandard es je Thema verlangt. Die Spalte liest die Liste **aus dem
+  Dienst** — eine zweite Liste in PHP wäre eine zweite Wahrheit.
+- Neue Prüfzeile im Reiter *Test*: **„Trifft die Retain-Liste die Themen, die
+  es gibt?"** Sie nennt jeden Eintrag, der als Thema nie vorkommt. Genau daran
+  wäre der Fehler drei Fassungen früher aufgefallen.
+
+**Weiter berichtigt:**
+
+- **Der Reiter *Einstellungen* zeigte den alten Ort der Matter-Fabric.** Die
+  Zeile *Datenordner (Fabric und Zertifikate)* nannte
+  `data/plugins/<ordner>/matter` — den Ort, den der LoxBerry-Installer bei
+  **jedem** Update abräumt — und stellte die Größe des **neuen** Ortes
+  daneben. Falscher Pfad mit richtiger Größe: wer danach sicherte, sicherte
+  nichts. Die Aufrufzeile des Containers und die Prüfzeile *„Liegt die
+  Matter-Fabric an der richtigen Stelle?"* waren immer richtig.
+- **`thread_br` fehlte in den Vorgaben des Dienstes.** Der Schlüssel kam in
+  0.9.18 in die Oberfläche und wurde nie nachgezogen; die eigene Prüfzeile
+  *„Führen Oberfläche und Dienst dieselben Vorgabewerte?"* stand deshalb auf
+  **jeder** Installation rot. Der Dienst benutzt den Wert nicht — er bekommt
+  das Dataset fertig aus der Konfiguration —, aber beide Seiten führen
+  dieselben Vorgaben, sonst misst die Zeile nichts.
+- **Zeilenenden.** `plugin.cfg`, `release.cfg`, `prerelease.cfg` und
+  `webfrontend/htmlauth/index.php` trugen CRLF; der ganze Ordner steht jetzt
+  auf LF. Das ist mehr als Kosmetik: am Gerät gemessen, wandelt der
+  LoxBerry-Installer zwar die PHP-Datei selbst um, aber **`file -b` nennt
+  eine `.ini` „Generic INItialization configuration"** — ohne das Wort
+  *text*. Der Installer zählte 21 von 28 Dateien als Text und ließ die
+  Sprachdateien aus; sie lagen am Gerät weiter mit CRLF. Für sie ist das
+  Packen die einzige Stelle, an der sich das richten lässt.
+- Zwei Tore in `postinstall.sh` schwiegen im Fehlerfall; sie melden jetzt,
+  woran es lag. Und die Kommentarzeile in `cron/cron.01min` enthielt den
+  Platzhalter selbst — der Installer ersetzte ihn mit, und am Gerät stand
+  danach ein Satz, der sich nicht mehr lesen ließ.
+
+## Neu in 0.9.22
+
+- **Die Fassungsauskunft war auf einer Installation leer.** `mt_fassung()`
+  kannte nur Dateien — und `plugin.cfg` wird nirgendwohin installiert:
+  `plugininstall.pl` liest sie im Auspackordner und löscht sie danach
+  (`:450`). Im Arbeitsordner fiel das nie auf, weil dort der Archivfall der
+  Kandidatenliste immer trifft. Jetzt wird zuerst `LBSystem::pluginversion()`
+  gefragt (`loxberry_system.php:403`, liest die `plugindatabase.json`); die
+  Dateikandidaten bleiben darunter für den Auspackordner stehen. Getragen
+  wird die Nummer von der Sicherungsdatei, die das Plugin ausgibt.
+  *Am Gerät nachgemessen (15.09.2026): `mt_fassung()` gibt dort `0.9.22`
+  zurück, und in `data/system/install/<ordner>/` liegt tatsächlich keine
+  `plugin.cfg`.*
+
 ## Neu in 0.9.21
 
 - **Nur Schreibweise.** Die Sprachdateien führten für sichtbare Zeichen
@@ -90,6 +169,24 @@ Zwischenspeicher** — es ist ein Netzschlüssel, und die Zeile merkt sich nur
 seine Länge und ob es zum gespeicherten passt. Zwischengespeichert wird wie
 bei den beiden anderen Netzzeilen (120 Sekunden, Schlüssel ist die Adresse),
 und wie sie läuft sie nur, wenn der Reiter *Test* der offene ist.
+
+## Neu in 0.9.18
+
+- **Das Thread-Dataset lässt sich beim Border-Router abholen.** Im Reiter
+  *Geräte anlernen* steht neben dem Feld ein Knopf: `mt_thread_dataset_holen()`
+  fragt `GET /node/dataset/active` (Port 8081, `Accept: text/plain`) und legt
+  die Hexkette in das vorhandene Feld. Bis 0.9.17 war sie abzutippen — sie ist
+  über hundert Zeichen lang, und ein Tippfehler darin führt zu einem
+  Anlernvorgang, der ohne erkennbaren Grund nicht durchläuft. Neuer
+  Konfigschlüssel `thread_br` für die Adresse. **Übergeben** wird das Dataset
+  an den Matter-Server weiter nur auf Knopfdruck; der Abruf schaltet nichts
+  ein.
+- Es antwortet nur ein **selbst betriebener** OpenThread-Border-Router (das
+  Home-Assistant-Add-on oder `ot-br-posix` auf einem Pi mit 802.15.4-Funk).
+  Apple, Google und Amazon sind zwar Border-Router, bieten diese Schnittstelle
+  aber nicht an; mit ihnen bleibt das Feld von Hand zu füllen, und ihr
+  Thread-Netz ist für einen eigenen `python-matter-server` ohnehin nicht
+  nutzbar.
 
 ## Neu in 0.9.17
 

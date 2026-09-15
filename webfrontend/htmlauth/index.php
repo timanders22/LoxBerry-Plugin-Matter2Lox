@@ -732,7 +732,7 @@ foreach (array('start' => 'sm-b-aktion', 'restart' => 'sm-b-aktion', 'stop' => '
 <tr><td><?= mt_e(mt_t('EINST.T_AUFRUF')) ?></td>
     <td><span class="sm-mono">docker <?= mt_e(mt_container_befehl($mt_cfg)) ?></span></td></tr>
 <tr><td><?= mt_e(mt_t('EINST.T_DATENORDNER')) ?></td>
-    <td><span class="sm-mono"><?= mt_e($mt_p['datadir']) ?>/matter</span>
+    <td><span class="sm-mono"><?= mt_e($mt_p['fabric']) ?></span>
         <?php if ($mt_fabricgroesse >= 0) { ?>(<?= (int) round($mt_fabricgroesse / 1024) ?> kB)<?php } ?></td></tr>
 <tr><td><?= mt_e(mt_t('EINST.T_ABBILDSTAND')) ?></td>
     <td><?php if ($mt_fassung['container'] === '') { ?><?= mt_e(mt_t('EINST.T_ABBILD_UNBEKANNT')) ?><?php } else { ?>
@@ -1136,30 +1136,33 @@ $mt_feld = function ($g, $name, $leer = '') {
 
 <h2><?= mt_e(mt_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
+<p class="sm-hilfe"><?= mt_t('MQTT.RETAIN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
-<tr><th><?= mt_e(mt_t('MQTT.T_THEMA')) ?></th><th><?= mt_e(mt_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ok</span></td><td><?= mt_t('MQTT.B_OK') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/online</span></td><td><?= mt_t('MQTT.B_ONLINE') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ts</span></td><td><?= mt_t('MQTT.B_TS') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraete</span></td><td><?= mt_t('MQTT.B_GERAETE') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/name</span></td><td><?= mt_t('MQTT.B_NAME') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/knoten</span></td><td><?= mt_t('MQTT.B_KNOTEN') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/erreichbar</span></td><td><?= mt_t('MQTT.B_ERREICH') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/&lt;Endpunkt&gt;/&lt;Thema&gt;</span></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/roh/&lt;Pfad&gt;</span></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
+<tr><th><?= mt_e(mt_t('MQTT.T_THEMA')) ?></th><th><?= mt_e(mt_t('MQTT.T_RETAIN')) ?></th><th><?= mt_e(mt_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ok</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_OK') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/online</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_ONLINE') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ts</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_TS') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraete</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_GERAETE') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/name</span></td><td><?= mt_e(mt_retain_text('name')) ?></td><td><?= mt_t('MQTT.B_NAME') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/knoten</span></td><td><?= mt_e(mt_retain_text('knoten')) ?></td><td><?= mt_t('MQTT.B_KNOTEN') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/erreichbar</span></td><td><?= mt_e(mt_retain_text('erreichbar')) ?></td><td><?= mt_t('MQTT.B_ERREICH') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/&lt;Endpunkt&gt;/&lt;Thema&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/roh/&lt;Pfad&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
 </table>
 
 <h2><?= mt_e(mt_t('MQTT.H_UEBERSETZUNG')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('MQTT.UEBERSETZUNG_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('MQTT.T_CLUSTER')) ?></th><th><?= mt_e(mt_t('MQTT.T_PFAD')) ?></th>
-    <th><?= mt_e(mt_t('MQTT.T_THEMA')) ?></th><th><?= mt_e(mt_t('MQTT.T_UMRECHNUNG')) ?></th>
+    <th><?= mt_e(mt_t('MQTT.T_THEMA')) ?></th><th><?= mt_e(mt_t('MQTT.T_RETAIN')) ?></th>
+    <th><?= mt_e(mt_t('MQTT.T_UMRECHNUNG')) ?></th>
     <th><?= mt_e(mt_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach ((array) $mt_tabelle['cluster'] as $mt_cl => $mt_d) {
     foreach ((array) $mt_d['attribute'] as $mt_at => $mt_a) { ?>
 <tr><td><span class="sm-mono"><?= mt_e($mt_d['name']) ?></span></td>
     <td><span class="sm-mono">E/<?= mt_e($mt_cl) ?>/<?= mt_e($mt_at) ?></span></td>
     <td><span class="sm-mono"><?= mt_e($mt_a['thema']) ?></span></td>
+    <td><?= mt_e(mt_retain_text($mt_a['thema'])) ?></td>
     <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
     <td><?= mt_t($mt_a['text']) ?></td></tr>
 <?php } } ?>
@@ -1173,6 +1176,23 @@ foreach ((array) (isset($mt_tabelle['ereignisthemen']['themen'])
 <tr><td><span class="sm-mono">Switch</span></td>
     <td><span class="sm-mono"><?= mt_e(mt_t('MQTT.T_EREIGNIS')) ?></span></td>
     <td><span class="sm-mono"><?= mt_e($mt_a['thema']) ?></span></td>
+    <td><?= mt_e(mt_retain_text($mt_a['thema'])) ?></td>
+    <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
+    <td><?= mt_t($mt_a['text']) ?></td></tr>
+<?php } ?>
+<?php
+/* Themen, die das Plugin AUSRECHNET (farbtemperatur_kelvin aus den Mireds,
+ * farbton_grad aus dem Rohwert). Der Dienst veroeffentlicht sie, und bis
+ * 0.9.22 standen sie in KEINER Tabelle der Oberflaeche - gemessen an der
+ * gerenderten Seite, nicht am Quelltext: die Pruefzeile "Nennt die
+ * Themenliste, was der Dienst wirklich sendet?" las die JSON-Datei und blieb
+ * deshalb gruen. */
+foreach ((array) (isset($mt_tabelle['abgeleitete_themen']['themen'])
+        ? $mt_tabelle['abgeleitete_themen']['themen'] : array()) as $mt_a) { ?>
+<tr><td><span class="sm-mono">ColorControl</span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_t('MQTT.T_AUSGERECHNET')) ?></span></td>
+    <td><span class="sm-mono"><?= mt_e($mt_a['thema']) ?></span></td>
+    <td><?= mt_e(mt_retain_text($mt_a['thema'])) ?></td>
     <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
     <td><?= mt_t($mt_a['text']) ?></td></tr>
 <?php } ?>

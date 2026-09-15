@@ -2187,3 +2187,45 @@ function mt_wachposten()
     }
     return '';
 }
+
+
+/**
+ * Welche Themen gehen zurueckbehalten (retained) hinaus?
+ *
+ * Gelesen wird die Liste des DIENSTES (ZUSTANDSTHEMEN in matter_dienst.py) -
+ * er ist die Stelle, die sendet. Eine zweite Liste in PHP waere eine zweite
+ * Wahrheit; genau daran lief die Tabelle bis 0.9.22 auseinander, ohne dass
+ * es jemandem auffiel. Dasselbe Verfahren benutzt mt_pruef_themen().
+ */
+function mt_zustandsthemen()
+{
+    static $z = null;
+    if ($z !== null) {
+        return $z;
+    }
+    $z = array();
+    $datei = mt_paths()['bindir'] . '/matter_dienst.py';
+    $py = is_file($datei) ? (string) @file_get_contents($datei) : '';
+    if (preg_match('/ZUSTANDSTHEMEN = \((.*?)\n\)/s', $py, $m)
+            && preg_match_all('/"([^"]+)"/', $m[1], $t)) {
+        $z = array_fill_keys($t[1], 1);
+    }
+    return $z;
+}
+
+/**
+ * Geht dieses Thema retained hinaus? Gibt den fertigen Text zurueck.
+ *
+ * Das Lebenszeichen ist NIE retained - retained zeigte es immer "lebt".
+ * Diese vier Namen beantwortet der Dienst in ist_zustand() vorab, noch vor
+ * der Tabelle; hier stehen sie aus demselben Grund vorn.
+ */
+function mt_retain_text($thema)
+{
+    $t = (string) $thema;
+    if (in_array($t, array('online', 'ok', 'ts', 'zaehler', 'probe'), true)) {
+        return mt_t('MQTT.RETAIN_NEIN');
+    }
+    $z = mt_zustandsthemen();
+    return isset($z[$t]) ? mt_t('MQTT.RETAIN_JA') : mt_t('MQTT.RETAIN_NEIN');
+}

@@ -1,4 +1,7 @@
 #!/bin/sh
 # Matter to Loxone - Waechter, minuetlich.
-# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad ersetzt.
+# Der Platzhalter in der naechsten Zeile wird bei der Installation durch
+# den bin-Pfad des Plugins ersetzt. Er steht bewusst nicht im Kommentar:
+# die Ersetzung trifft jede Fundstelle, und der Satz laese sich danach
+# nicht mehr verstehen.
 "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1

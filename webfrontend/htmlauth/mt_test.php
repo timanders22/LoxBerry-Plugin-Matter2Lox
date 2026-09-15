@@ -139,6 +139,69 @@ function mt_pruef_themen()
  * ohne Fehlermeldung. Das fuehrende Semikolon aus mt_check() verhindert das;
  * diese Zeile misst es an der wirklich erzeugten Antwortzeile.
  */
+/**
+ * Trifft die Retain-Liste die Themen, die es wirklich gibt?
+ *
+ * Am Geraet gemessen (15.09.2026, Fassung 0.9.22): ZUSTANDSTHEMEN fuehrte 23
+ * Namen, 19 davon kamen als Thema ueberhaupt nicht vor - sie waren gegen eine
+ * fruehere Namensgebung geschrieben ("rauch" statt "rauch_alarm",
+ * "verschlossen" statt "schloss"). Von 87 Themen gingen 83 fluechtig hinaus.
+ * Das faellt an keiner Stelle auf: der Dienst meldet keinen Fehler, die
+ * Oberflaeche zeigte nichts, und in Loxone merkt man es erst nach einem
+ * Neustart des Brokers - an fehlenden Werten, nicht an einer Meldung.
+ *
+ * Gemessen wird gegen mt_zustandsthemen(), das die Liste AUS DEM DIENST
+ * liest. Drei Namen der Geraeteebene (erreichbar, name, knoten) baut der
+ * Dienst selbst und stehen in keiner Cluster-Tabelle; sie sind ausgenommen.
+ */
+function mt_pruef_retainliste()
+{
+    $z = mt_zustandsthemen();
+    if (!$z) {
+        return array(-1, mt_t('TEST.A_RETAINLISTE_LEER'));
+    }
+    $tab = mt_tabelle();
+    $bekannt = array();
+    foreach ((array) (isset($tab['cluster']) ? $tab['cluster'] : array()) as $c) {
+        foreach ((array) (isset($c['attribute']) ? $c['attribute'] : array()) as $a) {
+            if (isset($a['thema'])) {
+                $bekannt[(string) $a['thema']] = 1;
+            }
+        }
+    }
+    foreach (array('ereignisthemen', 'abgeleitete_themen') as $gruppe) {
+        $q = isset($tab[$gruppe]['themen']) ? $tab[$gruppe]['themen'] : array();
+        foreach ((array) $q as $a) {
+            if (isset($a['thema'])) {
+                $bekannt[(string) $a['thema']] = 1;
+            }
+        }
+    }
+    if (!$bekannt) {
+        return array(-1, mt_t('TEST.A_THEMEN_LEER'));
+    }
+    $geraeteebene = array('erreichbar' => 1, 'name' => 1, 'knoten' => 1);
+    $tot = array();
+    foreach ($z as $t => $_egal) {
+        if (!isset($bekannt[$t]) && !isset($geraeteebene[$t])) {
+            $tot[] = $t;
+        }
+    }
+    if ($tot) {
+        sort($tot);
+        return array(0, sprintf(mt_t('TEST.A_RETAINLISTE_TOT'),
+                                count($tot), mt_e(implode(', ', $tot))));
+    }
+    $retained = 0;
+    foreach ($bekannt as $t => $_egal) {
+        if (isset($z[$t])) {
+            $retained++;
+        }
+    }
+    return array(1, sprintf(mt_t('TEST.A_RETAINLISTE_OK'),
+                            $retained, count($bekannt) - $retained));
+}
+
 function mt_pruef_muster()
 {
     $marken = array();
@@ -616,6 +679,9 @@ function mt_pruefungen()
 
     $th = mt_pruef_themen();
     $zeilen[] = mt_pruefzeile($th[0], mt_t('TEST.F_THEMEN'), $th[1]);
+
+    $rl = mt_pruef_retainliste();
+    $zeilen[] = mt_pruefzeile($rl[0], mt_t('TEST.F_RETAINLISTE'), $rl[1]);
 
     $mu = mt_pruef_muster();
     $zeilen[] = mt_pruefzeile($mu[0], mt_t('TEST.F_MUSTER'), $mu[1]);

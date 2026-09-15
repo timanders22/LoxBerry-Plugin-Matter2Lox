@@ -178,6 +178,11 @@ VORGABEN = {
     "wlan_ssid": "",
     "wlan_passwort": "",
     "thread_dataset": "",
+    # Adresse des Border-Routers. Der Dienst benutzt sie nicht - er
+    # bekommt das Dataset fertig aus der Konfiguration. Sie steht hier,
+    # weil beide Seiten dieselben Vorgaben fuehren muessen; bis 0.9.22
+    # fehlte sie und die Pruefzeile im Reiter Test stand dauerhaft rot.
+    "thread_br": "",
     # Kuerzester Abstand zwischen zwei Veroeffentlichungen, in Sekunden.
     # 0 schaltet die Bremse ab und stellt das Verhalten bis 0.9.9 wieder her.
     "sendetakt": 2,
@@ -541,11 +546,62 @@ def mqtt_praefix(cfg: dict) -> str:
 #
 # Bis 0.9.16 gab es gar kein Retain: ein Fensterkontakt, der sich zwei Tage
 # nicht bewegt, war nach einem Broker-Neustart zwei Tage lang unbekannt.
+#
+# Bis 0.9.22 traf die Liste die Themen NICHT. Gemessen am 15.09.2026 gegen
+# matter_cluster.json: 19 der 23 Eintraege kamen als Thema ueberhaupt nicht
+# vor - sie waren gegen eine fruehere Namensgebung geschrieben ("rauch" statt
+# "rauch_alarm", "verschlossen" statt "schloss", "ventil" statt
+# "ventil_zustand", "programm" statt "waschen_modus"). Von 87 Themen gingen
+# 83 fluechtig hinaus; retained waren nur schalter, kontakt, bewegung und
+# betriebsart. Nach einem Neustart des Brokers fehlten Loxone damit
+# Schlosszustand, Behangposition, Rauchalarm, Wallbox-Zustand und die
+# Kennung jedes Geraets. Die Zeile "Steht jedes zurueckbehaltene Thema auch
+# in der Themenliste?" im Reiter Test misst das ab jetzt bei jedem Aufruf.
 ZUSTANDSTHEMEN = (
-    "erreichbar", "name", "knoten", "schalter", "kontakt", "verschlossen",
-    "besetzt", "rauch", "co", "batterie_niedrig", "ventil", "betriebsart",
-    "luefter_stufe", "regen", "wasser", "tuer", "fenster", "bewegung",
-    "sperre", "kindersicherung", "warmwasser", "programm", "zustand",
+    # Geraeteebene: Erreichbarkeit, Name und Knotennummer baut der Dienst
+    # selbst, sie stehen in keiner Cluster-Tabelle.
+    "erreichbar", "name", "knoten",
+    # Schalten und Leuchten - der Stand einer Lampe ist ein Zustand, die
+    # Helligkeit und die Farbe gehoeren dazu.
+    "schalter", "helligkeit", "farbton_roh", "farbton_grad", "saettigung",
+    "farbtemperatur_mired", "farbtemperatur_kelvin", "farbmodus",
+    # Melder und Kontakte
+    "kontakt", "bewegung",
+    # Heizung: Betriebsart und die zuletzt gueltigen Sollwerte
+    "betriebsart", "soll_heizen", "soll_kuehlen",
+    # Schloss und Behang
+    "schloss", "position", "betriebszustand",
+    # Stromversorgung: der Ladestand bleibt, die Leistung nicht
+    "batterie", "batterie_stufe",
+    # Luefter: Stufe und Sollwert
+    "luefter_modus", "luefter_soll", "luefter_ist",
+    # Luftguete als Stufe; die Messwerte co2, pm25 und voc nicht
+    "luftguete", "voc_stufe", "co2_einheit", "pm25_einheit", "voc_einheit",
+    # Kennung des Geraets - aendert sich nie
+    "hersteller", "produkt", "bezeichnung", "firmware",
+    # Zaehlerstaende steigen nur; ein alter Stand ist nicht falsch
+    "energie_bezug", "energie_einspeisung",
+    # Programmablauf: Zustand und Phase ja, die Restzeit nicht
+    "betrieb_zustand", "betrieb_phase",
+    "rvc_zustand", "rvc_phase", "rvc_modus", "waschen_modus",
+    # Wallbox: Zustand, Freigabe, Fehler, Belastbarkeit, Ladestand;
+    # Dauer und geladene Energie der laufenden Sitzung nicht.
+    "evse_zustand", "evse_versorgung", "evse_fehler", "evse_kapazitaet",
+    "evse_max_strom", "evse_ladestand",
+    # Warmwasser: Betriebsart, Boost und Fuellstand; die Anforderung nicht
+    "ww_modus", "ww_boost", "ww_fuellstand",
+    # Ventil: Zustand, Stellung, Fehler; Dauer und Restzeit nicht
+    "ventil_zustand", "ventil_stellung", "ventil_fehler",
+    # Temperaturwahl am Geraet
+    "tc_soll", "tc_stufe",
+    # Taster: was das Geraet KANN, und die Stellung eines rastenden Schalters.
+    # Der Tastendruck selbst ist ein Ereignis und geht nie retained hinaus.
+    "taster_stellungen", "taster_mehrfach_max", "taster_stellung",
+    "tastensperre",
+    # Rauch- und CO-Melder: jede Meldung ist ein Zustand
+    "rauch_gesamt", "rauch_alarm", "co_alarm", "rauch_batterie",
+    "rauch_stumm", "rauch_hwfehler", "rauch_lebensende",
+    "rauch_verschmutzung",
 )
 
 

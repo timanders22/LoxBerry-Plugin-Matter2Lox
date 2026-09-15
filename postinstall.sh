@@ -113,9 +113,21 @@ if [ -z "$PY" ]; then
 fi
 echo "<INFO> Verwendetes Python: $($PY -V 2>&1)"
 
+# Warum nicht einfach 'test -x': eine venv, deren Python nicht mehr startet
+# (Systemwechsel von 3.11 auf 3.13, halb geloeschter Ordner), sieht von
+# aussen heil aus. Deshalb wird sie einmal WIRKLICH aufgerufen - und wenn
+# das misslingt, steht der Grund im Protokoll, statt dass hier stumm
+# geloescht und neu gebaut wird.
 BRAUCHBAR=0
-if [ -x "$VENV/bin/python3" ] && "$VENV/bin/python3" -c 'import sys' 2>/dev/null; then
-    BRAUCHBAR=1
+if [ -x "$VENV/bin/python3" ]; then
+    if PRUEFAUSGABE=$("$VENV/bin/python3" -c 'import sys' 2>&1); then
+        BRAUCHBAR=1
+    else
+        echo "<INFO> Die vorhandene virtuelle Umgebung startet nicht und wird neu gebaut."
+        echo "<INFO> Grund: $PRUEFAUSGABE"
+    fi
+elif [ -d "$VENV" ]; then
+    echo "<INFO> In $VENV steht kein ausfuehrbares python3 - die Umgebung wird neu gebaut."
 fi
 if [ "$BRAUCHBAR" -eq 0 ]; then
     rm -rf "$VENV"
@@ -135,9 +147,14 @@ if ! "$VENV/bin/python3" -m pip install --no-cache-dir "websockets>=12"; then
     echo "<FAIL> Ohne dieses eine Paket kann der Dienst nicht mit dem Matter-Server reden."
     exit 1
 fi
-# Rueckgabewert allein genuegt nicht - es wird nachgesehen, ob es sich laden laesst.
-if ! "$VENV/bin/python3" -c 'import websockets' 2>/dev/null; then
+# Rueckgabewert allein genuegt nicht - es wird nachgesehen, ob es sich laden
+# laesst. Die Fehlermeldung des Ladeversuchs wird MITGEGEBEN: ohne sie steht
+# im Protokoll nur, dass es nicht ging, und die haeufigste Ursache (ein Wheel
+# fuer die falsche Architektur oder eine fehlende Systembibliothek) bleibt
+# unsichtbar.
+if ! LADEFEHLER=$("$VENV/bin/python3" -c 'import websockets' 2>&1); then
     echo "<FAIL> websockets ist installiert, laesst sich aber nicht laden."
+    echo "<FAIL> Grund: $LADEFEHLER"
     exit 1
 fi
 WSVER=$("$VENV/bin/python3" -c 'import websockets; print(websockets.__version__)' 2>/dev/null || echo "unbekannt")
