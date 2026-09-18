@@ -191,12 +191,31 @@ chmod 700 "$PDATA/befehle" 2>/dev/null
 # nicht wieder an - bis jemand die Oberflaeche oeffnete und Start drueckte.
 # In Loxone sah das aus wie ein ruhiges Haus: der Herzschlag, der genau das
 # verhindern soll, schwieg ja ebenfalls.
+#
+# Zuerst aufraeumen, was in der Luecke angelaufen ist. Solange die Marke
+# aus preupgrade.sh liegt, stammt jeder eigene Dienst aus der Zeit vor oder
+# waehrend der Installation - etwa ein Knopfdruck in der Oberflaeche, der
+# die Marke um Sekunden verpasst hat, oder ein Dienst aus der Zeit vor 0.9.26.
+# Er laeuft mit altem Code und ohne PID-Datei; 'dienst.sh stop' sucht seit
+# 0.9.26 argumentweise und findet auch ihn. Danach laeuft genau einer.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 LIEF="$BASE/data/plugins/$PFOLDER.lief"
+if [ -f "$MARKE" ] && [ -x "$PBIN/dienst.sh" ]; then
+    MT_STOPP=$("$PBIN/dienst.sh" stop 2>&1)
+    case "$MT_STOPP" in
+        *angehalten*) echo "<INFO> Ein Dienst lief waehrend der Installation und wurde beendet." ;;
+    esac
+fi
 if [ -f "$LIEF" ]; then
     rm -f "$LIEF"
     if [ -x "$PBIN/dienst.sh" ]; then
-        if su -s /bin/bash loxberry -c "$(printf '%q ' "$PBIN/dienst.sh" start)" >/dev/null 2>&1 \
-           || "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+        # MT_START_TROTZ_MARKE=1: die Marke liegt noch (sie faellt erst
+        # unten, NACH dem Start - sonst koennte der Minutentakt in die
+        # Luecke zwischen Abraeumen und Start fallen). Nur hier wird sie
+        # uebergangen; sie ist die eigene, und dies ist der letzte Schritt
+        # der Installation. Vorbild: Chromecast4lox 1.3.11, postroot.sh.
+        if su -s /bin/bash loxberry -c "MT_START_TROTZ_MARKE=1 $(printf '%q ' "$PBIN/dienst.sh" start)" >/dev/null 2>&1 \
+           || MT_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
             echo "<OK> Der Dienst lief vor dem Update und wurde wieder gestartet."
         else
             echo "<INFO> Der Dienst lief vor dem Update, liess sich aber nicht"
@@ -206,6 +225,9 @@ if [ -f "$LIEF" ]; then
 else
     echo "<INFO> Der Dienst lief vorher nicht und wurde nicht gestartet."
 fi
+# Die Marke faellt NACH dem Start. postupgrade.sh entfernt sie noch einmal;
+# bei einer Neuinstallation gibt es sie gar nicht.
+rm -f "$MARKE" 2>/dev/null
 
 echo "<OK> Installation abgeschlossen."
 if [ -d "$PDATA/matter" ]; then

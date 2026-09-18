@@ -73,8 +73,69 @@ LOGDATEI="$PLOG/matter2lox.log"
 STARTLOG="$PLOG/matter2lox.start.log"
 SKRIPT="$SELF/matter_dienst.py"
 PY="$SELF/venv/bin/python3"
+# Die Marke "Aktualisierung laeuft". preupgrade.sh legt sie als Erstes an,
+# postinstall.sh entfernt sie nach dem Dienststart. Sie liegt NEBEN dem
+# Datenordner, weil purge_installation den Ordner selbst loescht
+# (Regeln/06). Gelesen wird sie in marke_gilt().
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
+MEINE_UID=$(id -u)
 
 mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+
+# Ist die Nummer $1 ein Dienst DIESES Plugins? Argumentweise, wie in
+# laeuft(): argv[0] ist ein Python, argv[1] ist genau unser Skript. Ein
+# Editor mit der Datei offen, ein "tail -f" darauf oder ein Dienst aus
+# einem anderen Baum wird nie getroffen (gemessen 18.09.2026: preupgrade
+# und uninstall beendeten bis 0.9.25 ein "tail -f matter_dienst.py").
+ist_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    tr '\0' '\n' 2>/dev/null < "/proc/$1/cmdline" | {
+        IFS= read -r a0 || exit 1
+        IFS= read -r a1 || exit 1
+        case "${a0##*/}" in python|python3|python3.*) ;; *) exit 1 ;; esac
+        [ "$a1" = "$SKRIPT" ]
+    }
+}
+
+# Alle eigenen Dienste, auch die ohne PID-Datei.
+#
+# Warum es diese Suche gibt: purge_installation loescht data/plugins/<ordner>/
+# bei JEDEM Upgrade und damit die PID-Datei. Ein Dienst, der das ueberlebt hat,
+# war fuer laeuft() danach unsichtbar - der Knopf "Dienst starten" legte einen
+# ZWEITEN daneben (am 18.09.2026 in WSL gemessen: 2 Prozesse nach dem zweiten
+# Start). Nur eigene Prozesse: die Nummern fremder Benutzer werden gar nicht
+# erst angesehen.
+dienste_suchen() {
+    for d in /proc/[0-9]*; do
+        [ "$(stat -c %u "$d" 2>/dev/null)" = "$MEINE_UID" ] || continue
+        ist_dienst "${d#/proc/}" && echo "${d#/proc/}"
+    done
+    return 0
+}
+
+# Gilt die Marke? 0 = ja, es laeuft eine Aktualisierung, nichts starten.
+#
+# Nur eine Marke, die hoechstens eine Stunde alt ist, zaehlt: eine
+# abgebrochene Installation darf den Dienst nicht fuer immer stilllegen.
+# Aelter, aus der Zukunft oder unlesbar - sie gilt nicht.
+# Die Uhr wird gemessen, nicht angenommen: liefert "date" nichts (unter Last
+# kann ein fork scheitern), rechnete die Schale mit einer leeren Zeichenkette,
+# das Alter wuerde negativ, die Bedingung fiele durch, und der Dienst startete
+# mitten in der Aktualisierung. Ein Schutz faellt geschlossen aus (CLAUDE.md
+# Punkt 4): ohne Uhr gilt die Marke. Vorbild: Chromecast4lox 1.3.11,
+# cron/cron.05min und daemon/daemon.
+marke_gilt() {
+    [ "${MT_START_TROTZ_MARKE:-0}" = "1" ] && return 1
+    [ -f "$MARKE" ] || return 1
+    seit=$(cat "$MARKE" 2>/dev/null)
+    case "$seit" in ''|*[!0-9]*) seit=0 ;; esac
+    jetzt=$(date +%s 2>/dev/null)
+    case "$jetzt" in ''|*[!0-9]*) jetzt="" ;; esac
+    [ -z "$jetzt" ] && return 0
+    alter=$(( jetzt - seit ))
+    [ "$alter" -ge 0 ] && [ "$alter" -lt 3600 ] && return 0
+    return 1
+}
 
 laeuft() {
     [ -f "$PID" ] || return 1
@@ -99,6 +160,32 @@ laeuft() {
 starten() {
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
+        return 0
+    fi
+    # Laeuft gerade eine Aktualisierung? Dann nichts starten. Dieser Weg
+    # deckt ALLE Startwege dieses Plugins ab: den Waechter aus cron.01min,
+    # den Knopf "Dienst starten" der Oberflaeche und den Start aus
+    # postinstall.sh. Nur postinstall.sh setzt MT_START_TROTZ_MARKE=1 -
+    # dort ist die Marke die eigene, und der Start ist der letzte Schritt
+    # der Installation.
+    # Anlass, gemessen am 18.09.2026 in WSL: in der Luecke zwischen
+    # purge_installation und postinstall.sh startete der Knopf der
+    # Oberflaeche den Dienst mitten in der Installation (Fall L5: 1 Prozess),
+    # und der Waechter hielt ihn danach am Leben, weil "start" den
+    # Sollmerker neu anlegt (Fall L6).
+    if marke_gilt; then
+        echo "Eine Aktualisierung dieses Plugins laeuft - der Dienst wird danach gestartet."
+        return 0
+    fi
+    # Ein Dienst ohne PID-Datei (purge_installation hat sie geloescht) ist
+    # fuer laeuft() unsichtbar. Er wird hier gefunden, statt einen zweiten
+    # danebenzustellen; seine Nummer kommt zurueck in die PID-Datei, damit
+    # die Oberflaeche ihn wieder sieht und "stop" ihn wieder erreicht.
+    WAISE=$(dienste_suchen | head -n 1)
+    if [ -n "$WAISE" ]; then
+        echo "$WAISE" > "$PID"
+        touch "$SOLL"
+        echo "laeuft bereits (PID $WAISE, ohne PID-Datei gefunden)"
         return 0
     fi
     if [ ! -x "$PY" ]; then
@@ -140,20 +227,32 @@ starten() {
 
 anhalten() {
     rm -f "$SOLL"
-    if ! laeuft; then
+    # ALLE eigenen Dienste, nicht nur den aus der PID-Datei. Bis 0.9.25
+    # endete dieser Weg bei "laeuft nicht", sobald die PID-Datei fehlte -
+    # und der Dienst, den purge_installation um seine PID-Datei gebracht
+    # hat, lief weiter, unsichtbar und ueber die Oberflaeche nicht mehr
+    # erreichbar. Vor jedem Signal steht die argumentweise Probe.
+    ZIELE=$(dienste_suchen)
+    if [ -z "$ZIELE" ]; then
         rm -f "$PID"
         echo "laeuft nicht"
         return 0
     fi
-    P=$(cat "$PID")
-    kill "$P" 2>/dev/null
+    kill $ZIELE 2>/dev/null
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        laeuft || break
+        [ -z "$(dienste_suchen)" ] && break
         sleep 1
     done
-    if laeuft; then
-        kill -9 "$P" 2>/dev/null
+    REST=$(dienste_suchen)
+    if [ -n "$REST" ]; then
+        kill -9 $REST 2>/dev/null
         sleep 1
+    fi
+    # Die WIRKUNG nachsehen, nicht den Rueckgabewert von kill.
+    REST=$(dienste_suchen)
+    if [ -n "$REST" ]; then
+        echo "FEHLER: der Dienst laeuft weiter (PID $(echo $REST)). Die PID-Datei bleibt liegen." >&2
+        return 1
     fi
     rm -f "$PID"
     echo "angehalten"
@@ -169,10 +268,23 @@ case "$1" in
             echo "laeuft $(cat "$PID")"
             exit 0
         fi
+        # Auch ohne PID-Datei nachsehen - sonst meldet "status" nach einem
+        # Upgrade "gestoppt", waehrend der Dienst laeuft.
+        WAISE=$(dienste_suchen | head -n 1)
+        if [ -n "$WAISE" ]; then
+            echo "laeuft $WAISE (ohne PID-Datei)"
+            exit 0
+        fi
         echo "gestoppt"
         exit 1
         ;;
     waechter)
+        # Waehrend einer Aktualisierung nichts starten und nichts
+        # protokollieren. starten() prueft die Marke ebenfalls; hier steht
+        # sie, damit der Minutentakt das Protokoll nicht vollschreibt.
+        if marke_gilt; then
+            exit 0
+        fi
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
         if [ -f "$SOLL" ] && ! laeuft; then

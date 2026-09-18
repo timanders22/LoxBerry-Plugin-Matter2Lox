@@ -10,6 +10,53 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.26
+
+**Während einer Aktualisierung startet der Dienst nicht mehr.** Beim Upgrade
+löscht der LoxBerry-Installer `config/plugins/matter2lox/` und
+`data/plugins/matter2lox/` vollständig und baut danach in `postinstall.sh`
+die virtuelle Python-Umgebung neu auf — zwischen beidem liegen mehrere
+Minuten. Bisher war in dieser Lücke offen, was der minütliche Wächter nicht
+konnte: Am 18.09.2026 in WSL gemessen, startete der Knopf *Dienst starten* im
+Reiter Einstellungen den Dienst **mitten in der Installation**, und weil
+`start` den Sollmerker neu anlegt, hielt ihn der Wächter danach am Leben.
+
+`preupgrade.sh` legt jetzt als Erstes die Marke
+`data/plugins/matter2lox.upgrade_laeuft` mit der Unixzeit **neben** den
+Datenordner. Solange sie gilt, startet kein Weg den Dienst — weder der
+Wächter noch der Knopf noch `postinstall.sh` selbst. Nur eine Marke, die
+höchstens eine Stunde alt ist, zählt; eine ältere, eine aus der Zukunft und
+eine unlesbare gelten nicht, damit eine abgebrochene Installation den Dienst
+nicht für immer stilllegt. Lässt sich die Uhr nicht lesen, gilt die Marke —
+ein Schutz fällt geschlossen aus. `postinstall.sh` entfernt sie **nach** dem
+Dienststart, `postupgrade.sh` noch einmal als Fangnetz, `uninstall` räumt sie
+weg. Der Reiter *Test* zeigt sie an.
+
+Die Oberfläche wird dabei **nicht** gesperrt. Gemessen wurde, was in der
+Lücke verlorengeht: nichts. Die Selbstheilung holt die Konfiguration aus der
+Zweitschrift zurück, das Aktionstoken bleibt dasselbe, und die Zweitschrift
+wird dabei nicht angefasst (byteweise gleich vor und nach dem Aufruf). Wer
+in dieser Zeit *Dienst starten* drückt, bekommt eine Meldung statt eines
+halb installierten Dienstes.
+
+**Ein Dienst ohne PID-Datei wird wiedergefunden.** `purge_installation`
+löscht mit dem Datenordner auch `dienst.pid`. Ein Dienst, der das überlebt
+hat, war für die Oberfläche unsichtbar: `dienst.sh start` stellte einen
+**zweiten** daneben (gemessen: 2 Prozesse), und `dienst.sh stop` meldete
+„läuft nicht". Beide suchen jetzt argumentweise über `/proc` nach eigenen
+Diensten — `start` übernimmt die gefundene Nummer zurück in die PID-Datei,
+`stop` beendet alle und sieht die Wirkung nach.
+
+**Prozesse werden vor jedem Signal genauer geprüft.** `preupgrade.sh` und
+`uninstall/uninstall` verglichen bisher nur das erste Argument mit dem
+Dienstpfad. Gemessen am 18.09.2026: ein fremdes `tail -f
+…/matter_dienst.py` wurde dadurch beendet. Jetzt muss zusätzlich das nullte
+Argument ein Python sein und der Prozess dem Dienstbenutzer gehören —
+dieselbe Probe, die `bin/dienst.sh` schon führte. Auch die Oberfläche
+entschied in `mt_dienst_pid()` über eine Teilzeichenkette der ganzen
+Befehlszeile und meldete denselben fremden Prozess als laufenden Dienst;
+auch dort wird jetzt argumentweise verglichen.
+
 ## Neu in 0.9.23
 
 **Die Retain-Liste traf die Themen nicht.** Seit 0.9.17 gehen Zustände

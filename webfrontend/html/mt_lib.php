@@ -537,6 +537,36 @@ function mt_log_gebremst($schluessel, $text, $sekunden = 3600)
 
 /* ---------------- Dienst ---------------- */
 
+/**
+ * Ist die Nummer ein Dienst dieses Plugins?
+ *
+ * ARGUMENTWEISE, nicht als Teilzeichenkette. Bis 0.9.25 entschied hier ein
+ * strpos() ueber die ganze Befehlszeile; am 18.09.2026 in WSL gemessen,
+ * meldete mt_dienst_pid() daraufhin einen fremden 'tail -f
+ * .../matter_dienst.py' als laufenden Dienst (Fall F3). Geprueft werden
+ * zwei Dinge, genau wie in bin/dienst.sh: das erste Argument ist unser
+ * Skript, das nullte ist ein Python.
+ */
+function mt_ist_dienst($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
+        return false;
+    }
+    $roh = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+    if ($roh === '') {
+        return false;
+    }
+    $args = explode("\0", $roh);
+    if (count($args) < 2) {
+        return false;
+    }
+    if (!preg_match('/^python[0-9.]*$/', basename($args[0]))) {
+        return false;
+    }
+    return $args[1] === mt_paths()['bindir'] . '/matter_dienst.py';
+}
+
 function mt_dienst_pid()
 {
     $f = mt_paths()['datadir'] . '/dienst.pid';
@@ -544,11 +574,39 @@ function mt_dienst_pid()
         return 0;
     }
     $pid = (int) trim((string) @file_get_contents($f));
-    if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
-        return 0;
+    return mt_ist_dienst($pid) ? $pid : 0;
+}
+
+/**
+ * Die Marke "Aktualisierung laeuft".
+ *
+ * preupgrade.sh legt sie als Erstes an (Unixzeit), postinstall.sh entfernt
+ * sie nach dem Dienststart, postupgrade.sh noch einmal, uninstall raeumt
+ * sie weg. Sie liegt NEBEN dem Datenordner, weil purge_installation den
+ * Ordner selbst loescht. Solange sie gilt, startet kein Weg den Dienst -
+ * auch der Knopf "Dienst starten" nicht.
+ *
+ * Rueckgabe: array(gilt, alter). gilt = 1 nur bei einer Marke, die
+ * hoechstens 3600 s alt ist; alter = -1, wenn keine Marke liegt.
+ * Diese Funktion urteilt nur fuer den Reiter Test - die Entscheidung
+ * faellt in bin/dienst.sh, damit sie an EINER Stelle steht.
+ */
+function mt_upgrade_marke()
+{
+    $p = mt_paths();
+    // datadir ist .../data/plugins/<ordner>; die Marke liegt daneben.
+    $f = $p['datadir'] . '.upgrade_laeuft';
+    if (!is_file($f)) {
+        return array(0, -1);
     }
-    $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    return strpos($cmd, 'matter_dienst.py') !== false ? $pid : 0;
+    $roh = trim((string) @file_get_contents($f));
+    if ($roh === '' || !ctype_digit($roh)) {
+        // Unlesbar: sie gilt nicht (dieselbe Entscheidung wie in
+        // dienst.sh) - gesagt wird es trotzdem, Alter -2.
+        return array(0, -2);
+    }
+    $alter = time() - (int) $roh;
+    return array(($alter >= 0 && $alter < 3600) ? 1 : 0, $alter);
 }
 
 function mt_dienst_soll()

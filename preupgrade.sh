@@ -40,8 +40,50 @@ fi
 PDATA="$BASE/data/plugins/$PFOLDER"
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 
 FEHLER=0
+
+# ------------------------------------------------------------ 0. Marke
+# ALS ERSTES, noch vor dem Anhalten: "Aktualisierung laeuft".
+#
+# Der Installer legt die Cron-Datei rund eine Minute vor postinstall.sh
+# neu an, und zwischen diesem Skript und dem Dienststart liegen ein
+# 'python3 -m venv' und ein 'pip install websockets' - zusammen
+# regelmaessig mehrere Minuten. In dieser Luecke sind Konfiguration,
+# Sollmerker und PID-Datei geloescht. Der Waechter greift dort ins Leere
+# (er verlangt data/plugins/<ordner>/soll_laufen), der Knopf "Dienst
+# starten" der Oberflaeche aber nicht: am 18.09.2026 in WSL gemessen,
+# startete er den Dienst mitten in der Installation, und der Waechter hielt
+# ihn danach am Leben, weil 'start' den Sollmerker neu anlegt.
+# Solange die Marke juenger als eine Stunde ist, startet kein Weg den
+# Dienst; postinstall.sh entfernt sie nach dem Start, postupgrade.sh noch
+# einmal zur Sicherheit, uninstall raeumt sie weg.
+# Sie liegt NEBEN dem Datenordner, weil purge_installation den Ordner
+# selbst loescht (Regeln/06).
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+date +%s > "$MARKE" 2>/dev/null
+if grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
+    echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - waehrend der"
+    echo "<WARNING> Installation kann der Dienst ueber die Oberflaeche starten."
+fi
+
+# Ist die Nummer $1 ein Dienst dieses Plugins? Argumentweise: argv[0] ist
+# ein Python, argv[1] ist genau unser Skript. Bis 0.9.25 wurde nur argv[1]
+# verglichen; am 18.09.2026 in WSL gemessen, beendete dieses Skript damit
+# einen fremden 'tail -f .../matter_dienst.py'. Dieselbe Probe steht in
+# bin/dienst.sh und in uninstall/uninstall.
+mt_ist_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    tr '\0' '\n' 2>/dev/null < "/proc/$1/cmdline" | {
+        IFS= read -r a0 || exit 1
+        IFS= read -r a1 || exit 1
+        case "${a0##*/}" in python|python3|python3.*) ;; *) exit 1 ;; esac
+        [ "$a1" = "$2" ]
+    }
+}
 
 # ------------------------------------------------------------ 1. Dienst
 # Erst den Sollmerker wegnehmen, dann anhalten - genau in dieser Reihenfolge.
@@ -65,10 +107,16 @@ fi
 # Zweiter Griff, argumentweise: ein Dienst ohne PID-Datei (siehe oben) wird
 # von dienst.sh nicht gefunden. Dieselbe Suche wie in uninstall/uninstall.
 SKRIPT="$PBIN/matter_dienst.py"
+# Der Dienst gehoert loxberry. Gibt es den Benutzer nicht (Pruefstand),
+# gilt der eigene - sonst faende die Suche gar nichts.
+DIENST_UID=$(id -u loxberry 2>/dev/null || id -u)
 for D in /proc/[0-9]*; do
     P=$(basename "$D")
     [ -r "$D/cmdline" ] || continue
-    if tr '\0' '\n' < "$D/cmdline" 2>/dev/null | grep -qxF "$SKRIPT"; then
+    # Nur Prozesse des Dienstbenutzers ansehen; fremde Nummern werden gar
+    # nicht erst geprueft.
+    [ "$(stat -c %u "$D" 2>/dev/null)" = "$DIENST_UID" ] || continue
+    if mt_ist_dienst "$P" "$SKRIPT"; then
         LIEF=1
         kill "$P" 2>/dev/null
         for i in 1 2 3 4 5; do

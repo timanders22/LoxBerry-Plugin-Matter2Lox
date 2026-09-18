@@ -671,6 +671,22 @@ function mt_pruefungen()
     $fb = mt_pruef_fabric();
     $zeilen[] = mt_pruefzeile($fb[0], mt_t('TEST.F_FABRIC'), $fb[1]);
 
+    // Die Marke "Aktualisierung laeuft" - zu jeder Regel gehoert das
+    // Werkzeug, das sie findet (CLAUDE.md Punkt 6). Liegt sie, startet
+    // kein Weg den Dienst; dann soll man das hier sehen und nicht raten.
+    $um = mt_upgrade_marke();
+    if ($um[0]) {
+        $zeilen[] = mt_pruefzeile(0, mt_t('TEST.F_UPGRADE'),
+            sprintf(mt_t('TEST.A_UPGRADE_LAEUFT'), (int) $um[1]));
+    } elseif ($um[1] === -2) {
+        $zeilen[] = mt_pruefzeile(0, mt_t('TEST.F_UPGRADE'), mt_t('TEST.A_UPGRADE_KAPUTT'));
+    } elseif ($um[1] >= 0) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_UPGRADE'),
+            sprintf(mt_t('TEST.A_UPGRADE_ALT'), (int) round($um[1] / 60)));
+    } else {
+        $zeilen[] = mt_pruefzeile(1, mt_t('TEST.F_UPGRADE'), mt_t('TEST.A_UPGRADE_KEINE'));
+    }
+
     $br = mt_pruef_border();
     $zeilen[] = mt_pruefzeile($br[0], mt_t('TEST.F_BORDER'), $br[1]);
 
