@@ -54,13 +54,17 @@ def lb_wurzel_ermitteln():
     """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
 
     Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
-    config/plugins UND webfrontend enthaelt. Trifft die uebliche
-    Installation genauso wie eine an einem anderen Ort.
+    config/plugins, data/plugins UND config/system/general.json enthaelt
+    (Regeln/06). Bis 0.9.26 genuegten config/plugins und webfrontend - ein
+    Rest-Baum aus einem Pruefstand ohne general.json galt dann als Wurzel
+    (Fall P7 in Pruefung-Matter2Lox-0.9.27; dieselbe Klasse wie der
+    Raumklima-Vorfall vom 05.09.2026).
     """
     d = os.path.dirname(os.path.abspath(__file__))
     for _ in range(8):
         if os.path.isdir(os.path.join(d, "config", "plugins")) \
-                and os.path.isdir(os.path.join(d, "webfrontend")):
+                and os.path.isdir(os.path.join(d, "data", "plugins")) \
+                and os.path.isfile(os.path.join(d, "config", "system", "general.json")):
             return d
         eltern = os.path.dirname(d)
         if eltern == d:
@@ -86,14 +90,27 @@ def mqtt_wert_saeubern(wert):
 
 
 # ---------------------------------------------------------------------------
-# Pfade aus dem EIGENEN Ablageort ableiten.
+# Wurzel und Ordnername werden GELESEN, nicht geraten.
 #
 # Nicht ueber LoxBerry::System: das leitet den Pluginordner aus dem Aufrufort
 # ab und liefert bei einem Start aus postinstall.sh oder aus dem Cron ueberall
 # Leerstring - der Dienst werkelte dann gegen /-Pfade und meldete Erfolg.
+#
+# Bis 0.9.26 stand hier "PNAME = SELF.name", und die Wurzel war
+# SELF.parents[2], sobald dort config/plugins und webfrontend lagen - VOR
+# $LBHOMEDIR. In WSL gemessen (18.09.2026, Pruefung-Matter2Lox-0.9.27, Faelle
+# P1, P2, P6; Bauart H1 aus Bestand-2026-09-18/klasse-H): aus einem
+# Pruefarchiv unter <Wurzel>/pruefung/<plugin>/bin hiess der Ordner "bin",
+# und schon "--selbsttest" legte in der LAUFENDEN Anlage log/plugins/bin an.
+#
+# Reihenfolge wie in bin/dienst.sh (Regeln/03, Stufe 1 ist die Umgebung):
+#   Wurzel:      $LBHOMEDIR  ->  Aufwaertssuche  ->  Ablageort
+#   Ordnername:  $LBPPLUGINDIR  ->  Ablageort
+# Liegt dieses Skript danach nicht unter <Wurzel>/bin/plugins/<ordner>,
+# startet main() nichts und legt nichts an (INSTALLIERT).
 # ---------------------------------------------------------------------------
 SELF = Path(__file__).resolve().parent            # <home>/bin/plugins/<ordner>
-PNAME = SELF.name
+PNAME = (os.environ.get("LBPPLUGINDIR") or "").strip("/") or SELF.name
 
 
 def _ist_lbwurzel(d) -> bool:
@@ -112,18 +129,21 @@ def _ist_lbwurzel(d) -> bool:
 # Datenordner an einer Stelle, an der kein LoxBerry liegt. Der Dienst haette
 # dort in fremde Verzeichnisse geschrieben und trotzdem Erfolg gemeldet.
 #
-# Deshalb wird die abgeleitete Wurzel jetzt geprueft, bevor sie gilt.
+# Deshalb wird die abgeleitete Wurzel jetzt geprueft, bevor sie gilt - und
+# seit 0.9.27 erst NACH der Umgebung und der Aufwaertssuche gefragt.
 LBHOME = None
-if len(SELF.parents) >= 3 and _ist_lbwurzel(SELF.parents[2]):
-    LBHOME = SELF.parents[2]
-if LBHOME is None:
-    umgebung = os.environ.get("LBHOMEDIR") or ""
-    if umgebung and _ist_lbwurzel(Path(umgebung)):
-        LBHOME = Path(umgebung)
+umgebung = os.environ.get("LBHOMEDIR") or ""
+if umgebung and (Path(umgebung) / "config" / "plugins").is_dir() \
+        and (Path(umgebung) / "data" / "plugins").is_dir():
+    # resolve(): liegt die Wurzel hinter einem Verweis, vergleicht
+    # INSTALLIERT unten zwei physische Pfade (Fall P4).
+    LBHOME = Path(umgebung).resolve()
 if LBHOME is None:
     gesucht = lb_wurzel_ermitteln()
     if gesucht:
-        LBHOME = Path(gesucht)
+        LBHOME = Path(gesucht).resolve()
+if LBHOME is None and len(SELF.parents) >= 3 and _ist_lbwurzel(SELF.parents[2]):
+    LBHOME = SELF.parents[2]
 if LBHOME is None:
     # Nichts gefunden. Lieber die alte Ableitung als ein Leerstring, der
     # gegen /-Pfade werkelt - aber der Selbsttest sagt es dann deutlich.
@@ -131,6 +151,10 @@ if LBHOME is None:
     LBHOME_GERATEN = True
 else:
     LBHOME_GERATEN = False
+
+# Laeuft dieses Skript wirklich AUS der Installation? Sonst schriebe es in
+# eine Anlage unter einem Ordnernamen, den niemand gewollt hat.
+INSTALLIERT = SELF == LBHOME / "bin" / "plugins" / PNAME
 
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
@@ -1900,6 +1924,13 @@ def selbsttest() -> int:
 
 
 def main() -> int:
+    # VOR log_einrichten(): das legt den Logordner an. Ein Schutz faellt
+    # geschlossen aus (CLAUDE.md 4) - auch "--selbsttest" aus einem
+    # Pruefarchiv schreibt nichts in die Anlage (Faelle P1, P2, P5).
+    if not INSTALLIERT:
+        print(f"[FEHL] Dieses Skript liegt nicht unter {LBHOME / 'bin' / 'plugins' / PNAME} - "
+              "aus einem ausgepackten Archiv wird nichts gestartet und nichts angelegt.")
+        return 1
     log_einrichten()
     if "--selbsttest" in sys.argv:
         return selbsttest()

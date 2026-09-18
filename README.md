@@ -10,6 +10,43 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.27
+
+**Wurzel und Ordnername werden gelesen, nicht mehr aus dem Ablageort
+geraten.** `bin/dienst.sh` rechnete bisher die LoxBerry-Wurzel als „drei
+Ebenen über mir" und den Ordnernamen als „mein eigener Ordner" — und
+überschrieb dabei ein gesetztes `$LBHOMEDIR`. Am 18.09.2026 in WSL
+nachgestellt: ein `dienst.sh status` aus einem Prüfarchiv unter
+`<LoxBerry-Wurzel>/pruefung/matter2lox/bin` legte in der **laufenden** Anlage
+`data/plugins/bin` und `log/plugins/bin` an, und derselbe Aufruf mit `sudo`
+reichte genau diese beiden Pfade an ein `chown -R` weiter; aus einem
+ausgepackten Archiv heraus Pfade außerhalb jeder Anlage. Auch
+`matter_dienst.py --selbsttest` legte aus dem Prüfarchiv `log/plugins/bin`
+an.
+
+Jetzt gilt in `bin/dienst.sh` und `bin/matter_dienst.py` dieselbe Reihenfolge:
+die Wurzel kommt aus `$LBHOMEDIR`, sonst aus einer Suche aufwärts nach einem
+Verzeichnis mit `config/plugins`, `data/plugins` **und**
+`config/system/general.json`, erst zuletzt aus dem Ablageort; der
+Ordnername aus `$LBPPLUGINDIR`, sonst aus dem Ablageort. Liegt das Skript
+danach nicht unter `<LoxBerry-Wurzel>/bin/plugins/<ordner>`, startet es
+nichts, legt nichts an und fasst als root nichts an — `status` gibt weiter
+Auskunft. Ordner werden erst beim Start angelegt, nicht mehr bei jedem
+Aufruf; ein `status` in der Aktualisierungslücke legt den eben gelöschten
+Datenordner nicht mehr wieder an. Liegt die Wurzel hinter einem Verweis,
+werden beide Seiten physisch verglichen.
+
+**Die Marke „Aktualisierung läuft" hat 300 s Vorlauf.** Bisher galt eine
+Marke „aus der Zukunft" nicht — schon eine Sekunde reichte. Die Uhr kann
+nach dem Setzen aber ein Stück zurückspringen (in WSL gemessen bis 0,64 s).
+Jetzt gilt eine Marke, die höchstens 300 s voraus ist, in `bin/dienst.sh`
+wie im Reiter *Test*; weiter voraus gilt sie weiterhin nicht.
+
+Am Gerät ist das **nicht** nachgemessen. Der Prüfstand
+(`Pruefung-Matter2Lox-0.9.27/messe_h1.sh`, 38 Fälle) misst in WSL mit
+Attrappen für `id`, `su` und `chown`; Gegenproben: installierte Lage mit
+und ohne `$LBHOMEDIR`, Aufruf aus `/`, Wurzel hinter einem Verweis.
+
 ## Neu in 0.9.26
 
 **Während einer Aktualisierung startet der Dienst nicht mehr.** Beim Upgrade

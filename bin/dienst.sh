@@ -1,11 +1,13 @@
 #!/bin/bash
 # Matter to Loxone - Start, Stopp und Waechter des Abrufdienstes.
 #
-# Die Pfade werden aus dem EIGENEN Ablageort abgeleitet, nicht ueber
-# LoxBerry::System. Grund: LoxBerry::System leitet den Pluginordner aus dem
-# Aufrufort ab; wird dieses Skript aus postinstall.sh oder aus dem Cron
-# gestartet, kommt dort ueberall Leerstring zurueck - das Skript werkelt dann
-# gegen /-Pfade und meldet trotzdem Erfolg.
+# Wurzel und Ordnername kommen aus der UMGEBUNG, solange sie etwas sagt
+# ($LBHOMEDIR, $LBPPLUGINDIR); erst danach aus dem Ablageort - siehe
+# "Wurzel und Ordnername" weiter unten. Nicht ueber LoxBerry::System: das
+# leitet den Pluginordner aus dem Aufrufort ab; wird dieses Skript aus
+# postinstall.sh oder aus dem Cron gestartet, kommt dort ueberall
+# Leerstring zurueck - das Skript werkelt dann gegen /-Pfade und meldet
+# trotzdem Erfolg.
 
 # readlink -f loest Symlinks auf, BEVOR das Verzeichnis bestimmt wird.
 # LoxBerry legt Daemons als Symlink unter system/daemons/plugins/ ab; von
@@ -48,20 +50,77 @@
 # Was der Abstieg NICHT tut: Dateien reparieren, die schon root gehoeren. Auf
 # einer Anlage, auf der der Schaden bereits eingetreten ist, hilft nur das
 # chown darunter - und das darf nur laufen, solange wir noch root sind.
-if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
-    SELF_ROOT=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-    ROOT_HOME=$(cd "$SELF_ROOT/../../.." && pwd)
-    ROOT_PNAME=$(basename "$SELF_ROOT")
-    for R in "$ROOT_HOME/data/plugins/$ROOT_PNAME" \
-             "$ROOT_HOME/log/plugins/$ROOT_PNAME"; do
-        [ -d "$R" ] && chown -R loxberry:loxberry "$R" 2>/dev/null
+
+# ------------------------------------------------ Wurzel und Ordnername
+#
+# GELESEN, nicht geraten (Regeln/03: Stufe 1 ist $LBHOMEDIR; Regeln/06:
+# Wurzelsuche mit config/system/general.json; Bestand-2026-09-18/klasse-H/
+# Ergebnis.md, Bauart H1). Bis 0.9.26 stand hier
+#     PNAME=$(basename "$SELF")
+#     LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+# und im root-Zweig darueber dieselbe Rechnung noch einmal, mit einem
+# "chown -R" als root auf das Ergebnis. Ein gesetztes $LBHOMEDIR wurde dabei
+# UEBERSCHRIEBEN. In WSL gemessen (18.09.2026, Pruefung-Matter2Lox-0.9.27,
+# Faelle H4-H8 und R3-R5): ein "status" aus einem Pruefarchiv unter
+# <Wurzel>/pruefung/<plugin>/bin legte in der LAUFENDEN Anlage
+# data/plugins/bin und log/plugins/bin an, und derselbe Aufruf als root
+# reichte "chown -R" genau diese beiden Pfade - aus einem ausgepackten
+# Archiv Pfade ausserhalb jeder Anlage.
+#
+# Drei Stufen fuer die Wurzel, in dieser Reihenfolge:
+#   1. $LBHOMEDIR aus der Umgebung, wenn dort config/plugins und
+#      data/plugins liegen,
+#   2. aufwaerts suchen, bis ein Verzeichnis config/plugins, data/plugins
+#      UND config/system/general.json traegt (der dritte Nachweis seit dem
+#      Raumklima-Vorfall, Regeln/06),
+#   3. drei Ebenen ueber dem Ablageort - das bisherige Verhalten.
+# "pwd -P" auf beiden Seiten: liegt die Wurzel hinter einem Verweis, muss
+# der Vergleich unten zwei physische Pfade vergleichen (Fall H12).
+SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)       # <home>/bin/plugins/<ordner>
+mt_wurzel_suchen() {
+    mt_v="$SELF"
+    mt_i=0
+    while [ -n "$mt_v" ] && [ "$mt_v" != "/" ] && [ "$mt_i" -lt 8 ]; do
+        if [ -d "$mt_v/config/plugins" ] && [ -d "$mt_v/data/plugins" ] \
+           && [ -f "$mt_v/config/system/general.json" ]; then
+            echo "$mt_v"
+            return 0
+        fi
+        mt_v=$(dirname "$mt_v")
+        mt_i=$((mt_i + 1))
     done
+    return 1
+}
+if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+   && [ -d "$LBHOMEDIR/data/plugins" ]; then
+    LBHOMEDIR=$(cd "$LBHOMEDIR" && pwd -P)
+else
+    LBHOMEDIR=$(mt_wurzel_suchen) || LBHOMEDIR=$(cd "$SELF/../../.." && pwd -P)
+fi
+# Der Ordnername kommt aus $LBPPLUGINDIR, sonst aus dem Ablageort. Am Geraet
+# steht $LBPPLUGINDIR in keiner Cron-Schale (Regeln/03) - dann traegt der
+# Ablageort, und bei einer regulaeren Installation ist das genau richtig.
+PNAME="${LBPPLUGINDIR:-}"
+[ -n "$PNAME" ] || PNAME=$(basename "$SELF")
+PBIN="$LBHOMEDIR/bin/plugins/$PNAME"
+# Laeuft dieses Skript wirklich AUS der Installation? Was schreibt (start,
+# restart, waechter, das chown als root), faellt sonst geschlossen aus.
+INSTALLIERT=0
+[ "$SELF" = "$PBIN" ] && INSTALLIERT=1
+
+if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+    # Nur aus der Installation, und nur auf die GELESENEN Pfade. Aus einem
+    # Pruefarchiv oder einem ausgepackten Archiv wird nichts umgeschrieben -
+    # der Abstieg selbst geschieht trotzdem.
+    if [ "$INSTALLIERT" = "1" ]; then
+        for R in "$LBHOMEDIR/data/plugins/$PNAME" \
+                 "$LBHOMEDIR/log/plugins/$PNAME"; do
+            [ -d "$R" ] && chown -R loxberry:loxberry "$R" 2>/dev/null
+        done
+    fi
     exec su -s /bin/bash loxberry -c "$(printf '%q ' "$0" "$@")"
 fi
 
-SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)          # <home>/bin/plugins/<ordner>
-PNAME=$(basename "$SELF")
-LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
@@ -71,8 +130,12 @@ LOGDATEI="$PLOG/matter2lox.log"
 # Die Ausgabe des Startvorgangs. Siehe starten() - sie darf NICHT in die
 # Logdatei gehen, die Python selbst rotiert.
 STARTLOG="$PLOG/matter2lox.start.log"
-SKRIPT="$SELF/matter_dienst.py"
-PY="$SELF/venv/bin/python3"
+# Aus dem GELESENEN bin-Ordner, nicht aus dem Ablageort: installiert ist das
+# derselbe Ordner. Aus einem ausgepackten Archiv mit gesetzter Umgebung sieht
+# "status" so den Dienst der Anlage (Fall H4) - gestartet wird von dort
+# nichts (siehe INSTALLIERT).
+SKRIPT="$PBIN/matter_dienst.py"
+PY="$PBIN/venv/bin/python3"
 # Die Marke "Aktualisierung laeuft". preupgrade.sh legt sie als Erstes an,
 # postinstall.sh entfernt sie nach dem Dienststart. Sie liegt NEBEN dem
 # Datenordner, weil purge_installation den Ordner selbst loescht
@@ -80,7 +143,23 @@ PY="$SELF/venv/bin/python3"
 MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
 MEINE_UID=$(id -u)
 
-mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+# Angelegt wird erst beim START (und vom Waechter vor seiner Protokollzeile),
+# nicht bei jedem Aufruf. Bis 0.9.26 stand hier "mkdir -p" auf oberster
+# Ebene - auch "status" und "stop" legten damit Ordner an. In der
+# Upgrade-Luecke legte schon ein "status" data/plugins/<ordner> wieder an
+# (Fall H8), und "der Ordner ist da" sagte dort nichts mehr ueber eine
+# gelungene Ruecksicherung aus.
+ordner_anlegen() {
+    mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+}
+
+# Ein Schutz faellt geschlossen aus (CLAUDE.md 4): wer aus einem Pruefarchiv
+# oder einem ausgepackten Archiv startet, schriebe in die laufende Anlage -
+# unter einem Ordnernamen, den niemand gewollt hat.
+nicht_installiert() {
+    echo "FEHLER: dieses Skript liegt nicht unter $PBIN -"
+    echo "FEHLER: aus einem ausgepackten Archiv wird nichts gestartet."
+}
 
 # Ist die Nummer $1 ein Dienst DIESES Plugins? Argumentweise, wie in
 # laeuft(): argv[0] ist ein Python, argv[1] ist genau unser Skript. Ein
@@ -117,7 +196,11 @@ dienste_suchen() {
 #
 # Nur eine Marke, die hoechstens eine Stunde alt ist, zaehlt: eine
 # abgebrochene Installation darf den Dienst nicht fuer immer stilllegen.
-# Aelter, aus der Zukunft oder unlesbar - sie gilt nicht.
+# Aelter, mehr als 300 s aus der Zukunft oder unlesbar - sie gilt nicht.
+# Die 300 s Vorlauf: die Uhr kann ein Stueck zurueckspringen, nachdem
+# preupgrade.sh die Marke gesetzt hat; in WSL sprang sie gemessen bis 0,64 s
+# zurueck, und eine eben geschriebene Marke galt dann kurz nicht
+# (Pruefung-VolkswagenID-0.9.23, dort 300 s). Hier Fall M1 und M2.
 # Die Uhr wird gemessen, nicht angenommen: liefert "date" nichts (unter Last
 # kann ein fork scheitern), rechnete die Schale mit einer leeren Zeichenkette,
 # das Alter wuerde negativ, die Bedingung fiele durch, und der Dienst startete
@@ -133,7 +216,7 @@ marke_gilt() {
     case "$jetzt" in ''|*[!0-9]*) jetzt="" ;; esac
     [ -z "$jetzt" ] && return 0
     alter=$(( jetzt - seit ))
-    [ "$alter" -ge 0 ] && [ "$alter" -lt 3600 ] && return 0
+    [ "$alter" -ge -300 ] && [ "$alter" -lt 3600 ] && return 0
     return 1
 }
 
@@ -158,6 +241,10 @@ laeuft() {
 }
 
 starten() {
+    if [ "$INSTALLIERT" != "1" ]; then
+        nicht_installiert
+        return 1
+    fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
@@ -177,6 +264,9 @@ starten() {
         echo "Eine Aktualisierung dieses Plugins laeuft - der Dienst wird danach gestartet."
         return 0
     fi
+    # Erst NACH der Markenpruefung: in der Upgrade-Luecke legt ein Start, der
+    # nicht startet, auch keinen Ordner an.
+    ordner_anlegen
     # Ein Dienst ohne PID-Datei (purge_installation hat sie geloescht) ist
     # fuer laeuft() unsichtbar. Er wird hier gefunden, statt einen zweiten
     # danebenzustellen; seine Nummer kommt zurueck in die PID-Datei, damit
@@ -262,7 +352,15 @@ anhalten() {
 case "$1" in
     start)   starten ;;
     stop)    anhalten ;;
-    restart) anhalten; sleep 1; starten ;;
+    restart)
+        # Aus einem Archiv heraus haelt "restart" nichts an: sonst stuende
+        # der Dienst der Anlage danach, weil starten() dort verweigert
+        # (Fall H15).
+        if [ "$INSTALLIERT" != "1" ]; then
+            nicht_installiert
+            exit 1
+        fi
+        anhalten; sleep 1; starten ;;
     status)
         if laeuft; then
             echo "laeuft $(cat "$PID")"
@@ -286,8 +384,13 @@ case "$1" in
             exit 0
         fi
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
-        # angehaltener Dienst bleibt angehalten.
-        if [ -f "$SOLL" ] && ! laeuft; then
+        # angehaltener Dienst bleibt angehalten. Nur aus der Installation:
+        # sonst schriebe ein Waechter aus einem Archiv seine Zeile in das
+        # Protokoll der Anlage (Fall H14). Der Logordner liegt auf der
+        # RAM-Platte und kann fehlen - er wird vor der Zeile angelegt
+        # (Fall H11).
+        if [ "$INSTALLIERT" = "1" ] && [ -f "$SOLL" ] && ! laeuft; then
+            ordner_anlegen
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
             starten >> "$LOGDATEI" 2>&1
         fi

@@ -587,7 +587,10 @@ function mt_dienst_pid()
  * auch der Knopf "Dienst starten" nicht.
  *
  * Rueckgabe: array(gilt, alter). gilt = 1 nur bei einer Marke, die
- * hoechstens 3600 s alt ist; alter = -1, wenn keine Marke liegt.
+ * hoechstens 3600 s alt und hoechstens 300 s "aus der Zukunft" ist - die Uhr
+ * kann nach dem Setzen ein Stueck zurueckspringen (in WSL gemessen bis
+ * 0,64 s; dieselbe Grenze wie marke_gilt() in bin/dienst.sh, Fall M5 in
+ * Pruefung-Matter2Lox-0.9.27). alter = -1, wenn keine Marke liegt.
  * Diese Funktion urteilt nur fuer den Reiter Test - die Entscheidung
  * faellt in bin/dienst.sh, damit sie an EINER Stelle steht.
  */
@@ -606,7 +609,7 @@ function mt_upgrade_marke()
         return array(0, -2);
     }
     $alter = time() - (int) $roh;
-    return array(($alter >= 0 && $alter < 3600) ? 1 : 0, $alter);
+    return array(($alter >= -300 && $alter < 3600) ? 1 : 0, $alter);
 }
 
 function mt_dienst_soll()
