@@ -10,6 +10,22 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.28
+
+- **Die Kachel „MQTT" zeigt jetzt, ob dieses Plugin veröffentlicht.** Bis 0.9.27
+  stand dort als großer Wert der Autostart des MQTT-Gateways von LoxBerry, und
+  „MQTT ein" las sich, als sende das Plugin — auch wenn es im Reiter MQTT
+  ausgeschaltet war. Der Autostart des Gateways steht jetzt klein darunter;
+  fehlt der MQTT-Abschnitt in der LoxBerry-Konfiguration, heißt er dort
+  „nicht feststellbar" statt „aus".
+- **Nach einem Upgrade steht im Installationsprotokoll keine Erstanleitung
+  mehr.** Bis 0.9.27 endete es jedes Mal mit „Container anlegen lassen oder
+  die Adresse eines vorhandenen Matter-Servers eintragen", auch über einer
+  eben zurückgespielten Konfiguration. Jetzt erscheint die Anleitung nur,
+  wenn `matter2lox.json` danach kein Aktionstoken trägt (Erstinstallation
+  oder gescheiterte Rückholung), sonst „Aktualisierung abgeschlossen,
+  Einstellungen übernommen".
+
 ## Neu in 0.9.27
 
 **Wurzel und Ordnername werden gelesen, nicht mehr aus dem Ablageort

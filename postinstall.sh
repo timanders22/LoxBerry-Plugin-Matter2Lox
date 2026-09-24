@@ -229,7 +229,36 @@ fi
 # bei einer Neuinstallation gibt es sie gar nicht.
 rm -f "$MARKE" 2>/dev/null
 
-echo "<OK> Installation abgeschlossen."
+# ---------- Schlusszeile ----------
+# Dieses Skript laeuft bei der Erstinstallation UND bei jedem Upgrade
+# (plugininstall.pl uebergibt kein Kennzeichen). Bis 0.9.27 stand die
+# Anleitung "Container anlegen oder Adresse eintragen" nach jedem Upgrade,
+# auch ueber einer eben zurueckgespielten Konfiguration.
+# Entschieden wird nach dem INHALT von matter2lox.json nach dem
+# Zurueckspielen, mit derselben Bedingung, nach der die Linie ihre
+# Zweitschrift beurteilt (mt_config_speichern() in mt_lib.php: ohne
+# Aktionstoken ist es "die blanke Werkseinstellung"): lesbares JSON-Objekt
+# mit nicht leerem aktionstoken. Fehlt es, erscheint die Anleitung.
+# Gemessen am 24.09.2026: Pruefung-Matter2Lox-0.9.28/postinstall_hinweis.md.
+MT_EINGERICHTET=0
+if "$PY" -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as d:
+        c = json.load(d)
+except Exception:
+    sys.exit(1)
+ok = isinstance(c, dict) and str(c.get("aktionstoken") or "").strip() != ""
+sys.exit(0 if ok else 1)
+' "$CF" 2>/dev/null; then
+    MT_EINGERICHTET=1
+fi
+
+if [ "$MT_EINGERICHTET" -eq 1 ]; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+else
+    echo "<OK> Installation abgeschlossen."
+fi
 if [ -d "$PDATA/matter" ]; then
     echo "<INFO> ACHTUNG: Der Matter-Container zeigt noch auf den alten"
     echo "<INFO> Datenpfad ($PDATA/matter), der beim naechsten Update"
@@ -237,7 +266,9 @@ if [ -d "$PDATA/matter" ]; then
     echo "<INFO> 'Container entfernen' und dann 'Container anlegen' druecken."
     echo "<INFO> Die angelernten Geraete bleiben dabei erhalten."
 fi
-echo "<INFO> Weiter in der Plugin-Oberflaeche: Reiter Einstellungen, dort entweder"
-echo "<INFO> den Container anlegen lassen oder die Adresse eines vorhandenen"
-echo "<INFO> Matter-Servers eintragen."
+if [ "$MT_EINGERICHTET" -eq 0 ]; then
+    echo "<INFO> Weiter in der Plugin-Oberflaeche: Reiter Einstellungen, dort entweder"
+    echo "<INFO> den Container anlegen lassen oder die Adresse eines vorhandenen"
+    echo "<INFO> Matter-Servers eintragen."
+fi
 exit 0
