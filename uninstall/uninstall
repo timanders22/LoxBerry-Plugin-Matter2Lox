@@ -26,7 +26,11 @@
 #      falsch: darin stehen WLAN-Passwort, Thread-Dataset und das
 #      Aktionstoken. Das sind Netzzugangsdaten.
 #   3. Ein noch laufender Abrufdienst (matter_dienst.py).
-#   4. Werte im MQTT-Broker.
+#   4. Werte im MQTT-Broker. Seit 0.9.17 gehen Zustaende retained hinaus;
+#      bis 0.9.28 blieben sie nach dem Deinstallieren stehen und kamen nach
+#      jedem Neustart von Broker oder Gateway wieder am Miniserver an (in
+#      WSL gemessen 25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall U1).
+#      Schritt "MQTT" unten leert sie.
 #
 # ZUR PROZESSSUCHE: "pkill -f matter_dienst.py" waere unsauber - das
 # Muster traefe auch einen Editor, in dem die Datei offen ist. Verglichen
@@ -40,15 +44,42 @@
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="matter2lox"
 BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
-# ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
+# Dritter Rueckfall: vom eigenen Ablageort AUFWAERTS suchen. Bewusst kein
+# fest verdrahteter Systempfad - LoxBerry laesst sich anderswohin
+# installieren. Der Installer legt dieses Skript als
+# <home>/data/system/uninstall/<ordner> ab und uebergibt die LoxBerry-Wurzel
+# als fuenftes Argument (plugininstall.pl:1158 und :1577, am Geraet
+# nachgesehen 17.09.2026); dieser Zweig greift nur, wenn beides fehlt.
+#
+# Wurzel ist, was config/plugins, data/plugins UND config/system/general.json
+# traegt (Regeln/06) - dieselbe Regel wie in bin/dienst.sh. Bis 0.9.28 wurden
+# hier drei Ebenen hinauf gerechnet und nichts geprueft: in WSL gemessen
+# (25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall W4) loeschte das Skript,
+# abgelegt unter <fremd>/data/system/uninstall/, in <fremd> ohne general.json
+# die Sicherung mit den Netzzugangsdaten und die Matter-Fabric. Ohne Wurzel
+# wird jetzt nichts beendet und nichts entfernt.
+mt_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
+            printf '%s\n' "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+# Was der Installer ($5) oder die Umgebung nennt, gilt nur mit config/plugins
+# darunter (Bauart Weissware 0.9.29).
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    BASE=$(mt_wurzel_suchen)
+fi
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - nichts beendet, nichts entfernt."
+    echo "<WARNING> Liegen bleiben koennen config/plugins/$PDIR.backup.json (WLAN-Passwort, Thread-Dataset,"
+    echo "<WARNING> Aktionstoken), die Matter-Fabric data/plugins/$PDIR.matter und der Docker-Container."
+    exit 1
 fi
 
 PBIN="$BASE/bin/plugins/$PDIR"
@@ -83,16 +114,74 @@ for D in /proc/[0-9]*; do
     if mt_ist_dienst "$P" "$SKRIPT"; then
         kill "$P" 2>/dev/null
         for i in 1 2 3 4 5; do
-            kill -0 "$P" 2>/dev/null || break
+            mt_ist_dienst "$P" "$SKRIPT" || break
             sleep 1
         done
-        kill -9 "$P" 2>/dev/null
+        # Vor dem harten Signal erneut ARGUMENTWEISE pruefen, nicht nur
+        # "kill -0": die Nummer kann inzwischen ein anderer Prozess tragen.
+        # Bis 0.9.28 stand hier ein blankes "kill -9" - in WSL gemessen
+        # (25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall D2) traf es einen
+        # Prozess, der nach SIGTERM kein Dienst mehr war.
+        if mt_ist_dienst "$P" "$SKRIPT"; then
+            kill -9 "$P" 2>/dev/null
+            sleep 1
+        fi
         GEFUNDEN=1
-        echo "<OK> Abrufdienst beendet (PID $P)."
+        # Die WIRKUNG nachsehen, nicht den Rueckgabewert von kill.
+        if mt_ist_dienst "$P" "$SKRIPT"; then
+            echo "<WARNING> Der Abrufdienst (PID $P) laeuft weiter."
+        else
+            echo "<OK> Abrufdienst beendet (PID $P)."
+        fi
     fi
 done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
 rm -f "$PDATA/soll_laufen" "$PDATA/dienst.pid" 2>/dev/null
+
+# ------------------------------------------------------------------ MQTT
+# Zurueckbehaltene Themen der Linie leeren. NACH dem Anhalten des Dienstes -
+# sonst schriebe er die Werte gleich wieder hinein - und vor dem Loeschen der
+# Ordner: Konfiguration (Praefix), Geraetenummern, letztes Abbild und bin/
+# sind hier noch da; der Installer loescht sie erst nach diesem Skript
+# (plugininstall.pl, purge_installation). Welche Themen, wie nachgelesen
+# wird und warum hoechstens dreimal: mqtt_leeren() in bin/matter_dienst.py.
+#
+# Als loxberry, nicht als root: gebraucht wird nur Lesezugriff auf die
+# Konfiguration und die general.json. stdin geschlossen, damit su nie auf
+# eine Eingabe wartet (Regeln/02).
+#
+# 'timeout -k 5 60': ohne -k schickt timeout nach 60 s nur SIGTERM - ein
+# Programm, das es nicht annimmt, hielte die Deinstallation an, und die
+# Sicherung mit den Netzzugangsdaten (Schritt "Sicherung") bliebe liegen.
+# Nach 60 s SIGTERM, nach weiteren 5 s SIGKILL, und der Abbruch steht als
+# WARNING da, nicht hinter einem '|| true' (Bauart Weissware 0.9.34,
+# Schritt 1b; gemessen: Pruefung-Matter2Lox-0.9.29, Fall U4).
+# Rueckgabe 0-2 meldet matter_dienst.py selbst (mqtt_leeren()).
+MT_RC=0
+MT_PY=""
+if [ -x "$PBIN/venv/bin/python3" ]; then
+    MT_PY="$PBIN/venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+    MT_PY=$(command -v python3)
+fi
+if [ -n "$MT_PY" ] && [ -f "$SKRIPT" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env PYTHONDONTWRITEBYTECODE=1 \
+            "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout -k 5 60 "$MT_PY" \
+            "$SKRIPT" --mqtt-leeren)" < /dev/null 2>&1 || MT_RC=$?
+    else
+        env PYTHONDONTWRITEBYTECODE=1 "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout -k 5 60 "$MT_PY" "$SKRIPT" --mqtt-leeren < /dev/null 2>&1 || MT_RC=$?
+    fi
+    case "$MT_RC" in
+        0|1|2) ;;
+        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 60 s abgebrochen - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 60 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        *) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete unerwartet (Rueckgabe $MT_RC) - unter dem Praefix der Linie kann noch etwas im Broker stehen." ;;
+    esac
+else
+    echo "<INFO> Python oder bin/matter_dienst.py fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
 
 # ------------------------------------------------------------- Container
 # Der Name ist einstellbar; er steht in der Konfiguration. Faellt das
@@ -170,8 +259,4 @@ fi
 rm -f "$LIEFMARKE" "$UPGRADEMARKE" 2>/dev/null
 # Der alte Ort bis 0.9.16 - liegt im Datenordner und geht mit ihm.
 [ -d "$PDATA/matter" ] && echo "<INFO> Ein alter Fabric-Ordner ($PDATA/matter) geht mit dem Datenordner."
-echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
-echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
-echo "<INFO> (Vorgabe: matter/...). Zum Aufraeumen: LoxBerry -> System ->"
-echo "<INFO> MQTT Gateway."
 exit 0

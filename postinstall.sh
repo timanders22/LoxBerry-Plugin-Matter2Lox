@@ -15,10 +15,28 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-matter2lox}"
+# Wurzel: $5 bzw. LBHOMEDIR mit config/plugins darunter, sonst vom eigenen
+# Ablageort AUFWAERTS ein Verzeichnis mit config/plugins, data/plugins UND
+# config/system/general.json (Regeln/06), sonst keine. Bis 0.9.28 stand hier
+# "zwei Ebenen ueber dem Ablageort", geprueft nur auf config/plugins: in WSL
+# gemessen (25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall W6) legte das Skript
+# in einem fremden Baum ohne general.json data/plugins/<ordner> und die
+# Fabric-, Log- und Konfigurationsordner an.
+mt_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
+            printf '%s\n' "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    BASE=$(mt_wurzel_suchen)
 fi
 
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
@@ -70,10 +88,51 @@ chmod 600 "$PCONFIG/matter2lox.json"
 
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/matter2lox.json"
+# Zurueckgespielt wird nach INHALT, nie nach Groesse. Stufe 2 = JSON-Objekt
+# mit nicht leerem aktionstoken, 1 = JSON-Objekt mit mindestens einem
+# Eintrag, 0 = nichts Brauchbares (dieselbe Einteilung wie in preupgrade.sh).
+# Die Sicherung ersetzt die Konfiguration nur, wenn diese kein Token traegt
+# und die Sicherung mehr traegt als sie. Bis 0.9.28 entschied "leer oder
+# genau {}": eine beschaedigte Datei ("xx") blieb stehen, und eine Sicherung
+# "{}" wurde als "wiederhergestellt" gemeldet (in WSL gemessen 25.09.2026,
+# Pruefung-Matter2Lox-0.9.29, Faelle K3 und K5).
+mt_inhalt() {
+    python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as d:
+        c = json.load(d)
+except Exception:
+    print(0); sys.exit(0)
+if not isinstance(c, dict) or not c:
+    print(0)
+elif str(c.get("aktionstoken") or "").strip():
+    print(2)
+else:
+    print(1)
+' "$1" 2>/dev/null || echo 0
+}
 if [ -f "$BK" ]; then
-    INHALT=$(cat "$CF" 2>/dev/null)
-    if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-        cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+    CF_STUFE=$(mt_inhalt "$CF")
+    BK_STUFE=$(mt_inhalt "$BK")
+    if [ "$CF_STUFE" -lt 2 ] && [ "$BK_STUFE" -gt "$CF_STUFE" ]; then
+        if [ "$CF_STUFE" -eq 0 ] && [ -s "$CF" ] && [ "$(cat "$CF" 2>/dev/null)" != "{}" ] \
+           && [ ! -e "$CF.kaputt" ]; then
+            # Die beschaedigte Datei bleibt zum Nachsehen liegen, wie in
+            # mt_config() der Oberflaeche.
+            cp "$CF" "$CF.kaputt" 2>/dev/null && chmod 600 "$CF.kaputt" 2>/dev/null
+        fi
+        if cp "$BK" "$CF"; then
+            if [ "$BK_STUFE" -eq 2 ]; then
+                echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+            else
+                echo "<INFO> Konfiguration aus Sicherung wiederhergestellt - sie traegt kein Aktionstoken."
+            fi
+        else
+            echo "<WARNING> Die Sicherung $PFOLDER.backup.json liess sich nicht zurueckspielen."
+        fi
+    elif [ "$CF_STUFE" -lt 2 ] && [ "$BK_STUFE" -eq 0 ]; then
+        echo "<INFO> Die Sicherung $PFOLDER.backup.json ist leer oder nicht lesbar - nicht zurueckgespielt."
     fi
 fi
 chmod 600 "$PCONFIG/matter2lox.json"

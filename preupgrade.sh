@@ -22,14 +22,29 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-matter2lox}"
 
-# Wurzelbestimmung mit Rueckfall - wie in postinstall.sh und uninstall.
-# Bis 0.9.16 fehlte er hier als einzigem der drei Skripte; waren $5 und
-# LBHOMEDIR leer, wurde aus dem Pfad "/config/plugins/...", die Sicherung
-# unterblieb, und das Skript meldete trotzdem Erfolg.
+# Wurzelbestimmung - wie in postinstall.sh und uninstall: $5 bzw. LBHOMEDIR,
+# wenn darunter config/plugins liegt, sonst vom eigenen Ablageort AUFWAERTS
+# ein Verzeichnis mit config/plugins, data/plugins UND
+# config/system/general.json (Regeln/06), sonst keine Wurzel.
+# Bis 0.9.28 stand hier als Rueckfall "zwei Ebenen ueber dem Ablageort",
+# geprueft nur auf config/plugins: in WSL gemessen (25.09.2026,
+# Pruefung-Matter2Lox-0.9.29, Fall W5) legte das Skript in einem fremden
+# Baum ohne general.json die Marke an und kopierte dort die Konfiguration.
+mt_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
+            printf '%s\n' "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    BASE=$(mt_wurzel_suchen)
 fi
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
     echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
@@ -120,11 +135,23 @@ for D in /proc/[0-9]*; do
         LIEF=1
         kill "$P" 2>/dev/null
         for i in 1 2 3 4 5; do
-            kill -0 "$P" 2>/dev/null || break
+            mt_ist_dienst "$P" "$SKRIPT" || break
             sleep 1
         done
-        kill -9 "$P" 2>/dev/null
-        echo "<INFO> Ein Dienst ohne PID-Datei wurde beendet (PID $P)."
+        # Vor dem harten Signal erneut ARGUMENTWEISE pruefen, nicht nur
+        # "kill -0": die Nummer kann inzwischen ein anderer Prozess tragen.
+        # Bis 0.9.28 stand hier ein blankes "kill -9" (in WSL gemessen
+        # 25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall D1).
+        if mt_ist_dienst "$P" "$SKRIPT"; then
+            kill -9 "$P" 2>/dev/null
+            sleep 1
+        fi
+        if mt_ist_dienst "$P" "$SKRIPT"; then
+            echo "<WARNING> Ein Dienst ohne PID-Datei laeuft weiter (PID $P)."
+            FEHLER=1
+        else
+            echo "<INFO> Ein Dienst ohne PID-Datei wurde beendet (PID $P)."
+        fi
     fi
 done
 rm -f "$PDATA/dienst.pid" 2>/dev/null
@@ -141,13 +168,50 @@ fi
 # ----------------------------------------------------- 2. Konfiguration
 CF="$PCONFIG/matter2lox.json"
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
+# Gesichert wird nach INHALT, nie nach Groesse oder blossem Dasein. Dieselbe
+# Datei ist die Zweitschrift der Oberflaeche (mt_paths()['sicherung']), und
+# die schreibt mt_config_speichern() nur mit Aktionstoken. Bis 0.9.28
+# kopierte dieses Skript die Konfiguration bedingungslos darueber - stand sie
+# auf "{}" oder war sie beschaedigt, war die gute Zweitschrift mit Token,
+# WLAN-Passwort und Thread-Dataset beim Upgrade fort (in WSL gemessen
+# 25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall K1).
+# Stufe 2 = JSON-Objekt mit nicht leerem aktionstoken, 1 = JSON-Objekt mit
+# mindestens einem Eintrag, 0 = nichts Brauchbares. Die Sicherung wird nur
+# durch einen Stand ersetzt, der mindestens so viel traegt wie sie selbst.
+mt_inhalt() {
+    python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as d:
+        c = json.load(d)
+except Exception:
+    print(0); sys.exit(0)
+if not isinstance(c, dict) or not c:
+    print(0)
+elif str(c.get("aktionstoken") or "").strip():
+    print(2)
+else:
+    print(1)
+' "$1" 2>/dev/null || echo 0
+}
 if [ -f "$CF" ]; then
-    if cp -p "$CF" "$BK"; then
-        chmod 600 "$BK"
-        echo "<OK> Konfiguration gesichert: $PFOLDER.backup.json"
+    CF_STUFE=$(mt_inhalt "$CF")
+    BK_STUFE=0
+    [ -f "$BK" ] && BK_STUFE=$(mt_inhalt "$BK")
+    if [ "$CF_STUFE" -ge 1 ] && [ "$CF_STUFE" -ge "$BK_STUFE" ]; then
+        if cp -p "$CF" "$BK"; then
+            chmod 600 "$BK"
+            echo "<OK> Konfiguration gesichert: $PFOLDER.backup.json"
+        else
+            echo "<FAIL> Die Konfiguration liess sich NICHT sichern ($CF)."
+            FEHLER=1
+        fi
+    elif [ "$BK_STUFE" -ge 1 ]; then
+        echo "<INFO> Die Konfiguration traegt weniger als die vorhandene Sicherung"
+        echo "<INFO> (kein Aktionstoken, leer oder nicht lesbar) - die Sicherung"
+        echo "<INFO> $PFOLDER.backup.json bleibt unveraendert und wird nach dem Update zurueckgespielt."
     else
-        echo "<FAIL> Die Konfiguration liess sich NICHT sichern ($CF)."
-        FEHLER=1
+        echo "<INFO> Die Konfiguration ist leer oder nicht lesbar, eine brauchbare Sicherung gibt es nicht - nichts gesichert."
     fi
 else
     echo "<INFO> Keine Konfiguration vorhanden - nichts zu sichern."

@@ -67,13 +67,18 @@
 # reichte "chown -R" genau diese beiden Pfade - aus einem ausgepackten
 # Archiv Pfade ausserhalb jeder Anlage.
 #
-# Drei Stufen fuer die Wurzel, in dieser Reihenfolge:
+# Zwei Stufen fuer die Wurzel, in dieser Reihenfolge:
 #   1. $LBHOMEDIR aus der Umgebung, wenn dort config/plugins und
 #      data/plugins liegen,
 #   2. aufwaerts suchen, bis ein Verzeichnis config/plugins, data/plugins
 #      UND config/system/general.json traegt (der dritte Nachweis seit dem
-#      Raumklima-Vorfall, Regeln/06),
-#   3. drei Ebenen ueber dem Ablageort - das bisherige Verhalten.
+#      Raumklima-Vorfall, Regeln/06).
+# Danach NICHTS mehr. Bis 0.9.28 stand als dritte Stufe "drei Ebenen ueber
+# dem Ablageort" - in einem fremden Baum ohne general.json wurde der damit
+# doch Wurzel: in WSL gemessen (25.09.2026, Pruefung-Matter2Lox-0.9.29,
+# Faelle W1, W2) legte "start" dort data/ und log/ an, "stop" loeschte dort
+# soll_laufen. Ohne Wurzel wird jetzt gewarnt und nichts getan (Regeln/06,
+# "ohne brauchbare Wurzel warnen statt vollziehen").
 # "pwd -P" auf beiden Seiten: liegt die Wurzel hinter einem Verweis, muss
 # der Vergleich unten zwei physische Pfade vergleichen (Fall H12).
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)       # <home>/bin/plugins/<ordner>
@@ -95,7 +100,13 @@ if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
    && [ -d "$LBHOMEDIR/data/plugins" ]; then
     LBHOMEDIR=$(cd "$LBHOMEDIR" && pwd -P)
 else
-    LBHOMEDIR=$(mt_wurzel_suchen) || LBHOMEDIR=$(cd "$SELF/../../.." && pwd -P)
+    LBHOMEDIR=$(mt_wurzel_suchen) || LBHOMEDIR=""
+fi
+if [ -z "$LBHOMEDIR" ]; then
+    echo "FEHLER: kein LoxBerry-Wurzelverzeichnis gefunden - \$LBHOMEDIR ist nicht gesetzt," >&2
+    echo "FEHLER: und oberhalb von $SELF traegt keines config/plugins, data/plugins und" >&2
+    echo "FEHLER: config/system/general.json. Es wurde nichts gestartet, angehalten oder angelegt." >&2
+    exit 1
 fi
 # Der Ordnername kommt aus $LBPPLUGINDIR, sonst aus dem Ablageort. Am Geraet
 # steht $LBPPLUGINDIR in keiner Cron-Schale (Regeln/03) - dann traegt der
@@ -158,7 +169,7 @@ ordner_anlegen() {
 # unter einem Ordnernamen, den niemand gewollt hat.
 nicht_installiert() {
     echo "FEHLER: dieses Skript liegt nicht unter $PBIN -"
-    echo "FEHLER: aus einem ausgepackten Archiv wird nichts gestartet."
+    echo "FEHLER: aus einem ausgepackten Archiv wird nichts gestartet und nichts angehalten."
 }
 
 # Ist die Nummer $1 ein Dienst DIESES Plugins? Argumentweise, wie in
@@ -351,7 +362,17 @@ anhalten() {
 
 case "$1" in
     start)   starten ;;
-    stop)    anhalten ;;
+    stop)
+        # Aus einem Archiv heraus haelt "stop" nichts an. SKRIPT kommt aus
+        # dem GELESENEN bin-Ordner der Anlage - bis 0.9.28 beendete ein
+        # "stop" aus einem ausgepackten Archiv mit gesetztem $LBHOMEDIR
+        # (am Geraet steht es in /etc/environment) den Dienst der Anlage
+        # (in WSL gemessen 25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall A1).
+        if [ "$INSTALLIERT" != "1" ]; then
+            nicht_installiert
+            exit 1
+        fi
+        anhalten ;;
     restart)
         # Aus einem Archiv heraus haelt "restart" nichts an: sonst stuende
         # der Dienst der Anlage danach, weil starten() dort verweigert

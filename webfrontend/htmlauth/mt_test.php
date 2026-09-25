@@ -180,6 +180,19 @@ function mt_pruef_retainliste()
     if (!$bekannt) {
         return array(-1, mt_t('TEST.A_THEMEN_LEER'));
     }
+    /* Nie retained, gleich was die Liste sagt: Lebenszeichen und
+     * Erreichbarkeit (Regeln/07, Entscheidungen 18./19.09.2026). Steht einer
+     * dieser Namen in ZUSTANDSTHEMEN, faengt ist_zustand() ihn im Dienst zwar
+     * ab - die Liste waere aber eine zweite, falsche Aussage. */
+    $nie = array();
+    foreach (mt_nie_retained() as $t) {
+        if (isset($z[$t])) {
+            $nie[] = $t;
+        }
+    }
+    if ($nie) {
+        return array(0, sprintf(mt_t('TEST.A_RETAINLISTE_NIE'), mt_e(implode(', ', $nie))));
+    }
     $geraeteebene = array('erreichbar' => 1, 'name' => 1, 'knoten' => 1);
     $tot = array();
     foreach ($z as $t => $_egal) {

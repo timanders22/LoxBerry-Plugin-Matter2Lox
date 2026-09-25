@@ -10,6 +10,70 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.29
+
+- **`geraetN/erreichbar` geht nicht mehr zurückbehalten (retained) hinaus.**
+  Den Wert setzt der Matter-Server, wenn *seine* Verbindung zum Gerät
+  abreißt — eine Aussage eines Dienstes in der Kette, keine Meldung des
+  Geräts. Zurückbehalten blieb nach dem Ende des Dienstes oder des
+  Matter-Servers eine `1` im Broker stehen, und nach jedem Neustart von
+  Broker, Gateway oder Miniserver las Loxone „erreichbar" von einem Gerät,
+  über das niemand mehr etwas wusste. Das Thema heißt weiter so und geht
+  weiter bei jeder Änderung und jedem Vollbild hinaus, dazu jetzt mit jedem
+  Herzschlag (Vorgabe 60 s) — Loxone hat den Wert nach einem Neustart also
+  spätestens nach einem Takt wieder. Die Zustände, die das Gerät meldet
+  (Schalter, Position, Schloss …), bleiben zurückbehalten.
+- **Der Altwert wird einmal abgeräumt, bestätigt vom Broker.** Der Dienst
+  fragt den Broker selbst (MQTT 3.1.1, Zugang aus der LoxBerry-Konfiguration),
+  was unter `<praefix>/+/erreichbar` noch zurückbehalten steht, löscht genau
+  das — die leere Löschung unmittelbar vor dem gültigen Wert — und liest
+  danach nach. Erst wenn der Broker nichts mehr nennt, liegt der Merker
+  `data/plugins/<ordner>/retain_erreichbar_geraeumt`. Lehnt der Broker die
+  Anmeldung oder das Abonnement ab oder ist er nicht zu erreichen, gibt es
+  keinen Merker; dann geht vor jedem Wert die Löschung mit hinaus. **Grenze:**
+  die Löschung läuft über den UDP-Eingang des Gateways, der unter Last
+  Datagramme verwirft — ohne Rückfrage beim Broker lässt sich nicht belegen,
+  dass sie ankam.
+- **Die Deinstallation leert die zurückbehaltenen Themen.** Bis 0.9.28 blieben
+  Name, Knotennummer, Erreichbarkeit und alle Zustände jedes Geräts im Broker
+  stehen. Jetzt fragt `uninstall` den Broker, löscht davon genau die Themen,
+  die dieses Plugin je zurückbehalten gesendet hat (auch Namen aus 0.9.17 bis
+  0.9.22), liest nach und sagt, was noch steht. Anderes unter demselben
+  Präfix bleibt stehen. Der Schritt hat eine Frist von 60 s (danach SIGTERM,
+  nach weiteren 5 s SIGKILL) und meldet einen Abbruch als Warnung.
+- **Ohne LoxBerry-Wurzel geschieht nichts mehr.** `bin/dienst.sh`,
+  `bin/matter_dienst.py`, `preupgrade.sh`, `postinstall.sh`, `uninstall` und
+  die Oberfläche rechneten nach einer erfolglosen Suche noch „zwei oder drei
+  Ebenen über mir" und nahmen einen fremden Baum ohne
+  `config/system/general.json` als Wurzel; `uninstall` löschte dort die
+  Sicherung mit WLAN-Passwort und Thread-Dataset und die Matter-Fabric. Die
+  Oberfläche fiel zuletzt auf einen fest eingetragenen Standardort zurück.
+  Jetzt gilt `$LBHOMEDIR` oder die Suche aufwärts mit `general.json`, sonst
+  wird gewarnt und nichts getan.
+- **Ein ausgepacktes Archiv fasst die Anlage nicht an.** Die Oberfläche nimmt
+  die Pfade der Anlage nur, wenn sie dort installiert liegt oder `$LBHOMEDIR`
+  und `$LBPPLUGINDIR` ausdrücklich gesetzt sind; aus einem Archiv heraus
+  verweigern die Knöpfe für Dienst und Container, und `dienst.sh stop` hält
+  aus einem Archiv nichts mehr an. Die Oberfläche lädt ihre Bibliothek nur
+  noch aus dem eigenen Ablageort, nie aus einem Ordner darüber.
+- **`kill -9` nur nach erneuter Probe.** `preupgrade.sh` und `uninstall`
+  sehen vor dem harten Signal wieder argumentweise nach, ob die Nummer noch
+  der eigene Dienst ist, und prüfen danach die Wirkung.
+- **Alte Aufträge verfallen beim Dienststart.** Was beim Start länger als
+  60 s in der Warteschlange liegt, wird verworfen und beantwortet — auch
+  „Gerät entfernen", „anlernen" und „Name setzen", die sonst nicht verfallen.
+- **Sicherung nach Inhalt.** `preupgrade.sh` überschreibt eine Sicherung mit
+  Aktionstoken nicht mehr mit einer leeren oder beschädigten Konfiguration;
+  `postinstall.sh` spielt sie auch über eine beschädigte Datei zurück (die als
+  `.kaputt` liegen bleibt) und meldet eine leere Sicherung nicht mehr als
+  „wiederhergestellt".
+- **Fristen in der Oberfläche.** Docker-Aufrufe (30 s, Abbild holen und
+  Container anlegen 15 min), der Selbsttest (30 s) und `dienst.sh` (60 s)
+  laufen mit `timeout -k 5`; ein hängender Docker-Dienst hielt die Seite bis
+  0.9.28 unbegrenzt an.
+
+Gemessen in WSL, nicht am Gerät: `Pruefung-Matter2Lox-0.9.29/` (54 Fälle, 35 Rückbauten).
+
 ## Neu in 0.9.28
 
 - **Die Kachel „MQTT" zeigt jetzt, ob dieses Plugin veröffentlicht.** Bis 0.9.27

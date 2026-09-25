@@ -19,12 +19,23 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
+/* Welche Lage gilt, entscheidet der eigene Ablageort, nicht die Reihenfolge
+ * der Versuche: liegt diese Datei unter .../plugins/<ordner>, ist sie
+ * installiert (Bibliothek unter <home>/webfrontend/html/plugins/<ordner>/),
+ * sonst liegt sie in einem ausgepackten Archiv (../html/). Bis 0.9.28 wurden
+ * drei Kandidaten der Reihe nach probiert, darunter zwei VOR der eigenen
+ * Bibliothek und ausserhalb des Archivs - in WSL gemessen (25.09.2026,
+ * Pruefung-Matter2Lox-0.9.29, Fall P1) lief aus einem Archiv unter <x>/arch
+ * eine fremde <x>/html/plugins/htmlauth/mt_lib.php als Bibliothek, und aus
+ * einem Archiv unter / waere das ein Pfad ab der Laufwerkswurzel gewesen.
+ * Bauart ZendureSolarFlow 0.9.26. */
 $mt_gefunden = false;
-foreach (array(
-    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/mt_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/mt_lib.php',
-    dirname(__DIR__) . '/html/mt_lib.php',
-) as $mt_kandidat) {
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $mt_kandidaten = array(dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/mt_lib.php');
+} else {
+    $mt_kandidaten = array(dirname(__DIR__) . '/html/mt_lib.php');
+}
+foreach ($mt_kandidaten as $mt_kandidat) {
     if (is_file($mt_kandidat)) {
         require_once $mt_kandidat;
         $mt_gefunden = true;

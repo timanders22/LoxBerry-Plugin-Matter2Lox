@@ -26,11 +26,14 @@ if (!function_exists('mt_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json enthaelt
+ * (Regeln/06). Das trifft die uebliche Installation genauso wie eine an einem
+ * anderen Ort; aus einem entpackten Archiv ausserhalb jeder Anlage findet es
+ * nichts und gibt einen Leerstring zurueck, den der Aufrufer abfangen muss.
+ *
+ * Bis 0.9.28 genuegten config/plugins und webfrontend - in WSL gemessen
+ * (25.09.2026, Pruefung-Matter2Lox-0.9.29, Faelle W7 und W9) galt damit ein
+ * fremder Baum ohne general.json als Wurzel.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -40,7 +43,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -51,35 +55,78 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel: erst die Umgebung, dann die Suche - und DANACH NICHTS MEHR.
+ *
+ * Bis 0.9.28 folgte als dritte Stufe ein fest verdrahteter Systempfad (das
+ * Heimatverzeichnis des Benutzers loxberry), in mt_paths() und in mt_t().
+ * Er macht jede Suche wirkungslos und trifft auf einem anders installierten
+ * LoxBerry die falsche Anlage (in WSL gemessen 25.09.2026,
+ * Pruefung-Matter2Lox-0.9.29, Fall W8: der Zugriff geschah aus jedem
+ * ausgepackten Archiv). Ein gesetztes LBHOMEDIR gilt mit config/plugins UND
+ * data/plugins darunter - general.json wird hier nicht verlangt, damit
+ * Attrappen ohne sie (Werkzeuge/lb) weiter tragen. Rueckgabe '' heisst
+ * "keine Wurzel". Bauart tb_lbhome(), Spotpreis-Tibber 0.9.19. */
+function mt_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function mt_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) {
-                $home = $k;
-                break;
-            }
-        }
-    }
+    $home = mt_lbhome();
     // Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
     // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
     // sich bei jedem Fork.
     $dir = basename(dirname(__FILE__));
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(getenv('LBPPLUGINDIR'), 'matter2lox') as $kand) {
-            if ($kand && is_dir($home . '/config/plugins/' . $kand)) {
-                $dir = $kand;
-                break;
-            }
+    /* LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und geht vor. Der
+     * feste Name greift nur, wo der abgeleitete nachweislich kein
+     * Pluginordner sein kann - aus dem ausgepackten Archiv heisst er 'html'.
+     * Bis 0.9.28 entschied hier zusaetzlich, ob config/plugins/<ordner>
+     * schon existiert; bei einer Zweitinstallation (matter2lox_01) fiel die
+     * Ermittlung damit auf die ERSTE Installation zurueck (Bauart
+     * tb_paths(), Spotpreis-Tibber 0.9.19). */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'htmlauth', 'bin', 'plugins'), true));
+    if ($lbp_gilt) {
+        $dir = $lbp;
+    } elseif (in_array($dir, array('', '.', '/', 'html', 'htmlauth', 'bin', 'plugins'), true)) {
+        $dir = 'matter2lox';
+    }
+    /* Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek
+     * dort installiert liegt (<Wurzel>/webfrontend/html/plugins/<ordner>,
+     * physisch verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich
+     * nennt ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge
+     * mit ihrer Attrappe). Sonst ist das ein ausgepacktes Archiv oder ein
+     * Pruefordner: alles bleibt in dessen eigenem Ordner, und die Knoepfe fuer
+     * Dienst und Container verweigern (mt_dienst(), mt_container()).
+     *
+     * Bis 0.9.28 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel
+     * und den festen Namen 'matter2lox' - Konfiguration, Token, Warteschlange
+     * und Dienst der Anlage; mit $LBHOMEDIR allein, wie es am Geraet in
+     * /etc/environment steht, ebenso. Der Knopf "Dienst anhalten" hielt aus
+     * dem Archiv heraus den Dienst der Anlage an, "Container entfernen"
+     * entfernte ihren Container (in WSL gemessen 25.09.2026,
+     * Pruefung-Matter2Lox-0.9.29, Faelle A2 bis A4). */
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) {
+            $home = '';
         }
     }
-    if ($home) {
+    if ($home !== '') {
         $p = array(
             'home'      => $home,
             'plugin'    => $dir,
@@ -95,11 +142,15 @@ function mt_paths()
             'logdir'    => $home . '/log/plugins/' . $dir,
             'log'       => $home . '/log/plugins/' . $dir . '/matter2lox.log',
             'tabelle'   => $home . '/templates/plugins/' . $dir . '/matter_cluster.json',
+            'archiv'    => '',
         );
     } else {
         $basis = dirname(dirname(__DIR__));
         $p = array(
             'home' => '', 'plugin' => $dir,
+            // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+            // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+            'archiv'    => $gefunden,
             'configdir' => $basis . '/config',
             'config'    => $basis . '/config/matter2lox.json',
             'sicherung' => $basis . '/config/matter2lox.backup.json',
@@ -156,8 +207,15 @@ function mt_fassung()
     }
     $v = '';
     $p = mt_paths();
-    foreach (array($p['home'] . '/data/system/install/' . $p['plugin'] . '/plugin.cfg',
-                   dirname(dirname(__DIR__)) . '/plugin.cfg') as $kand) {
+    /* Der Pfad in der Anlage nur MIT Wurzel. Bis 0.9.28 wurde er auch mit
+     * leerer Wurzel gebildet - aus dem ausgepackten Archiv also
+     * /data/system/install/... ab der Laufwerkswurzel (in WSL gemessen
+     * 25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall P2). */
+    $kandidaten = array(dirname(dirname(__DIR__)) . '/plugin.cfg');
+    if ($p['home'] !== '') {
+        array_unshift($kandidaten, $p['home'] . '/data/system/install/' . $p['plugin'] . '/plugin.cfg');
+    }
+    foreach ($kandidaten as $kand) {
         if (!is_file($kand)) {
             continue;
         }
@@ -623,6 +681,12 @@ function mt_dienst($befehl)
     if (!in_array($befehl, array('start', 'stop', 'restart'), true)) {
         return array(0, 'Unbekannter Befehl.');
     }
+    // Aus einem ausgepackten Archiv (Archivmodus in mt_paths()) wird nichts
+    // gestartet und nichts angehalten - bis 0.9.28 hielt dieser Knopf aus
+    // einem Archiv unter der Anlage deren Dienst an (Fall A3).
+    if (mt_paths()['home'] === '') {
+        return array(0, mt_t('EINST.ARCHIV_VERWEIGERT'));
+    }
     // Wer den Dienst anfasst, veraendert die Lage - die zwischengespeicherte
     // Antwort auf "nimmt jemand Verbindungen an?" gilt danach nicht mehr.
     mt_erreichbar_vergessen();
@@ -632,7 +696,16 @@ function mt_dienst($befehl)
     }
     $ausgabe = array();
     $code = 0;
-    @exec(escapeshellcmd($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
+    /* Mit Frist: 'restart' wartet selbst hoechstens rund 15 Sekunden (bin/
+     * dienst.sh: zehnmal 1 s auf das Ende, dann 1 s, dann 1 s Anlauf). Ein
+     * haengendes Skript hielt bis 0.9.28 die Seite unbegrenzt an (in WSL
+     * gemessen 25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall T3). Nach 60 s
+     * SIGTERM, nach weiteren 5 s SIGKILL (Muster 13 der Nachlese). */
+    @exec('timeout -k 5 60 ' . escapeshellarg($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1',
+          $ausgabe, $code);
+    if ($code === 124 || $code === 137) {
+        $ausgabe[] = sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), 60);
+    }
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 }
 
@@ -1088,18 +1161,20 @@ function mt_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) {
-                    $home = $k;
-                    break;
-                }
-            }
+        /* Wurzel und Ordner wie mt_paths(): ohne festen Standardort dahinter,
+         * und aus einem Archiv unter einer echten Wurzel die EIGENEN Texte.
+         * Ohne Wurzel NUR die eigenen Sprachdateien - bis 0.9.28 wurde der
+         * Installationspfad auch mit leerer Wurzel gebildet und abgefragt,
+         * aus dem ausgepackten Archiv also /templates/plugins/html/lang ab
+         * der Laufwerkswurzel (in WSL gemessen 25.09.2026,
+         * Pruefung-Matter2Lox-0.9.29, Fall P3; Bauart zd_t(),
+         * ZendureSolarFlow 0.9.26). */
+        $p = mt_paths();
+        $pfad = '';
+        if ($p['home'] !== '' && is_dir($p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang')) {
+            $pfad = $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang';
         }
-        $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        if ($pfad === '') {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
         $texte = @parse_ini_file($pfad . '/language_' . mt_sprache() . '.ini', true, INI_SCANNER_RAW);
@@ -1154,7 +1229,19 @@ function mt_docker($argumente)
     }
     $ausgabe = array();
     $code = 0;
-    @exec('docker ' . $argumente . ' 2>&1', $ausgabe, $code);
+    /* Mit Frist. Antwortet der Docker-Dienst nicht, haengt die
+     * Kommandozeile - und mt_container_zustand() laeuft bei jedem Aufruf der
+     * Oberflaeche. Bis 0.9.28 stand die Seite dann unbegrenzt (in WSL
+     * gemessen 25.09.2026 mit einem haengenden docker, Pruefung-Matter2Lox-
+     * 0.9.29, Fall T1). Abbild holen und Container anlegen (das ein fehlendes
+     * Abbild zieht) duerfen 15 Minuten dauern, alles andere 30 s; danach
+     * SIGTERM, nach weiteren 5 s SIGKILL (Muster 13 der Nachlese). */
+    $wort = strtok(ltrim((string) $argumente), ' ');
+    $frist = in_array($wort, array('pull', 'run'), true) ? 900 : 30;
+    @exec('timeout -k 5 ' . $frist . ' docker ' . $argumente . ' 2>&1', $ausgabe, $code);
+    if ($code === 124 || $code === 137) {
+        $ausgabe[] = sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), $frist);
+    }
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 }
 
@@ -1235,6 +1322,13 @@ function mt_container_befehl($cfg = null)
 /** $was ist 'anlegen', 'start', 'stop', 'restart', 'entfernen' oder 'holen'. */
 function mt_container($was)
 {
+    /* Aus einem ausgepackten Archiv (Archivmodus in mt_paths()) wird kein
+     * Container angefasst: Docker ist systemweit, und der Container heisst
+     * wie der der Anlage. Bis 0.9.28 entfernte dieser Knopf aus einem Archiv
+     * heraus den Container der Anlage (Fall A4). */
+    if (mt_paths()['home'] === '') {
+        return array(0, mt_t('EINST.ARCHIV_VERWEIGERT'));
+    }
     $cfg = mt_config();
     $name = mt_container_name($cfg);
     $p = mt_paths();
@@ -1726,7 +1820,16 @@ function mt_selbsttest_ausgabe()
              . '       Abhilfe: Plugin neu installieren.';
     }
     $ausgabe = array();
-    @exec(escapeshellcmd($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1', $ausgabe);
+    $code = 0;
+    /* Mit Frist: der Selbsttest klopft einmal mit 3 s Frist beim Matter-Server
+     * an und ist sonst in Sekundenbruchteilen fertig. Ein haengendes Python
+     * hielt bis 0.9.28 die Seite unbegrenzt an (in WSL gemessen 25.09.2026,
+     * Pruefung-Matter2Lox-0.9.29, Fall T2). */
+    @exec('timeout -k 5 30 ' . escapeshellarg($py) . ' ' . escapeshellarg($skript) . ' --selbsttest 2>&1',
+          $ausgabe, $code);
+    if ($code === 124 || $code === 137) {
+        $ausgabe[] = '[FEHL] ' . sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), 30);
+    }
     return implode("\n", $ausgabe);
 }
 
@@ -2282,14 +2385,21 @@ function mt_zustandsthemen()
 /**
  * Geht dieses Thema retained hinaus? Gibt den fertigen Text zurueck.
  *
- * Das Lebenszeichen ist NIE retained - retained zeigte es immer "lebt".
- * Diese vier Namen beantwortet der Dienst in ist_zustand() vorab, noch vor
- * der Tabelle; hier stehen sie aus demselben Grund vorn.
+ * Das Lebenszeichen ist NIE retained - retained zeigte es immer "lebt" -,
+ * ebenso seit 0.9.29 die Erreichbarkeit je Geraet (eine Aussage des
+ * Matter-Servers, nicht des Geraets). Diese Namen beantwortet der Dienst in
+ * ist_zustand() vorab (NIE_RETAINED), noch vor der Tabelle; hier stehen sie
+ * aus demselben Grund vorn.
  */
+function mt_nie_retained()
+{
+    return array('online', 'ok', 'ts', 'zaehler', 'probe', 'geraete', 'erreichbar');
+}
+
 function mt_retain_text($thema)
 {
     $t = (string) $thema;
-    if (in_array($t, array('online', 'ok', 'ts', 'zaehler', 'probe'), true)) {
+    if (in_array($t, mt_nie_retained(), true)) {
         return mt_t('MQTT.RETAIN_NEIN');
     }
     $z = mt_zustandsthemen();
