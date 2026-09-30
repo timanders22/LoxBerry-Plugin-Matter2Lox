@@ -215,6 +215,11 @@ VORGABEN = {
     # "bewusst NICHT an steuerung_ein gehaengt" - das war eine Beschreibung,
     # die der Code an zwei Stellen widerlegt.)
     "schloss_ein": 0,
+    # Tuer-1 (Verbesserungsbau 30.09.2026): Tueren und Schloesser zusaetzlich
+    # unter haus/tuer/<name>/offen und haus/tuer/<name>/verriegelt melden -
+    # die Hausvereinbarung fuer Funkwacht und Beschattungswaechter. Ab Werk
+    # aus: eine eingerichtete Anlage sendet nach dem Update nichts Neues.
+    "tuer_haus": 0,
 }
 
 # Wie lange ein Stellbefehl in der Warteschlange gueltig bleibt. Was laenger
@@ -376,7 +381,8 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
 # aus (gemessen, Bericht oberflaeche Nr. 3). Jetzt gilt nur 1, True und die
 # Zeichenketten "1", "true", "ja", "on" als ein; alles andere als aus - ein
 # Schutz faellt geschlossen aus.
-HAKEN = ("eigener_container", "mqtt_ein", "roh_ein", "steuerung_ein", "schloss_ein")
+HAKEN = ("eigener_container", "mqtt_ein", "roh_ein", "steuerung_ein", "schloss_ein",
+         "tuer_haus")
 
 
 def haken(cfg: dict, feld: str) -> bool:
@@ -702,6 +708,22 @@ OHNE_AUSSAGE = "-"
 VOLLVERSAND_S = 1800
 _VOLLVERSAND: dict = {"zuletzt": 0.0}
 
+# Matter2Lox-b1 (Verbesserungsbau 30.09.2026): wann hat sich jedes Geraet
+# zuletzt gemeldet? Gezaehlt wird jede Meldung, die der Matter-Server fuer den
+# Knoten zustellt (node_added, node_updated, attribute_updated, node_event) -
+# nicht das Abholen des Bestands beim Verbinden, das sagt ueber das Geraet
+# nichts. Die Zeiten stehen in loxone.json ("zuletzt", je Knotennummer, auch
+# fuer entfernte Knoten) und werden beim ersten Abbild eines Prozesses von
+# dort wieder gelesen; ein Update leert sie mit dem Datenordner.
+_ZULETZT: dict = {"geladen": False, "knoten": {}}
+
+
+def zuletzt_merken(node_id) -> None:
+    try:
+        _ZULETZT["knoten"][int(node_id)] = int(time.time())
+    except (TypeError, ValueError):
+        pass
+
 
 def ist_zustand(schluessel: str) -> bool:
     """Traegt dieses Thema einen Zustand (retained) oder einen Messwert?
@@ -988,7 +1010,7 @@ def _altlast_vorher_leeren(schluessel: str, praefix: str) -> bool:
     return False
 
 
-def mqtt_senden(paare: dict, praefix: str, allein_leeren=()) -> set:
+def mqtt_senden(paare: dict, praefix: str, allein_leeren=(), retain_alle: bool = False) -> set:
     """Veroeffentlichen. Rueckgabe: die Schluessel, die WIRKLICH hinausgingen.
 
     Bis 0.9.16 gab die Funktion nichts zurueck, und der Aufrufer schrieb den
@@ -998,6 +1020,10 @@ def mqtt_senden(paare: dict, praefix: str, allein_leeren=()) -> set:
 
     allein_leeren: volle Themen, deren Altwert ohne nachfolgenden Wert
     geloescht wird (ein Geraet, das es nicht mehr gibt).
+
+    retain_alle: jedes Thema geht zurueckbehalten hinaus, gleich was
+    ist_zustand() sagt (Tuer-1: haus/tuer/<name>/offen und .../verriegelt
+    sind Zustaende eines anderen Baums und stehen nicht in ZUSTANDSTHEMEN).
     """
     gesendet: set = set()
     z = mqtt_zustand()
@@ -1021,7 +1047,7 @@ def mqtt_senden(paare: dict, praefix: str, allein_leeren=()) -> set:
             if v is None or v == "":
                 continue    # fehlender Wert: nichts senden statt einer erfundenen 0
             sauber_k = re.sub(r"[^A-Za-z0-9_/\-]", "_", str(k))
-            befehl = "retain" if ist_zustand(sauber_k) else "publish"
+            befehl = "retain" if (retain_alle or ist_zustand(sauber_k)) else "publish"
             nachricht = (f"{befehl} {sauber_praefix}/{sauber_k} "
                          f"{mqtt_wert_saeubern(v)}").encode("utf-8")
             try:
@@ -1297,6 +1323,7 @@ class MatterVerbindung:
         if art in ("node_added", "node_updated"):
             if isinstance(daten, dict) and daten.get("node_id") is not None:
                 self.knoten[int(daten["node_id"])] = daten
+                zuletzt_merken(daten["node_id"])
                 return True
             return False
         if art == "node_removed":
@@ -1315,8 +1342,13 @@ class MatterVerbindung:
             if knoten is None:
                 return False
             knoten.setdefault("attributes", {})[str(pfad)] = wert
+            zuletzt_merken(node_id)
             return True
         if art == "node_event":
+            # Auch ein Ereignis, das nicht ausgewertet wird, ist eine Meldung
+            # des Geraets (b1).
+            if isinstance(daten, dict):
+                zuletzt_merken(daten.get("node_id"))
             return self._taste(daten)
         if art in ("endpoint_added", "endpoint_removed"):
             # Bridges melden Endpunkte zur Laufzeit an und ab. Die Attribute
@@ -1867,6 +1899,16 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
     if voll:
         _VOLLVERSAND["zuletzt"] = time.time()
     karte = nummern_zuordnen(v.knoten.keys())
+    if not _ZULETZT["geladen"]:
+        # b1: die Zeiten des vorigen Prozesses uebernehmen; frischere aus
+        # diesem Prozess gehen vor.
+        _ZULETZT["geladen"] = True
+        alt = json_lesen(DATEI_LOXONE).get("zuletzt")
+        for k, w in (alt.items() if isinstance(alt, dict) else ()):
+            try:
+                _ZULETZT["knoten"].setdefault(int(k), int(w))
+            except (TypeError, ValueError):
+                continue
     geraete: dict[str, dict] = {}
     for node_id in sorted(v.knoten):
         nr = karte.get(node_id)
@@ -1874,6 +1916,8 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
             continue
         g = knoten_abbilden(v.knoten[node_id], tab, cfg)
         g["nummer"] = nr
+        # b1: Zeit der letzten Meldung (None = seit Beginn der Aufzeichnung keine).
+        g["zuletzt"] = _ZULETZT["knoten"].get(int(node_id))
         # Ereignisthemen dazu. Sie stammen nicht aus den Attributen und stehen
         # deshalb nicht im Knotenbestand - knoten_abbilden() kennt sie nicht.
         for ep, felder in (v.ereignisse.get(node_id) or {}).items():
@@ -1904,6 +1948,9 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
             "fabric_id": v.server_info.get("fabric_id"),
         },
         "geraete": geraete,
+        # b1: je Knotennummer die Zeit der letzten Meldung, auch fuer Knoten,
+        # die es nicht mehr gibt (Reiter Einstellungen, "zuletzt gesehen").
+        "zuletzt": {str(k): w for k, w in sorted(_ZULETZT["knoten"].items())},
     }
     json_schreiben(DATEI_LOXONE, lox)
 
@@ -1967,6 +2014,9 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
                     _LETZTE_PAARE.pop(k, None)     # einmal "-", dann vergessen
         else:
             _LETZTE_PAARE.update({k: str(w) for k, w in paare.items()})
+    # Tuer-1: unter haus/tuer/ (eigene Merker, eigener Baum) - oder, ist die
+    # Einstellung aus, das Abraeumen frueher gesendeter Themen.
+    haus_senden(geraete, cfg, voll)
     return geraete
 
 
@@ -2507,7 +2557,8 @@ def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> i
     for p in liste:
         r, _bestaetigt = praefix_leeren(p, runden, pause)
         rc = max(rc, r)
-    return rc
+    # Tuer-1: die gemerkten Themen unter haus/tuer/ (still, wenn keine).
+    return max(rc, haus_leeren(runden=runden, pause=pause))
 
 
 def praefix_leeren(praefix: str, runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S,
@@ -2517,17 +2568,32 @@ def praefix_leeren(praefix: str, runden: int = LEEREN_RUNDEN, pause: float = LEE
     scheiterte, 2 nicht moeglich. bestaetigt: der Broker hat nachgelesen und
     nennt nichts mehr. Schreibt kein Protokoll (ausser ueber 'melden') und
     legt nichts an."""
+    return themen_leeren([f"{praefix}/#"], _leer_passt(praefix),
+                         lambda: mqtt_leer_themen_aus_bestand(praefix), f"{praefix}/",
+                         runden, pause, melden)
+
+
+def themen_leeren(filter_liste: list, passt, ersatz, was: str,
+                  runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S,
+                  melden=print) -> tuple:
+    """Zurueckbehaltene Themen abraeumen und beim Broker nachlesen.
+
+    filter_liste: die Abonnements der Rueckfrage; passt(thema): gehoert das
+    Thema dieser Linie; ersatz(): die Themenliste, falls der Broker nicht zu
+    fragen ist; was: der Baum fuer die Saetze ("matter/", "haus/tuer/").
+    Bis zum Verbesserungsbau 30.09.2026 stand das allein in praefix_leeren();
+    seitdem nutzen es auch geraet_leeren() (b1) und haus_leeren() (Tuer-1).
+    Rueckgabe (rc, bestaetigt) wie praefix_leeren()."""
     z = mqtt_zustand()
     if not z["udpport"]:
         melden("<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
-               f"zurueckbehaltene Themen unter {praefix}/ wurden nicht geleert.")
+               f"zurueckbehaltene Themen unter {was} wurden nicht geleert.")
         return 2, False
-    passt = _leer_passt(praefix)
-    lage, belegt = mqtt_behalten_liste([f"{praefix}/#"], passt)
+    lage, belegt = mqtt_behalten_liste(filter_liste, passt)
     nachgelesen = lage == "ok"
-    offen = sorted(belegt) if nachgelesen else mqtt_leer_themen_aus_bestand(praefix)
+    offen = sorted(belegt) if nachgelesen else list(ersatz())
     if nachgelesen and not offen:
-        melden(f"<OK> MQTT: der Broker bestaetigt: unter {praefix}/ steht kein zurueckbehaltenes "
+        melden(f"<OK> MQTT: der Broker bestaetigt: unter {was} steht kein zurueckbehaltenes "
                "Thema dieses Plugins - nichts zu leeren.")
         return 0, True
     zu_leeren = len(offen)
@@ -2536,7 +2602,7 @@ def praefix_leeren(praefix: str, runden: int = LEEREN_RUNDEN, pause: float = LEE
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError as err:
-        melden(f"<WARNING> MQTT: kein Socket ({err}) - zurueckbehaltene Themen unter {praefix}/ "
+        melden(f"<WARNING> MQTT: kein Socket ({err}) - zurueckbehaltene Themen unter {was} "
                "wurden nicht geleert.")
         return 2, False
     try:
@@ -2549,25 +2615,25 @@ def praefix_leeren(praefix: str, runden: int = LEEREN_RUNDEN, pause: float = LEE
                 gesendet += 1
             if nachgelesen:
                 time.sleep(0.3)             # dem Gateway Zeit bis zum Broker lassen
-                lage, belegt = mqtt_behalten_liste([f"{praefix}/#"], passt)
+                lage, belegt = mqtt_behalten_liste(filter_liste, passt)
                 if lage == "ok":
                     offen = [t for t in offen if t in belegt]
                 else:
                     nachgelesen = False
     except OSError as err:
         melden(f"<WARNING> MQTT: Senden an den UDP-Eingang {z['udpport']} gescheitert ({err}) - "
-               f"zurueckbehaltene Themen unter {praefix}/ stehen womoeglich noch im Broker.")
+               f"zurueckbehaltene Themen unter {was} stehen womoeglich noch im Broker.")
         return 1, False
     finally:
         s.close()
-    melden(f"<INFO> MQTT: {zu_leeren} Themen unter {praefix}/ mit leerer Nutzlast an den "
+    melden(f"<INFO> MQTT: {zu_leeren} Themen unter {was} mit leerer Nutzlast an den "
            f"UDP-Eingang {z['udpport']} des Gateways gesendet ({runde} Runde(n), "
            f"{gesendet} Datagramme).")
     if not z["autostart"]:
         melden("<INFO> MQTT: das Gateway steht nicht auf Autostart - vermutlich hat niemand "
                "zugehoert.")
     if nachgelesen and not offen:
-        melden(f"<OK> MQTT: der Broker bestaetigt: keines der {zu_leeren} Themen unter {praefix}/ "
+        melden(f"<OK> MQTT: der Broker bestaetigt: keines der {zu_leeren} Themen unter {was} "
                "steht mehr zurueckbehalten.")
         return 0, True
     if nachgelesen:
@@ -2577,8 +2643,220 @@ def praefix_leeren(praefix: str, runden: int = LEEREN_RUNDEN, pause: float = LEE
         return 1, False
     melden("<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der "
            "UDP-Eingang verwirft unter Last Datagramme; was dort noch steht, zeigt "
-           f"mosquitto_sub -v --retained-only -t '{praefix}/#'.")
+           f"mosquitto_sub -v --retained-only -t '{filter_liste[0]}'.")
     return 0, False
+
+
+# ---------------------------------------------------------------------------
+# Matter2Lox-b1 (Verbesserungsbau 30.09.2026): die zurueckbehaltenen Themen
+# EINES Geraets abraeumen - Knopf "Themen dieses Geraets abraeumen" im Reiter
+# Einstellungen (matter_dienst.py --geraet-leeren N). Unter dem eingestellten
+# und jedem gemerkten Praefix nur <praefix>/geraetN/..., und nur Themen, die
+# die Linie zurueckbehalten sendet (_leer_passt); dazu die gemerkten Themen
+# dieses Geraets unter haus/tuer/ (Tuer-1). Nachgelesen wie bei der
+# Deinstallation. Sendet der Dienst das Geraet weiter, stehen seine Zustaende
+# nach dem naechsten Vollversand (spaetestens 30 min) wieder da - der Knopf ist
+# fuer entfernte und fuer abgewaehlte Geraete gedacht.
+# ---------------------------------------------------------------------------
+def geraet_leeren(nr: int, runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S,
+                  melden=print) -> int:
+    aktuell = mqtt_praefix(config())
+    liste = [aktuell] + [p for p in praefixe_gemerkt() if p != aktuell]
+    rc = 0
+    for p in liste:
+        kopf = f"{p}/geraet{int(nr)}/"
+        grund = _leer_passt(p)
+        r, _bestaetigt = themen_leeren(
+            [f"{kopf}#"],
+            lambda t, g=grund, k=kopf: t.startswith(k) and g(t),
+            lambda p=p, k=kopf: [t for t in mqtt_leer_themen_aus_bestand(p) if t.startswith(k)],
+            kopf, runden, pause, melden)
+        rc = max(rc, r)
+    return max(rc, haus_leeren(nur_geraet=int(nr), runden=runden, pause=pause, melden=melden))
+
+
+# ---------------------------------------------------------------------------
+# Tuer-1 (Verbesserungsbau 30.09.2026, Anbieterseite): Tueren und Schloesser
+# zusaetzlich unter dem Haus-Thema. Das ist die Hausvereinbarung fuer
+# Funkwacht und Beschattungswaechter (Welle 3/4):
+#
+#     haus/tuer/<name>/offen       1 offen, 0 zu        retained
+#     haus/tuer/<name>/verriegelt  1 verriegelt, 0 nicht retained
+#     "-" retained                 keine Aussage (Wert null, Geraet entfernt;
+#                                  Entscheidung 5)
+#
+# <name> ist die Geraetebezeichnung (NodeLabel, sonst Produkt), gesaeubert:
+# klein, ae/oe/ue/ss fuer Umlaute, jedes andere Zeichen ausser a-z 0-9 _ -
+# wird "_", hoechstens 40 Zeichen. So bleibt <name> EINE Themenebene, und der
+# Name, den das MQTT-Gateway daraus baut (/ wird _), ist eindeutig:
+# "Haustür" -> haus/tuer/haustuer/offen -> haus_tuer_haustuer_offen.
+# Traegt ein Geraet mehrere Kontakte oder Schloesser, heisst jedes
+# <name>_<endpunkt>; tragen zwei Geraete denselben Namen, bekommt das spaetere
+# (hoehere Geraetenummer) _<geraetenummer> angehaengt.
+#
+# offen kommt aus BooleanState (kontakt) - nur an einem Endpunkt vom
+# Geraetetyp Contact Sensor (21), nicht vom Wasser- oder Regenmelder. Nach der
+# Matter-Spezifikation heisst StateValue true "Kontakt geschlossen";
+# offen = 1 - kontakt. verriegelt kommt aus DoorLock.LockState: 1 (Locked)
+# -> 1, 0/2/3 (nicht ganz verriegelt, entriegelt, entklinkt) -> 0.
+#
+# Voraussetzung: tuer_haus UND mqtt_ein. Ist tuer_haus aus, werden die je
+# gesendeten Themen abgeraeumt (gemerkt NEBEN dem Konfigordner,
+# config/plugins/<ordner>.haus_themen.json - so ueberstehen sie ein Update);
+# vergessen wird ein Thema erst, wenn der Broker bestaetigt, dass es leer ist.
+# Die Deinstallation raeumt ueber --mqtt-leeren ab.
+# ---------------------------------------------------------------------------
+HAUS_WURZEL = "haus/tuer"
+DATEI_HAUS = PCONFIG.parent / (PNAME + ".haus_themen.json")
+HAUS_KONTAKTTYP = "21"
+HAUS_FRAGE_S = 300
+_HAUS: dict = {"letzte": {}, "versucht": 0.0}
+_HAUS_THEMA = re.compile(r"^haus/tuer/[a-z0-9_\-]{1,60}/(offen|verriegelt)$")
+_UMLAUTE = (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"),
+            ("Ä", "ae"), ("Ö", "oe"), ("Ü", "ue"))
+
+
+def haus_name(text) -> str:
+    t = str(text or "")
+    for a, b in _UMLAUTE:
+        t = t.replace(a, b)
+    t = re.sub(r"[^a-z0-9_\-]+", "_", t.lower()).strip("_")
+    return t[:40].strip("_")
+
+
+def haus_paare(geraete: dict) -> tuple:
+    """Rueckgabe (paare, herkunft): paare relativ zu haus/tuer
+    ("<name>/offen": 0|1|"-"), herkunft je Schluessel die Geraetenummer."""
+    paare: dict = {}
+    herkunft: dict = {}
+    namen: dict = {}
+    for nr in sorted(geraete, key=lambda n: int(n) if str(n).isdigit() else 0):
+        g = geraete[nr]
+        name = haus_name(g.get("name")) or f"geraet{nr}"
+        if namen.get(name, nr) != nr:
+            name = f"{name}_{nr}"
+        namen[name] = nr
+        endpunkte = g.get("endpunkte") or {}
+        typen = g.get("typen") or {}
+        kontakte = [ep for ep in sorted(endpunkte) if "kontakt" in (endpunkte[ep] or {})
+                    and HAUS_KONTAKTTYP in [str(x) for x in (typen.get(ep) or [])]]
+        schloesser = [ep for ep in sorted(endpunkte) if "schloss" in (endpunkte[ep] or {})]
+        for art, eps, feld in (("offen", kontakte, "kontakt"), ("verriegelt", schloesser, "schloss")):
+            for ep in eps:
+                roh = endpunkte[ep].get(feld)
+                n = name if len(eps) == 1 else f"{name}_{ep}"
+                try:
+                    if roh is None or roh == "" or roh == OHNE_AUSSAGE:
+                        w = OHNE_AUSSAGE
+                    elif art == "offen":
+                        w = 0 if int(roh) else 1
+                    else:
+                        w = 1 if int(roh) == 1 else 0
+                except (TypeError, ValueError):
+                    w = OHNE_AUSSAGE
+                paare[f"{n}/{art}"] = w
+                herkunft[f"{n}/{art}"] = int(nr) if str(nr).isdigit() else 0
+    return paare, herkunft
+
+
+def haus_gemerkt() -> dict:
+    """Die je unter haus/tuer/ gesendeten Themen: {thema: geraetenummer}."""
+    aus = {}
+    d = json_lesen(DATEI_HAUS).get("themen")
+    for t, nr in (d.items() if isinstance(d, dict) else ()):
+        if isinstance(t, str) and _HAUS_THEMA.match(t):
+            try:
+                aus[t] = int(nr)
+            except (TypeError, ValueError):
+                aus[t] = 0
+    return aus
+
+
+def _haus_schreiben(themen: dict) -> bool:
+    if not themen:
+        try:
+            DATEI_HAUS.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        return True
+    return json_schreiben(DATEI_HAUS, {
+        "_hinweis": "Themen unter haus/tuer/, die dieses Plugin je zurueckbehalten gesendet "
+                    "hat (Einstellung tuer_haus). Abschalten und Deinstallation raeumen sie ab.",
+        "themen": dict(sorted(themen.items()))}, 0o600)
+
+
+def haus_senden(geraete: dict, cfg: dict, voll: bool = False) -> None:
+    if not cfg.get("tuer_haus"):
+        haus_aus_pflegen()
+        return
+    if not cfg.get("mqtt_ein"):
+        return
+    paare, herkunft = haus_paare(geraete)
+    letzte = _HAUS["letzte"]
+    if voll:
+        senden = dict(paare)
+    else:
+        senden = {k: w for k, w in paare.items() if letzte.get(k) != str(w)}
+    # Entscheidung 5: was wegfaellt (Geraet entfernt, Endpunkt weg), geht
+    # einmal als "-" hinaus und wird danach vergessen.
+    for k in [k for k in letzte if k not in paare]:
+        if letzte[k] != OHNE_AUSSAGE:
+            senden[k] = OHNE_AUSSAGE
+        else:
+            letzte.pop(k, None)
+    if not senden:
+        return
+    # ERST merken, dann senden: stirbt der Dienst dazwischen, raeumen
+    # Abschalten und Deinstallation trotzdem ab.
+    gemerkt = haus_gemerkt()
+    neu = {f"{HAUS_WURZEL}/{k}": herkunft.get(k, 0) for k in senden
+           if f"{HAUS_WURZEL}/{k}" not in gemerkt and _HAUS_THEMA.match(f"{HAUS_WURZEL}/{k}")}
+    if neu:
+        gemerkt.update(neu)
+        if not _haus_schreiben(gemerkt):
+            melde_gebremst("haus_merken", f"MQTT: die Themen unter {HAUS_WURZEL}/ liessen sich "
+                           f"nicht in {DATEI_HAUS} merken - Abschalten und Deinstallation "
+                           "raeumen sie dann nicht ab.")
+    for k in mqtt_senden(senden, HAUS_WURZEL, retain_alle=True):
+        if k in paare:
+            letzte[k] = str(paare[k])
+        else:
+            letzte.pop(k, None)
+
+
+def haus_aus_pflegen() -> None:
+    """tuer_haus ist aus: frueher gesendete Themen abraeumen, hoechstens alle
+    HAUS_FRAGE_S Sekunden ein Versuch, solange der Broker nicht bestaetigt."""
+    _HAUS["letzte"].clear()
+    if not DATEI_HAUS.is_file():
+        return
+    jetzt = time.time()
+    if 0 <= jetzt - _HAUS["versucht"] < HAUS_FRAGE_S:
+        return
+    _HAUS["versucht"] = jetzt
+    haus_leeren(melden=lambda t: _LOG.info("%s", t))
+
+
+def haus_leeren(nur_geraet=None, runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S,
+                melden=print) -> int:
+    """Die gemerkten Themen unter haus/tuer/ abraeumen - alle oder die eines
+    Geraets. Vergessen wird, was der Broker als leer bestaetigt. Ohne
+    gemerkte Themen still, Rueckgabe 0. Rueckgabe sonst wie praefix_leeren()."""
+    gemerkt = haus_gemerkt()
+    ziel = sorted(t for t, nr in gemerkt.items() if nur_geraet is None or nr == nur_geraet)
+    if not ziel:
+        return 0
+    menge = set(ziel)
+    rc, bestaetigt = themen_leeren([f"{HAUS_WURZEL}/#"], lambda t: t in menge, lambda: ziel,
+                                   f"{HAUS_WURZEL}/", runden, pause, melden)
+    if bestaetigt:
+        rest = {t: nr for t, nr in haus_gemerkt().items() if t not in menge}
+        if not _haus_schreiben(rest):
+            melden(f"<WARNING> MQTT: {DATEI_HAUS} liess sich nicht nachfuehren.")
+            return max(rc, 1)
+    return rc
 
 
 # ---------------------------------------------------------------------------
@@ -2759,11 +3037,26 @@ def dienstsperre_nehmen() -> bool:
 # C6 (Durchgang 30.09.2026): die bekannten Schalter. Bis 0.9.30 lief jeder
 # andere Aufruf ("--selftest", ein Tippfehler) als Dienst - neben dem
 # eigentlichen und ohne PID-Datei (gemessen, Bericht code C6).
-BEKANNTE_SCHALTER = ("--einmal", "--selbsttest", "--mqtt-leeren", "--themen")
+BEKANNTE_SCHALTER = ("--einmal", "--selbsttest", "--mqtt-leeren", "--themen",
+                     "--geraet-leeren", "--haus-leeren")
 
 
 def main() -> int:
-    fremd = [a for a in sys.argv[1:] if a not in BEKANNTE_SCHALTER]
+    # b1: "--geraet-leeren N" traegt als einziger Schalter einen Wert
+    # (Geraetenummer 1 bis 999). Fehlt er oder passt er nicht, wird nichts
+    # getan (Rueckgabe 2), wie bei einem unbekannten Schalter.
+    argumente = sys.argv[1:]
+    geraet = None
+    if "--geraet-leeren" in argumente:
+        i = argumente.index("--geraet-leeren")
+        wert = argumente[i + 1] if i + 1 < len(argumente) else ""
+        if not re.match(r"^[1-9][0-9]{0,2}$", wert):
+            print("[FEHL] --geraet-leeren braucht eine Geraetenummer von 1 bis 999. Es wurde "
+                  "nichts getan.", file=sys.stderr)
+            return 2
+        geraet = int(wert)
+        argumente = argumente[:i] + argumente[i + 2:]
+    fremd = [a for a in argumente if a not in BEKANNTE_SCHALTER]
     if fremd:
         print("[FEHL] Unbekannter Schalter: %s. Bekannt sind: %s. Es wurde nichts "
               "gestartet und nichts angelegt." % (" ".join(fremd), ", ".join(BEKANNTE_SCHALTER)),
@@ -2791,6 +3084,12 @@ def main() -> int:
     # kein Protokoll (uninstall/uninstall, Schritt 1b).
     if "--mqtt-leeren" in sys.argv:
         return mqtt_leeren()
+    # b1 und Tuer-1: aus der Oberflaeche, als loxberry; legen nichts an und
+    # schreiben kein Protokoll - wie --mqtt-leeren. Rueckgabe wie dort.
+    if geraet is not None:
+        return geraet_leeren(geraet)
+    if "--haus-leeren" in sys.argv:
+        return haus_leeren()
     log_einrichten()
     if "--selbsttest" in sys.argv:
         return selbsttest()

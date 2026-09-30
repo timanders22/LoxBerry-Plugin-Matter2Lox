@@ -62,6 +62,10 @@ $mt_tab = 'tab-settings';
 
 $mt_meldungen = array();
 $mt_fehler = array();
+/* X-2 (Regeln/04): die Eingaben eines abgewiesenen Formulars und die Namen
+ * der beanstandeten Felder - sie reisen mit der Einmalmeldung. */
+$mt_eingaben = array();
+$mt_bean = array();
 
 /* ---------------------------------------------------------------- *
  * Der Wachposten - EIN Posten, vor allen Handlern.
@@ -229,6 +233,7 @@ if ($mt_post && isset($_POST['speichern'])) {
     $host = $sauber('server_host');
     if ($host === '' || !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-:_\[\]]{0,80}$/', $host)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_HOST');
+        $mt_bean[] = 'server_host';
     } else {
         $mt_cfg['server_host'] = $host;
     }
@@ -238,11 +243,13 @@ if ($mt_post && isset($_POST['speichern'])) {
         $w = $sauber($feld);
         if (!preg_match('/^[0-9]+$/', $w)) {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_ZAHL'), mt_t('EINST.L_' . strtoupper($feld)));
+            $mt_bean[] = $feld;
             continue;
         }
         if ((int) $w < $grenzen[0] || (int) $w > $grenzen[1]) {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_BEREICH'),
                 mt_t('EINST.L_' . strtoupper($feld)), $grenzen[0], $grenzen[1]);
+            $mt_bean[] = $feld;
             continue;
         }
         $mt_cfg[$feld] = (int) $w;
@@ -251,12 +258,14 @@ if ($mt_post && isset($_POST['speichern'])) {
     $name = $sauber('container_name');
     if ($name !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/', $name)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_CONTAINERNAME');
+        $mt_bean[] = 'container_name';
     } elseif ($name !== '') {
         $mt_cfg['container_name'] = $name;
     }
     $abbild = $sauber('container_abbild');
     if ($abbild !== '' && !preg_match('#^[A-Za-z0-9][A-Za-z0-9_./\-]{2,120}(:[A-Za-z0-9_.\-]{1,40})?$#', $abbild)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_ABBILD');
+        $mt_bean[] = 'container_abbild';
     } elseif ($abbild !== '') {
         $mt_cfg['container_abbild'] = $abbild;
     }
@@ -265,6 +274,10 @@ if ($mt_post && isset($_POST['speichern'])) {
     $mt_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $mt_cfg['schloss_ein'] = isset($_POST['schloss_ein']) ? 1 : 0;
 
+    /* X-2: abgewiesen - die Eingaben reisen zurueck ins Formular. */
+    if ($mt_fehler) {
+        $mt_eingaben = mt_eingaben_sammeln('speichern', $mt_bean);
+    }
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_cfg)) {
             $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
@@ -277,6 +290,8 @@ if ($mt_post && isset($_POST['speichern'])) {
             }
         } else {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+            // Nicht gespeichert: auch dann bleiben die Eingaben stehen (X-2).
+            $mt_eingaben = mt_eingaben_sammeln('speichern', array());
         }
     }
     $mt_tab = 'tab-settings';
@@ -306,12 +321,18 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
      * Einstellungen schaltete ihn ab. Genau die Fehlerklasse, die der
      * Kommentar am Ende des Einstellungen-Handlers fuer mqtt_ein beschreibt. */
     $mt_mcfg['roh_ein'] = isset($_POST['roh_ein']) ? 1 : 0;
+    /* Tuer-1 (Verbesserungsbau 30.09.2026): Tueren und Schloesser zusaetzlich
+     * unter haus/tuer/ melden. Ab Werk aus; wer ihn abhakt, bekommt die je
+     * gesendeten Themen abgeraeumt (unten, nach dem Speichern). */
+    $mt_haus_vorher = !empty($mt_mcfg['tuer_haus']);
+    $mt_mcfg['tuer_haus'] = isset($_POST['tuer_haus']) ? 1 : 0;
     /* O2: nicht still Zeichen entfernen, sondern gegen das Muster pruefen
      * und abweisen (Bericht oberflaeche Nr. 5). */
     $mt_mtopic = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])
         ? trim($_POST['mqtt_topic']) : '';
     if ($mt_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $mt_mtopic)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_TOPIC');
+        $mt_bean[] = 'mqtt_topic';
     } else {
         $mt_mcfg['mqtt_topic'] = trim($mt_mtopic, '/');
     }
@@ -322,8 +343,13 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
     $mt_nur = trim((string) (isset($_POST['mqtt_nur']) ? $_POST['mqtt_nur'] : ''));
     if ($mt_nur !== '' && !preg_match('/^[0-9]{1,3}([ ,;]+[0-9]{1,3})*$/', $mt_nur)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_MQTT_NUR');
+        $mt_bean[] = 'mqtt_nur';
     } else {
         $mt_mcfg['mqtt_nur'] = preg_replace('/[ ;]+/', ',', $mt_nur);
+    }
+    /* X-2: abgewiesen - die Eingaben reisen zurueck ins Formular. */
+    if ($mt_fehler) {
+        $mt_eingaben = mt_eingaben_sammeln('save_mqtt', $mt_bean);
     }
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_mcfg)) {
@@ -337,11 +363,24 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
                 $mt_meldungen[] = mt_e(sprintf(mt_t('MQTT.PRAEFIX_GEWECHSELT'),
                                                $mt_praefix_vorher, $mt_praefix_nachher));
             }
+            /* Tuer-1: abgehakt - die je unter haus/tuer/ gesendeten Themen
+             * gleich abraeumen, mit Ruecklesen beim Broker (der Dienst tut
+             * es ausserdem selbst, sobald er die Einstellung liest). */
+            if ($mt_haus_vorher && empty($mt_mcfg['tuer_haus']) && mt_haus_gemerkt()) {
+                list($mt_hrc, $mt_hzeilen) = mt_dienst_leeren(array('--haus-leeren'));
+                $mt_hsatz = mt_e(implode(' ', $mt_hzeilen));
+                if ($mt_hrc === 0) {
+                    $mt_meldungen[] = mt_t('MQTT.HAUS_ABGERAEUMT') . ' ' . $mt_hsatz;
+                } else {
+                    $mt_fehler[] = mt_t('MQTT.HAUS_ABRAEUMEN_FEHL') . ' ' . $mt_hsatz;
+                }
+            }
         } else {
             /* Bis 0.9.16 fehlte dieser Zweig als einzigem der vier
              * Speichern-Handler: scheiterte das Schreiben, sah der Bediener
              * weder Erfolg noch Fehler. */
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+            $mt_eingaben = mt_eingaben_sammeln('save_mqtt', array());
         }
     }
     $mt_tab = 'tab-mqtt';
@@ -358,6 +397,7 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
     $ssid = isset($_POST['wlan_ssid']) && is_string($_POST['wlan_ssid']) ? $_POST['wlan_ssid'] : '';
     if (preg_match('/[\x00-\x1F\x7F]/', $ssid)) {
         $mt_fehler[] = mt_t('ANLERN.FEHLER_SSID');
+        $mt_bean[] = 'wlan_ssid';
     } elseif ($ssid !== '') {
         $mt_cfg['wlan_ssid'] = $ssid;
     }
@@ -375,6 +415,7 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
     $ds = trim((string) (isset($_POST['thread_dataset']) ? $_POST['thread_dataset'] : ''));
     if ($ds !== '' && !preg_match('/^[0-9A-Fa-f]{20,600}$/', $ds)) {
         $mt_fehler[] = mt_t('ANLERN.FEHLER_THREAD');
+        $mt_bean[] = 'thread_dataset';
     } elseif ($ds !== '') {
         $mt_cfg['thread_dataset'] = $ds;
     }
@@ -385,11 +426,17 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
     if (!empty($mt_cfg['wlan_passwort']) && trim((string) $mt_cfg['wlan_ssid']) === '') {
         $mt_meldungen[] = mt_t('ANLERN.WARN_PW_OHNE_SSID');
     }
+    /* X-2: abgewiesen - die Eingaben reisen zurueck (ohne WLAN-Passwort und
+     * Thread-Dataset: beide sind Netzzugangsdaten). */
+    if ($mt_fehler) {
+        $mt_eingaben = mt_eingaben_sammeln('netz_speichern', $mt_bean);
+    }
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_cfg)) {
             $mt_meldungen[] = mt_t('ANLERN.NETZ_GESPEICHERT');
         } else {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+            $mt_eingaben = mt_eingaben_sammeln('netz_speichern', array());
         }
     }
     $mt_tab = 'tab-commission';
@@ -411,6 +458,11 @@ if ($mt_post && isset($_POST['br_holen'])) {
     $mt_cfg = mt_config();
     $mt_adr = trim((string) (isset($_POST['thread_br']) ? $_POST['thread_br'] : ''));
     list($mt_stand, $mt_text) = mt_thread_dataset_holen($mt_adr);
+    /* X-2: nur Stand 0 beanstandet die Eingabe (Adresse abgewiesen, nichts
+     * gespeichert); bei Stand 2 ist die Adresse gemerkt. */
+    if ($mt_stand === 0) {
+        $mt_eingaben = mt_eingaben_sammeln('br_holen', array('thread_br'));
+    }
     if ($mt_stand !== 0 && $mt_cfg['thread_br'] !== $mt_adr) {
         $mt_cfg['thread_br'] = $mt_adr;
         if (!mt_config_speichern($mt_cfg)) {
@@ -460,7 +512,7 @@ if ($mt_post && isset($_POST['container'])) {
                             . ' <span class="sm-mono">' . mt_e(substr($mt_ausgabe, 0, 200)) . '</span>';
         } else {
             $mt_fehler[] = sprintf(mt_t('EINST.CONTAINER_FEHL'), mt_e($mt_was))
-                         . ' <span class="sm-mono">' . mt_e(substr($mt_ausgabe, 0, 400)) . '</span>';
+                         . ' <span class="sm-mono">' . mt_e(substr($mt_ausgabe, 0, 800)) . '</span>';
         }
     }
     $mt_tab = 'tab-settings';
@@ -527,6 +579,33 @@ if ($mt_post && isset($_POST['containerlog'])) {
     $mt_tab = 'tab-test';
 }
 
+/* ---------------- Themen eines Geraets abraeumen (Matter2Lox-b1) ----------------
+ *
+ * Verbesserungsbau 30.09.2026: je Zeile der Tabelle "Erkannte Geraete" ein
+ * Haekchen und ein oranger Knopf. Ohne Haekchen passiert nichts (Regeln/04,
+ * "Formregeln fuer einen loeschenden Knopf"). matter_dienst.py
+ * --geraet-leeren N fragt den Broker, raeumt die zurueckbehaltenen Themen
+ * DIESES Geraets ab (auch die unter haus/tuer/) und liest nach; andere
+ * Geraete bleiben unberuehrt. Die Meldung sagt, was der Broker bestaetigt. */
+if ($mt_post && isset($_POST['geraet_leeren'])) {
+    $mt_gnr = is_string($_POST['geraet_leeren']) && preg_match('/^[1-9][0-9]{0,2}$/', $_POST['geraet_leeren'])
+        ? (int) $_POST['geraet_leeren'] : 0;
+    if ($mt_gnr === 0 || !in_array($mt_gnr, mt_geraetenummern(), true)) {
+        $mt_fehler[] = mt_t('EINST.GERAET_LEEREN_UNBEKANNT');
+    } elseif (empty($_POST['geraet_leeren_ja'])) {
+        $mt_fehler[] = sprintf(mt_t('EINST.GERAET_LEEREN_HAKEN'), $mt_gnr);
+    } else {
+        list($mt_lrc, $mt_lzeilen) = mt_dienst_leeren(array('--geraet-leeren', (string) $mt_gnr));
+        $mt_lsatz = mt_e(implode(' ', $mt_lzeilen));
+        if ($mt_lrc === 0) {
+            $mt_meldungen[] = sprintf(mt_t('EINST.GERAET_LEEREN_OK'), $mt_gnr) . ' ' . $mt_lsatz;
+        } else {
+            $mt_fehler[] = sprintf(mt_t('EINST.GERAET_LEEREN_FEHL'), $mt_gnr, $mt_lrc) . ' ' . $mt_lsatz;
+        }
+    }
+    $mt_tab = 'tab-settings';
+}
+
 /* ---------------- Einstellungen sichern ----------------
  *
  * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
@@ -543,6 +622,15 @@ if ($mt_post && isset($_POST['mt_sichern'])) {
         '_stand'   => date('Y-m-d H:i:s'),
         '_fassung' => mt_fassung(),
     ) + mt_config();
+    /* X-3 (Verbesserungsbau 30.09.2026): wuerde das eigene Zurueckspielen
+     * einen gespeicherten Wert abweisen, sagt es der Kopf der Datei - nur die
+     * Namen, nie die Werte. Geliefert wird trotzdem vollstaendig; die gelbe
+     * Warnung am Knopf sagt es vorher. */
+    $mt_altwerte = mt_sicherung_altwerte(mt_config());
+    if ($mt_altwerte) {
+        $mt_sich = array('_warnung' => sprintf(mt_t('EINST.SICH_ALTWERT_KOPF'),
+                                               implode(', ', $mt_altwerte))) + $mt_sich;
+    }
     $mt_js = json_encode($mt_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($mt_js !== false) {
@@ -602,7 +690,7 @@ if ($mt_post && isset($_POST['mt_zurueck'])) {
  * Einmalmeldung wird NUR beim GET gelesen (Regeln/04). */
 if ($mt_post) {
     if (mt_einmal_schreiben(array('meldungen' => $mt_meldungen, 'fehler' => $mt_fehler,
-                                  'zeige' => $mt_zeige))) {
+                                  'zeige' => $mt_zeige, 'eingaben' => $mt_eingaben))) {
         header('Location: index.php?form=' . substr($mt_tab, 4), true, 303);
         exit;
     }
@@ -617,6 +705,8 @@ if ($mt_post) {
             }
         }
     }
+    // X-2: mt_eingabe() und mt_markierung() lesen sie von hier.
+    $mt_eingaben = mt_eingaben_pruefen(isset($mt_einmal['eingaben']) ? $mt_einmal['eingaben'] : null);
     if (isset($mt_einmal['zeige']) && in_array($mt_einmal['zeige'], array('selbsttest', 'containerlog'), true)) {
         $mt_zeige = $mt_einmal['zeige'];
     }
@@ -723,6 +813,8 @@ if ($mt_rahmen) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-fehler { border: 1px solid #ef9a9a; background: #ffebee; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+/* Ein beanstandetes Feld nach der Umleitung (X-2, Regeln/04). */
+.sm-wrap input.sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, "Courier New", monospace;
@@ -733,6 +825,11 @@ if ($mt_rahmen) {
    benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
    bzw. der Referenzimplementierung uebernommen. */
 .sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
+/* Rollbehaelter, wortgetreu aus VORLAGE_hausstandard.css.html (Regeln/04):
+   die Tabelle "Erkannte Geraete" hat seit dem Verbesserungsbau (b1) mehr als
+   sechs Spalten und ein Formular je Zeile. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 </style>
 <div class="sm-wrap">
 
@@ -910,50 +1007,53 @@ foreach (array('anlegen' => 'sm-b-aktion', 'start' => 'sm-b-aktion', 'holen' => 
   <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<?php if (mt_eingaben_aktiv('speichern')) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('EINST.EINGABEN_ZURUECK')) ?></div>
+<?php } ?>
 
 <h2><?= mt_e(mt_t('EINST.H_VERBINDUNG')) ?></h2>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="eigener_container" value="1" <?= !empty($mt_cfg['eigener_container']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="eigener_container" value="1" <?= !empty(mt_eingabe('speichern', 'eigener_container', $mt_cfg['eigener_container'])) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('EINST.L_EIGENER_CONTAINER')) ?>
   </label>
   <div class="sm-hilfe"><?= mt_t('EINST.H_EIGENER_CONTAINER') ?></div>
 </div>
 <div class="sm-feld">
   <label for="server_host"><?= mt_e(mt_t('EINST.L_SERVER_HOST')) ?></label>
-  <input data-role="none" type="text" id="server_host" name="server_host" value="<?= mt_e($mt_cfg['server_host']) ?>" placeholder="127.0.0.1">
+  <input data-role="none" type="text" id="server_host" name="server_host" value="<?= mt_e(mt_eingabe('speichern', 'server_host', $mt_cfg['server_host'])) ?>"<?= mt_markierung('speichern', 'server_host') ?> placeholder="127.0.0.1">
 </div>
 <div class="sm-feld">
   <label for="server_port"><?= mt_e(mt_t('EINST.L_SERVER_PORT')) ?></label>
-  <input data-role="none" type="number" id="server_port" name="server_port" value="<?= (int) $mt_cfg['server_port'] ?>" min="1" max="65535">
+  <input data-role="none" type="number" id="server_port" name="server_port" value="<?= mt_e(mt_eingabe('speichern', 'server_port', (int) $mt_cfg['server_port'])) ?>"<?= mt_markierung('speichern', 'server_port') ?> min="1" max="65535">
   <div class="sm-hilfe"><?= mt_t('EINST.H_SERVER_PORT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="container_name"><?= mt_e(mt_t('EINST.L_CONTAINER_NAME')) ?></label>
-  <input data-role="none" type="text" id="container_name" name="container_name" value="<?= mt_e($mt_cfg['container_name']) ?>">
+  <input data-role="none" type="text" id="container_name" name="container_name" value="<?= mt_e(mt_eingabe('speichern', 'container_name', $mt_cfg['container_name'])) ?>"<?= mt_markierung('speichern', 'container_name') ?>>
 </div>
 <div class="sm-feld">
   <label for="container_abbild"><?= mt_e(mt_t('EINST.L_CONTAINER_ABBILD')) ?></label>
-  <input data-role="none" type="text" id="container_abbild" name="container_abbild" value="<?= mt_e($mt_cfg['container_abbild']) ?>">
+  <input data-role="none" type="text" id="container_abbild" name="container_abbild" value="<?= mt_e(mt_eingabe('speichern', 'container_abbild', $mt_cfg['container_abbild'])) ?>"<?= mt_markierung('speichern', 'container_abbild') ?>>
 </div>
 <div class="sm-feld">
   <label for="bluetooth_adapter"><?= mt_e(mt_t('EINST.L_BLUETOOTH_ADAPTER')) ?></label>
-  <input data-role="none" type="number" id="bluetooth_adapter" name="bluetooth_adapter" value="<?= (int) $mt_cfg['bluetooth_adapter'] ?>" min="0" max="9">
+  <input data-role="none" type="number" id="bluetooth_adapter" name="bluetooth_adapter" value="<?= mt_e(mt_eingabe('speichern', 'bluetooth_adapter', (int) $mt_cfg['bluetooth_adapter'])) ?>"<?= mt_markierung('speichern', 'bluetooth_adapter') ?> min="0" max="9">
   <div class="sm-hilfe"><?= mt_t('EINST.H_BLUETOOTH_ADAPTER') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wartezeit"><?= mt_e(mt_t('EINST.L_WARTEZEIT')) ?></label>
-  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $mt_cfg['wartezeit'] ?>" min="0" max="60">
+  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= mt_e(mt_eingabe('speichern', 'wartezeit', (int) $mt_cfg['wartezeit'])) ?>"<?= mt_markierung('speichern', 'wartezeit') ?> min="0" max="60">
   <div class="sm-hilfe"><?= mt_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="sendetakt"><?= mt_e(mt_t('EINST.L_SENDETAKT')) ?></label>
-  <input data-role="none" type="number" id="sendetakt" name="sendetakt" value="<?= (int) $mt_cfg['sendetakt'] ?>" min="0" max="60">
+  <input data-role="none" type="number" id="sendetakt" name="sendetakt" value="<?= mt_e(mt_eingabe('speichern', 'sendetakt', (int) $mt_cfg['sendetakt'])) ?>"<?= mt_markierung('speichern', 'sendetakt') ?> min="0" max="60">
   <div class="sm-hilfe"><?= mt_t('EINST.H_SENDETAKT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="herzschlag"><?= mt_e(mt_t('EINST.L_HERZSCHLAG')) ?></label>
-  <input data-role="none" type="number" id="herzschlag" name="herzschlag" value="<?= (int) $mt_cfg['herzschlag'] ?>" min="0" max="3600">
+  <input data-role="none" type="number" id="herzschlag" name="herzschlag" value="<?= mt_e(mt_eingabe('speichern', 'herzschlag', (int) $mt_cfg['herzschlag'])) ?>"<?= mt_markierung('speichern', 'herzschlag') ?> min="0" max="3600">
   <div class="sm-hilfe"><?= mt_t('EINST.H_HERZSCHLAG') ?></div>
 </div>
 
@@ -961,13 +1061,13 @@ foreach (array('anlegen' => 'sm-b-aktion', 'start' => 'sm-b-aktion', 'holen' => 
 <div class="sm-warnung"><?= mt_t('EINST.STEUERUNG_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="steuerung_ein" value="1" <?= !empty($mt_cfg['steuerung_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="steuerung_ein" value="1" <?= !empty(mt_eingabe('speichern', 'steuerung_ein', $mt_cfg['steuerung_ein'])) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('EINST.L_STEUERUNG_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="schloss_ein" value="1" <?= !empty($mt_cfg['schloss_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="schloss_ein" value="1" <?= !empty(mt_eingabe('speichern', 'schloss_ein', $mt_cfg['schloss_ein'])) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('EINST.L_SCHLOSS_EIN')) ?>
   </label>
   <div class="sm-hilfe"><?= mt_t('EINST.H_SCHLOSS_EIN') ?></div>
@@ -982,14 +1082,6 @@ foreach (array('anlegen' => 'sm-b-aktion', 'start' => 'sm-b-aktion', 'holen' => 
 </form>
 
 <h2><?= mt_e(mt_t('EINST.H_ERKANNT')) ?></h2>
-<?php if (!$mt_geraete) { ?>
-<div class="sm-warnung"><?= mt_t('EINST.KEINE_GERAETE') ?></div>
-<?php } else { ?>
-<table class="sm-tbl">
-<tr><th>#</th><th><?= mt_e(mt_t('EINST.T_NAME')) ?></th><th><?= mt_e(mt_t('EINST.T_KNOTEN')) ?></th>
-    <th><?= mt_e(mt_t('EINST.T_HERSTELLER')) ?></th><th><?= mt_e(mt_t('EINST.T_PRODUKT')) ?></th>
-    <th><?= mt_e(mt_t('EINST.T_TYP')) ?></th>
-    <th><?= mt_e(mt_t('EINST.T_WERTE')) ?></th><th><?= mt_e(mt_t('EINST.T_ERREICHBAR')) ?></th></tr>
 <?php
 /*
  * Zugriff mit Rueckfallwert, nicht unmittelbar.
@@ -1005,7 +1097,38 @@ foreach (array('anlegen' => 'sm-b-aktion', 'start' => 'sm-b-aktion', 'holen' => 
 $mt_feld = function ($g, $name, $leer = '') {
     return isset($g[$name]) && $g[$name] !== null && $g[$name] !== '' ? $g[$name] : $leer;
 };
+/* Matter2Lox-b1 (Verbesserungsbau 30.09.2026): "zuletzt gesehen" ist die Zeit
+ * der letzten Meldung des Geraets (vom Dienst in loxone.json gefuehrt), und
+ * entfernte Geraete stehen mit ihrer Nummer da - unter ihnen koennen im
+ * Broker noch "-" stehen. Je Zeile ein Haekchen und ein oranger Knopf. */
+$mt_lox = mt_loxone();
+$mt_zuletzt = isset($mt_lox['zuletzt']) && is_array($mt_lox['zuletzt']) ? $mt_lox['zuletzt'] : array();
+$mt_entfernt = mt_geraete_entfernt($mt_geraete);
+$mt_leer_knopf = function ($nr) {
+    return '<form action="index.php" method="post">' . mt_fmt()
+        . '<input data-role="none" type="hidden" name="activetab" value="tab-settings">'
+        . '<input data-role="none" type="hidden" name="geraet_leeren" value="' . (int) $nr . '">'
+        . '<label style="display:flex;align-items:center;gap:6px;margin:0 0 6px;font-size:0.85em;">'
+        . '<input data-role="none" type="checkbox" name="geraet_leeren_ja" value="1"> '
+        . mt_e(mt_t('EINST.L_GERAET_LEEREN_JA')) . '</label>'
+        . '<button data-role="none" class="sm-btn sm-b-aktion" type="submit">'
+        . mt_e(mt_t('EINST.K_GERAET_LEEREN')) . '</button></form>';
+};
 ?>
+<?php if (!$mt_geraete && !$mt_entfernt) { ?>
+<div class="sm-warnung"><?= mt_t('EINST.KEINE_GERAETE') ?></div>
+<?php } else { ?>
+<p class="sm-hilfe"><?= mt_t('EINST.GERAET_LEEREN_HILFE') ?></p>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th>#</th><th><?= mt_e(mt_t('EINST.T_NAME')) ?></th><th><?= mt_e(mt_t('EINST.T_KNOTEN')) ?></th>
+    <th><?= mt_e(mt_t('EINST.T_HERSTELLER')) ?></th><th><?= mt_e(mt_t('EINST.T_PRODUKT')) ?></th>
+    <th><?= mt_e(mt_t('EINST.T_TYP')) ?></th>
+    <th><?= mt_e(mt_t('EINST.T_WERTE')) ?></th><th><?= mt_e(mt_t('EINST.T_ERREICHBAR')) ?></th>
+    <th><?= mt_e(mt_t('EINST.T_ZULETZT')) ?></th><th><?= mt_e(mt_t('EINST.T_THEMEN')) ?></th></tr>
 <?php foreach ($mt_geraete as $mt_nr => $mt_g) { ?>
 <tr><td><?= mt_e($mt_nr) ?></td><td><?= mt_e($mt_feld($mt_g, 'name')) ?></td>
     <td><?= (int) $mt_feld($mt_g, 'node_id', 0) ?></td>
@@ -1031,14 +1154,30 @@ $mt_feld = function ($g, $name, $leer = '') {
       }
       echo $mt_liste ? implode(', ', $mt_liste) : '&mdash;';
     ?></td>
-    <td class="<?= $mt_feld($mt_g, 'erreichbar', 0) ? 'sm-an' : 'sm-aus' ?>"><?= $mt_feld($mt_g, 'erreichbar', 0) ? mt_e(mt_t('ALLG.JA')) : mt_e(mt_t('ALLG.NEIN')) ?></td></tr>
+    <td class="<?= $mt_feld($mt_g, 'erreichbar', 0) ? 'sm-an' : 'sm-aus' ?>"><?= $mt_feld($mt_g, 'erreichbar', 0) ? mt_e(mt_t('ALLG.JA')) : mt_e(mt_t('ALLG.NEIN')) ?></td>
+    <td><?= mt_e(mt_zuletzt_text($mt_feld($mt_g, 'zuletzt', 0))) ?></td>
+    <td><?= $mt_leer_knopf($mt_nr) ?></td></tr>
+<?php } ?>
+<?php foreach ($mt_entfernt as $mt_enr => $mt_eknoten) { ?>
+<tr><td><?= (int) $mt_enr ?></td><td><i><?= mt_e(mt_t('EINST.GERAET_ENTFERNT')) ?></i></td>
+    <td><?= (int) $mt_eknoten ?></td>
+    <td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
+    <td><?= mt_e(mt_zuletzt_text(isset($mt_zuletzt[(string) $mt_eknoten]) ? $mt_zuletzt[(string) $mt_eknoten] : 0)) ?></td>
+    <td><?= $mt_leer_knopf($mt_enr) ?></td></tr>
 <?php } ?>
 </table>
+</div>
 <?php } ?>
 
 <h2><?= mt_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= mt_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= mt_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* X-3 (Verbesserungsbau 30.09.2026): dieselbe Pruefung wie das
+   Zurueckspielen (mt_sicherung_altwerte()); nur Namen, nie Werte. */
+$mt_sich_alt = mt_sicherung_altwerte($mt_cfg);
+if ($mt_sich_alt) { ?>
+<div class="sm-warnung"><?= sprintf(mt_t('EINST.SICH_ALTWERT'), mt_e(implode(', ', $mt_sich_alt))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1088,19 +1227,22 @@ $mt_feld = function ($g, $name, $leer = '') {
   <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="netz_speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
+<?php if (mt_eingaben_aktiv('netz_speichern')) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('ANLERN.EINGABEN_ZURUECK')) ?></div>
+<?php } ?>
 <div class="sm-feld">
   <label for="wlan_ssid"><?= mt_e(mt_t('ANLERN.L_SSID')) ?></label>
-  <input data-role="none" type="text" id="wlan_ssid" name="wlan_ssid" value="<?= mt_e($mt_cfg['wlan_ssid']) ?>">
+  <input data-role="none" type="text" id="wlan_ssid" name="wlan_ssid" value="<?= mt_e(mt_eingabe('netz_speichern', 'wlan_ssid', $mt_cfg['wlan_ssid'])) ?>"<?= mt_markierung('netz_speichern', 'wlan_ssid') ?>>
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_SSID') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wlan_passwort"><?= mt_e(mt_t('ANLERN.L_WLANPW')) ?></label>
-  <input data-role="none" type="password" id="wlan_passwort" name="wlan_passwort" value=""
+  <input data-role="none" type="password" id="wlan_passwort" name="wlan_passwort" value=""<?= mt_markierung('netz_speichern', 'wlan_passwort') ?>
          placeholder="<?= $mt_cfg['wlan_passwort'] !== '' ? mt_e(mt_t('ANLERN.PW_GESETZT')) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
 </div>
 <div class="sm-feld">
   <label for="thread_dataset"><?= mt_e(mt_t('ANLERN.L_THREAD')) ?></label>
-  <input data-role="none" type="text" id="thread_dataset" name="thread_dataset" value="<?= mt_e($mt_cfg['thread_dataset']) ?>">
+  <input data-role="none" type="text" id="thread_dataset" name="thread_dataset" value="<?= mt_e($mt_cfg['thread_dataset']) ?>"<?= mt_markierung('netz_speichern', 'thread_dataset') ?>>
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_THREAD') ?></div>
 </div>
 <div class="sm-knopfreihe">
@@ -1111,10 +1253,13 @@ $mt_feld = function ($g, $name, $leer = '') {
   <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="br_holen" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
+<?php if (mt_eingaben_aktiv('br_holen')) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('ANLERN.EINGABEN_ZURUECK_BR')) ?></div>
+<?php } ?>
 <div class="sm-feld">
   <label for="thread_br"><?= mt_e(mt_t('ANLERN.L_BR')) ?></label>
   <input data-role="none" type="text" id="thread_br" name="thread_br"
-         value="<?= mt_e($mt_cfg['thread_br']) ?>" placeholder="border-router:8081">
+         value="<?= mt_e(mt_eingabe('br_holen', 'thread_br', $mt_cfg['thread_br'])) ?>"<?= mt_markierung('br_holen', 'thread_br') ?> placeholder="border-router:8081">
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_BR') ?></div>
 </div>
 <div class="sm-knopfreihe">
@@ -1196,27 +1341,37 @@ $mt_feld = function ($g, $name, $leer = '') {
   <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<?php if (mt_eingaben_aktiv('save_mqtt')) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('EINST.EINGABEN_ZURUECK')) ?></div>
+<?php } ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($mt_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty(mt_eingabe('save_mqtt', 'mqtt_ein', $mt_cfg['mqtt_ein'])) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('EINST.L_MQTT_EIN')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label for="mqtt_topic"><?= mt_e(mt_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= mt_e($mt_cfg['mqtt_topic']) ?>" placeholder="matter">
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= mt_e(mt_eingabe('save_mqtt', 'mqtt_topic', $mt_cfg['mqtt_topic'])) ?>"<?= mt_markierung('save_mqtt', 'mqtt_topic') ?> placeholder="matter">
 </div>
 <div class="sm-feld">
   <label for="mqtt_nur"><?= mt_e(mt_t('EINST.L_MQTT_NUR')) ?></label>
-  <input data-role="none" type="text" id="mqtt_nur" name="mqtt_nur" value="<?= mt_e($mt_cfg['mqtt_nur']) ?>" placeholder="1,3,7">
+  <input data-role="none" type="text" id="mqtt_nur" name="mqtt_nur" value="<?= mt_e(mt_eingabe('save_mqtt', 'mqtt_nur', $mt_cfg['mqtt_nur'])) ?>"<?= mt_markierung('save_mqtt', 'mqtt_nur') ?> placeholder="1,3,7">
   <div class="sm-hilfe"><?= mt_t('EINST.H_MQTT_NUR') ?></div>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="roh_ein" value="1" <?= !empty($mt_cfg['roh_ein']) ? 'checked' : '' ?>>
+    <input data-role="none" type="checkbox" name="roh_ein" value="1" <?= !empty(mt_eingabe('save_mqtt', 'roh_ein', $mt_cfg['roh_ein'])) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('EINST.L_ROH_EIN')) ?>
   </label>
   <div class="sm-hilfe"><?= mt_t('EINST.H_ROH_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="tuer_haus" value="1" <?= !empty(mt_eingabe('save_mqtt', 'tuer_haus', $mt_cfg['tuer_haus'])) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('EINST.L_TUER_HAUS')) ?>
+  </label>
+  <div class="sm-hilfe"><?= mt_t('EINST.H_TUER_HAUS') ?></div>
 </div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
@@ -1270,7 +1425,14 @@ foreach (mt_themen_fest() as $mt_ft => $mt_fi) { ?>
 <?php } ?>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/&lt;Endpunkt&gt;/&lt;Thema&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/roh/&lt;Pfad&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
+<?php /* Tuer-1: ein eigener Baum, unabhaengig vom Praefix - nur mit dem Haken
+   "Tueren und Schloesser zusaetzlich unter dem Haus-Thema melden". */ ?>
+<tr><td><span class="sm-mono">haus/tuer/&lt;Name&gt;/offen</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_JA')) ?></td><td><?= mt_t('MQTT.B_TUER_OFFEN') ?></td></tr>
+<tr><td><span class="sm-mono">haus/tuer/&lt;Name&gt;/verriegelt</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_JA')) ?></td><td><?= mt_t('MQTT.B_TUER_VERRIEGELT') ?></td></tr>
 </table>
+<?php $mt_hausliste = mt_haus_gemerkt(); ?>
+<p class="sm-hilfe"><?= mt_t('MQTT.HAUS_ERKLAERUNG') ?>
+<?php if ($mt_hausliste) { ?><br><?= mt_e(mt_t('MQTT.HAUS_GEMERKT')) ?> <span class="sm-mono"><?= mt_e(implode(', ', array_keys($mt_hausliste))) ?></span><?php } ?></p>
 
 <h2><?= mt_e(mt_t('MQTT.H_UEBERSETZUNG')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('MQTT.UEBERSETZUNG_ERKLAERUNG') ?></p>

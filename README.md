@@ -10,6 +10,34 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.32
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an Attrappen
+für Matter-Server, Broker, Gateway und Docker unter PHP 7.4, 8.3 und 8.5; nicht
+am Gerät.
+
+* **Container-Knöpfe nur für den eigenen Container:** Starten, Anhalten, Neu
+  starten, Entfernen und Aktualisieren prüfen – wie die Deinstallation –, ob es
+  der Container dieses Plugins ist (Label oder Altbestand mit
+  Matter-Server-Abbild). Sonst steht der Befehl zum Abtippen da, und nichts
+  wird angefasst.
+* **Schlossbremse:** Sperren/Entsperren über den Endpunkt – derselbe Befehl für
+  dasselbe Schloss innerhalb von 60 s wird nicht erneut gesendet
+  (`UNVERAENDERT=1`), ein anderer innerhalb von 10 s mit HTTP 429 abgewiesen.
+  Licht, Dimmen und alle übrigen Befehle bleiben ungebremst.
+* Reiter Geräte: je Gerät „zuletzt gesehen“, entfernte Gerätenummern bleiben
+  sichtbar, und ein Knopf „Themen dieses Geräts abräumen“ (mit Häkchen, liest
+  beim Broker nach).
+* **Neu, ab Werk aus:** Türen und Schlösser zusätzlich als Haus-Themen
+  `haus/tuer/<name>/offen` und `…/verriegelt` (0/1, zurückbehalten) für
+  Funkwacht und Beschattungswächter. Abschalten und Deinstallation räumen sie
+  ab. Die Namensregel steht in der README und in Regeln/07 des Hauses.
+* Nach einer Beanstandung stehen die eingetippten Werte wieder im Formular;
+  WLAN-Passwort und Thread-Dataset nie.
+* „Einstellungen sichern“ warnt bei Werten, die das Zurückspielen nicht
+  bestünden. Sicherungen aus 0.9.31 werden weiter angenommen.
+
 ## Neu in 0.9.31
 
 Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
@@ -992,9 +1020,49 @@ Matter-Spezifikation:
 Unbekannte Attribute lassen sich auf Wunsch roh mitveröffentlichen; verloren
 geht nichts.
 
+## Türen und Schlösser unter dem Haus-Thema (`haus/tuer/`)
+
+Einstellung im Reiter *MQTT*: **„Türen und Schlösser zusätzlich unter dem
+Haus-Thema melden“**, ab Werk aus. Sie braucht „Werte per MQTT veröffentlichen“.
+Angehakt sendet der Dienst zusätzlich zu den Themen unter dem Präfix:
+
+| Thema | Wert | zurückbehalten | Quelle |
+|---|---|---|---|
+| `haus/tuer/<name>/offen` | 1 offen, 0 zu, `-` ohne Aussage | ja | BooleanState (`kontakt`) an einem Endpunkt vom Gerätetyp Kontaktsensor (21); offen = 1 − Kontakt, denn Matter meldet `true` für „Kontakt geschlossen“ |
+| `haus/tuer/<name>/verriegelt` | 1 verriegelt, 0 nicht, `-` ohne Aussage | ja | DoorLock `LockState` (`schloss`): 1 → 1; 0, 2, 3 → 0 |
+
+Das ist die **Hausvereinbarung** für Funkwacht und Beschattungswächter: sie
+lesen Türen in dieser Form, gleich von welchem Plugin.
+
+* `<name>` ist die Gerätebezeichnung (NodeLabel, sonst Produkt), klein
+  geschrieben, Umlaute als `ae`/`oe`/`ue`/`ss`, jedes andere Zeichen außer
+  `a-z 0-9 _ -` als `_`, höchstens 40 Zeichen: „Haustür“ → `haustuer`. So
+  bleibt `<name>` eine Themenebene, und das MQTT-Gateway macht daraus
+  `haus_tuer_haustuer_offen`.
+* Trägt ein Gerät mehrere Kontakte oder Schlösser, heißt jedes
+  `<name>_<endpunkt>`. Tragen zwei Geräte denselben Namen, bekommt das mit
+  der höheren Gerätenummer `_<gerätenummer>` angehängt.
+* Wasser- und Regenmelder (ebenfalls BooleanState) gehen nicht unter
+  `haus/tuer/`.
+* Fällt ein Wert weg oder wird ein Gerät entfernt, geht einmal `-` hinaus
+  (Entscheidung 5). Schweigt ein Gerät nur, bleibt der Zustand stehen.
+* Abhaken räumt jedes je dort gesendete Thema ab und liest beim Broker nach;
+  die Liste steht in `config/plugins/matter2lox.haus_themen.json`. Die
+  Deinstallation räumt sie ebenso ab. Andere Themen unter `haus/` fasst das
+  Plugin nie an.
+* Der Reiter *Test* sagt, ob die Einstellung an ist und welche Themen
+  hinausgingen.
+
 ## Endpunkte für Loxone
 
 Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
+
+**Schlossbremse:** `sperren` und `entsperren` sind je Gerät gebremst. Derselbe
+Schlossbefehl innerhalb von 60 s geht nicht erneut hinaus
+(`SET;OK=1;AKTION=…;UNVERAENDERT=1`), ein anderer innerhalb von 10 s wird mit
+HTTP 429 abgewiesen (`GRUND=BREMSE;WARTEN_S=n`). Lässt sich der Merker nicht
+öffnen, antwortet der Endpunkt 503 (`GRUND=BREMSE_MERKER`) und sendet nichts.
+Licht, Dimmen und alle übrigen Befehle sind nicht gebremst.
 
 Jedes Gerät ist auf zwei Wegen ansprechbar: über `&geraet=N`, die Gerätenummer
 des Plugins, oder über `&knoten=M`, die Knotennummer des Matter-Servers. Die

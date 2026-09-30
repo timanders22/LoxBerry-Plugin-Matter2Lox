@@ -490,9 +490,72 @@ if (in_array($mt_aktion, array('helligkeit', 'farbtemperatur', 'rollo',
     }
 }
 
+/* ---------------- Schlossbremse (Nachtrag Verbesserungsbau 30.09.2026) ----------------
+ *
+ * ENTSCHEIDUNGEN Nr. 15: eine Befehlsbremse wie EVCC 0.9.34, aber NUR fuer
+ * sperren und entsperren - eine Tuer soll ein flatternder Loxone-Ausgang
+ * nicht im Sekundentakt auf- und zusperren. Licht, Dimmen und alle anderen
+ * Befehle bleiben ungebremst (Dimmen schickt mehrere Werte je Sekunde).
+ * Je Geraet (Knoten und Endpunkt):
+ *   - derselbe Schlossbefehl innerhalb von 60 s geht nicht erneut hinaus
+ *     (200, UNVERAENDERT=1);
+ *   - ein anderer Schlossbefehl hoechstens alle 10 s (429, GRUND=BREMSE,
+ *     WARTEN_S);
+ *   - ist der Merker nicht zu oeffnen oder zu sperren, faellt die Bremse
+ *     geschlossen aus: 503, GRUND=BREMSE_MERKER - es wird nichts gesendet.
+ * Gemerkt wird erst, was die Warteschlange angenommen hat. Die Sperre bleibt
+ * bis zum Ende des Befehls gehalten; zwei gleichzeitige Schlossbefehle laufen
+ * nacheinander. */
+$mt_bfh = null;
+if ($mt_aktion === 'sperren' || $mt_aktion === 'entsperren') {
+    $mt_bremse = mt_paths()['datadir'] . '/schlossbremse.json';
+    $mt_bfh = @fopen($mt_bremse, 'c+');
+    if ($mt_bfh === false || !@flock($mt_bfh, LOCK_EX)) {
+        mt_log_gebremst('schlossbremse', 'Die Merkerdatei der Schlossbremse (' . $mt_bremse . ') laesst '
+            . 'sich nicht oeffnen oder sperren - Schlossbefehle werden mit 503 abgewiesen, bis das '
+            . 'behoben ist.');
+        http_response_code(503);
+        echo "SET;OK=0;AKTION=" . $mt_aktion . ";GRUND=BREMSE_MERKER\n";
+        exit;
+    }
+    $mt_bm = json_decode((string) stream_get_contents($mt_bfh), true);
+    if (!is_array($mt_bm)) {
+        $mt_bm = array();
+    }
+    $mt_bschl = (int) $mt_befehl['knoten'] . '|' . (int) $mt_befehl['endpunkt'];
+    if (isset($mt_bm[$mt_bschl]) && is_array($mt_bm[$mt_bschl]) && isset($mt_bm[$mt_bschl]['t'])) {
+        $mt_seit = time() - (int) $mt_bm[$mt_bschl]['t'];
+        if ((string) (isset($mt_bm[$mt_bschl]['w']) ? $mt_bm[$mt_bschl]['w'] : '') === $mt_aktion
+                && $mt_seit >= 0 && $mt_seit < 60) {
+            printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1\n", $mt_aktion);
+            exit;
+        }
+        if ($mt_seit >= 0 && $mt_seit < 10) {
+            http_response_code(429);
+            printf("SET;OK=0;AKTION=%s;GRUND=BREMSE;WARTEN_S=%d\n", $mt_aktion, 10 - $mt_seit);
+            exit;
+        }
+    }
+}
+
 list($mt_erg, $mt_meldung) = mt_befehl_absetzen($mt_befehl);
 if ($mt_erg === 0) {
     http_response_code(500);
+}
+if (is_resource($mt_bfh)) {
+    /* Gemerkt wird, was die Warteschlange angenommen hat (OK=1 oder 2).
+     * Laenge statt "!== false" gegen eine gekuerzte Schreibung (Regeln/03). */
+    if ($mt_erg !== 0) {
+        $mt_bm[$mt_bschl] = array('w' => $mt_aktion, 't' => time());
+        $mt_bjs = (string) json_encode($mt_bm);
+        if (!(ftruncate($mt_bfh, 0) && rewind($mt_bfh)
+              && @fwrite($mt_bfh, $mt_bjs) === strlen($mt_bjs) && fflush($mt_bfh))) {
+            mt_log_gebremst('schlossbremse', 'Die Merkerdatei der Schlossbremse liess sich nicht '
+                . 'schreiben - die Bremse erkennt den letzten Schlossbefehl nicht.');
+        }
+    }
+    flock($mt_bfh, LOCK_UN);
+    fclose($mt_bfh);
 }
 printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $mt_erg, $mt_aktion,
     str_replace(array("\r", "\n", ';'), ' ', $mt_meldung));

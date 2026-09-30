@@ -145,6 +145,9 @@ function mt_paths()
             'einmal'    => $home . '/data/plugins/' . $dir . '/einmalmeldung.json',
             /* M5: jedes je benutzte MQTT-Praefix, NEBEN dem Konfigordner. */
             'praefixe'  => $home . '/config/plugins/' . $dir . '.mqtt_praefixe.json',
+            /* Tuer-1: die je unter haus/tuer/ gesendeten Themen (DATEI_HAUS im
+             * Dienst), NEBEN dem Konfigordner. */
+            'haus'      => $home . '/config/plugins/' . $dir . '.haus_themen.json',
             'tabelle'   => $home . '/templates/plugins/' . $dir . '/matter_cluster.json',
             'archiv'    => '',
         );
@@ -166,6 +169,7 @@ function mt_paths()
             'log'       => $basis . '/log/matter2lox.log',
             'einmal'    => $basis . '/data/einmalmeldung.json',
             'praefixe'  => $basis . '/config/matter2lox.mqtt_praefixe.json',
+            'haus'      => $basis . '/config/matter2lox.haus_themen.json',
             'tabelle'   => $basis . '/templates/matter_cluster.json',
         );
     }
@@ -259,6 +263,9 @@ function mt_vorgaben()
         'herzschlag'        => 60,
         'mqtt_nur'          => '',
         'schloss_ein'       => 0,
+        /* Tuer-1 (Verbesserungsbau 30.09.2026): Tueren und Schloesser
+         * zusaetzlich unter haus/tuer/<name>/... melden. Ab Werk aus. */
+        'tuer_haus'         => 0,
     );
 }
 
@@ -555,6 +562,295 @@ function mt_geraete()
 {
     $l = mt_loxone();
     return isset($l['geraete']) && is_array($l['geraete']) ? $l['geraete'] : array();
+}
+
+/* ==================================================================
+ * Matter2Lox-b1 (Verbesserungsbau 30.09.2026): "zuletzt gesehen" und
+ * "Themen dieses Geraets abraeumen" im Reiter Einstellungen
+ * ================================================================== */
+
+/** Die festen Geraetenummern: Knotennummer => Geraetenummer (Nummerndatei). */
+function mt_nummern()
+{
+    $d = mt_json_lesen(mt_paths()['nummern']);
+    $aus = array();
+    foreach ((isset($d['nummern']) && is_array($d['nummern']) ? $d['nummern'] : array()) as $k => $nr) {
+        if (preg_match('/^[0-9]{1,9}$/', (string) $k) && is_numeric($nr) && (int) $nr > 0) {
+            $aus[(int) $k] = (int) $nr;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Geraetenummern ohne Geraet: die Nummerndatei vergibt eine Nummer nie neu,
+ * auch nicht nach dem Entfernen des Knotens. Unter diesen Nummern stehen im
+ * Broker hoechstens noch "-" (Entscheidung 5) - genau dafuer ist der Knopf
+ * "Themen dieses Geraets abraeumen" da. Rueckgabe: Geraetenummer => Knoten.
+ */
+function mt_geraete_entfernt($geraete)
+{
+    $aus = array();
+    foreach (mt_nummern() as $knoten => $nr) {
+        if (!isset($geraete[(string) $nr])) {
+            $aus[$nr] = $knoten;
+        }
+    }
+    ksort($aus);
+    return $aus;
+}
+
+/** Alle Nummern, fuer die der Knopf gilt: bekannte und entfernte Geraete. */
+function mt_geraetenummern()
+{
+    $geraete = mt_geraete();
+    $aus = array();
+    foreach (array_keys($geraete) as $nr) {
+        if (preg_match('/^[1-9][0-9]{0,2}$/', (string) $nr)) {
+            $aus[] = (int) $nr;
+        }
+    }
+    foreach (array_keys(mt_geraete_entfernt($geraete)) as $nr) {
+        if ($nr >= 1 && $nr <= 999) {
+            $aus[] = (int) $nr;
+        }
+    }
+    return array_values(array_unique($aus));
+}
+
+/** "zuletzt gesehen" als Text: Zeit und Abstand, oder der Satz fuer "nie". */
+function mt_zuletzt_text($ts)
+{
+    if (!is_numeric($ts) || (int) $ts <= 0) {
+        return mt_t('EINST.ZULETZT_NIE');
+    }
+    $ab = time() - (int) $ts;
+    if ($ab < 120) {
+        $vor = max(0, $ab) . ' s';
+    } elseif ($ab < 7200) {
+        $vor = (int) floor($ab / 60) . ' min';
+    } elseif ($ab < 172800) {
+        $vor = (int) floor($ab / 3600) . ' h';
+    } else {
+        $vor = (int) floor($ab / 86400) . ' d';
+    }
+    return sprintf(mt_t('EINST.ZULETZT_VOR'), date('Y-m-d H:i', (int) $ts), $vor);
+}
+
+/**
+ * matter_dienst.py mit einem Abraeum-Schalter aufrufen (b1, Tuer-1), als der
+ * Benutzer der Oberflaeche, mit Frist. Der Dienst fragt den Broker selbst
+ * (Zugang aus der general.json; das Kennwort geht nie ueber eine
+ * Befehlszeile) und liest nach. Rueckgabe: array(rc, Zeilen ohne
+ * <OK>/<INFO>/<WARNING>). rc wie praefix_leeren(): 0 geleert oder nicht
+ * nachpruefbar gesendet, 1 es steht noch etwas, 2 nicht moeglich; -1 Aufruf
+ * unmoeglich (Archiv, kein Python, kein Skript).
+ */
+function mt_dienst_leeren($schalter)
+{
+    $p = mt_paths();
+    if ($p['home'] === '') {
+        return array(-1, array(mt_t('EINST.ARCHIV_VERWEIGERT')));
+    }
+    $skript = $p['bindir'] . '/matter_dienst.py';
+    $py = $p['bindir'] . '/venv/bin/python3';
+    if (!is_file($py)) {
+        $gef = array();
+        @exec('command -v python3 2>/dev/null', $gef);
+        $py = isset($gef[0]) ? trim($gef[0]) : '';
+    }
+    if ($py === '' || !is_file($skript)) {
+        return array(-1, array(sprintf(mt_t('EINST.LEEREN_KEIN_PYTHON'), $skript)));
+    }
+    $args = '';
+    foreach ((array) $schalter as $s) {
+        $args .= ' ' . escapeshellarg((string) $s);
+    }
+    $aus = array();
+    $rc = 0;
+    @exec('env PYTHONDONTWRITEBYTECODE=1 LBHOMEDIR=' . escapeshellarg($p['home'])
+          . ' LBPPLUGINDIR=' . escapeshellarg($p['plugin']) . ' timeout -k 5 90 '
+          . escapeshellarg($py) . ' ' . escapeshellarg($skript) . $args . ' < /dev/null 2>&1',
+          $aus, $rc);
+    $zeilen = array();
+    foreach ($aus as $z) {
+        $z = trim(preg_replace('/^<(OK|INFO|WARNING|ERROR)>\s*/', '', (string) $z));
+        if ($z !== '') {
+            $zeilen[] = $z;
+        }
+    }
+    return array((int) $rc, $zeilen);
+}
+
+/** Tuer-1: die je unter haus/tuer/ gesendeten Themen => Geraetenummer. */
+function mt_haus_gemerkt()
+{
+    $d = mt_json_lesen(mt_paths()['haus']);
+    $aus = array();
+    foreach ((isset($d['themen']) && is_array($d['themen']) ? $d['themen'] : array()) as $t => $nr) {
+        if (preg_match('#^haus/tuer/[a-z0-9_\-]{1,60}/(offen|verriegelt)$#', (string) $t)) {
+            $aus[(string) $t] = (int) $nr;
+        }
+    }
+    ksort($aus);
+    return $aus;
+}
+
+/* ==================================================================
+ * X-3 (Verbesserungsbau 30.09.2026): "Einstellungen sichern" warnt, wenn
+ * ein gespeicherter Wert das eigene Zurueckspielen nicht bestuende
+ * ================================================================== */
+
+/** Schluessel, die in einer aelteren Sicherung fehlen duerfen (Tuer-1). */
+function mt_sicherung_neue_schluessel()
+{
+    return array('tuer_haus');
+}
+
+/**
+ * Welche gespeicherten Werte wuerde das Zurueckspielen abweisen? Geprueft
+ * wird mit DERSELBEN Funktion wie dort (mt_wert_pruefen) und gegen dieselbe
+ * Schluesselliste (mt_vorgaben); als Gegenprobe laeuft danach
+ * mt_sicherung_lesen() ueber die ganze Datei - weist sie ab, ohne dass ein
+ * Name gefunden wurde, steht "*" da. Rueckgabe: Liste der NAMEN, nie Werte.
+ */
+function mt_sicherung_altwerte($cfg)
+{
+    $bekannt = mt_vorgaben();
+    $namen = array();
+    foreach ((array) $cfg as $k => $w) {
+        $k = (string) $k;
+        if ($k !== '' && $k[0] === '_') {
+            continue;
+        }
+        if (!array_key_exists($k, $bekannt) || mt_wert_pruefen($k, $w) !== '') {
+            $namen[] = $k;
+        }
+    }
+    if (!$namen) {
+        $erg = mt_sicherung_lesen((string) json_encode($cfg));
+        if ($erg[0] === null) {
+            $namen[] = '*';
+        }
+    }
+    return $namen;
+}
+
+/* ==================================================================
+ * X-2 (Regeln/04, Abschnitt "Nach einer Beanstandung stehen die
+ * eingetippten Werte wieder im Formular", Hausregel seit 30.09.2026)
+ *
+ * Mit der Einmalmeldung (0600, Datenordner, 120 s, beim GET gelesen und
+ * geloescht) reisen die Eingaben des EINEN beanstandeten Formulars - nur
+ * dessen Felder aus der Liste unten, nur nach einer Beanstandung. Nie ein
+ * Geheimnis: WLAN-Passwort und Thread-Dataset (es traegt den Netzschluessel)
+ * stehen als 'geheim' darin, damit sie markiert werden koennen; ihr Wert
+ * reist nie mit, das Feld zeigt den gespeicherten Stand bzw. den Platzhalter.
+ * ================================================================== */
+
+/** Die Felder je Formular (Name des versteckten Feldes), mit ihrer Art. */
+function mt_eingabe_felder()
+{
+    return array(
+        'speichern'      => array('eigener_container' => 'haken', 'server_host' => 'text',
+                                  'server_port' => 'text', 'container_name' => 'text',
+                                  'container_abbild' => 'text', 'bluetooth_adapter' => 'text',
+                                  'wartezeit' => 'text', 'sendetakt' => 'text', 'herzschlag' => 'text',
+                                  'steuerung_ein' => 'haken', 'schloss_ein' => 'haken'),
+        'save_mqtt'      => array('mqtt_ein' => 'haken', 'mqtt_topic' => 'text', 'mqtt_nur' => 'text',
+                                  'roh_ein' => 'haken', 'tuer_haus' => 'haken'),
+        'netz_speichern' => array('wlan_ssid' => 'text', 'wlan_passwort' => 'geheim',
+                                  'thread_dataset' => 'geheim'),
+        'br_holen'       => array('thread_br' => 'text'),
+    );
+}
+
+/** Die Eingaben eines abgewiesenen POST fuer die Einmalmeldung. */
+function mt_eingaben_sammeln($formular, $beanstandet)
+{
+    $liste = mt_eingabe_felder();
+    if (!isset($liste[$formular])) {
+        return array();
+    }
+    $werte = array();
+    foreach ($liste[$formular] as $k => $art) {
+        if ($art === 'geheim') {
+            continue;                       // nie mitnehmen
+        }
+        if ($art === 'haken') {
+            $werte[$k] = isset($_POST[$k]) ? 1 : 0;
+        } else {
+            $werte[$k] = (isset($_POST[$k]) && is_string($_POST[$k])) ? substr($_POST[$k], 0, 1000) : '';
+        }
+    }
+    $felder = array();
+    foreach ((array) $beanstandet as $k) {
+        if (is_string($k) && isset($liste[$formular][$k]) && !in_array($k, $felder, true)) {
+            $felder[] = $k;
+        }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'felder' => $felder);
+}
+
+/** Die Eingaben aus der Einmalmeldung - nur, was die Liste kennt. */
+function mt_eingaben_pruefen($e)
+{
+    $liste = mt_eingabe_felder();
+    if (!is_array($e) || !isset($e['formular']) || !is_string($e['formular'])
+        || !isset($liste[$e['formular']])) {
+        return array();
+    }
+    $f = $e['formular'];
+    $werte = array();
+    if (isset($e['werte']) && is_array($e['werte'])) {
+        foreach ($liste[$f] as $k => $art) {
+            if ($art === 'geheim' || !array_key_exists($k, $e['werte'])) {
+                continue;
+            }
+            $w = $e['werte'][$k];
+            if ($art === 'haken') {
+                $werte[$k] = empty($w) ? 0 : 1;
+            } elseif (is_string($w)) {
+                $werte[$k] = $w;
+            }
+        }
+    }
+    $felder = array();
+    if (isset($e['felder']) && is_array($e['felder'])) {
+        foreach ($e['felder'] as $k) {
+            if (is_string($k) && isset($liste[$f][$k])) {
+                $felder[] = $k;
+            }
+        }
+    }
+    return array('formular' => $f, 'werte' => $werte, 'felder' => $felder);
+}
+
+/** Traegt die Seite gerade die Eingaben dieses Formulars? */
+function mt_eingaben_aktiv($formular)
+{
+    $e = isset($GLOBALS['mt_eingaben']) ? $GLOBALS['mt_eingaben'] : array();
+    return is_array($e) && isset($e['formular']) && $e['formular'] === $formular;
+}
+
+/** Der anzuzeigende Wert: die Eingabe nach einer Beanstandung, sonst der gespeicherte. */
+function mt_eingabe($formular, $feld, $gespeichert)
+{
+    if (!mt_eingaben_aktiv($formular)) {
+        return $gespeichert;
+    }
+    $w = $GLOBALS['mt_eingaben']['werte'];
+    return array_key_exists($feld, $w) ? $w[$feld] : $gespeichert;
+}
+
+/** Markierung eines beanstandeten Feldes (Klasse und aria-invalid). */
+function mt_markierung($formular, $feld)
+{
+    if (!mt_eingaben_aktiv($formular)) {
+        return '';
+    }
+    return in_array($feld, $GLOBALS['mt_eingaben']['felder'], true)
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 }
 
 function mt_serverinfo()
@@ -1392,16 +1688,69 @@ function mt_container($was)
             }
             return mt_docker(mt_container_befehl($cfg));
         case 'start':
-            return mt_docker('start ' . escapeshellarg($name));
         case 'stop':
-            return mt_docker('stop ' . escapeshellarg($name));
         case 'restart':
-            return mt_docker('restart ' . escapeshellarg($name));
         case 'entfernen':
+            /* Matter2Lox-a1 (Verbesserungsbau 30.09.2026): nur der EIGENE
+             * Container - dieselbe Pruefung wie die Deinstallation
+             * (bin/container_eigen.sh). Bis 0.9.32 starteten, hielten diese
+             * vier Knoepfe jeden Container mit dem eingestellten Namen an,
+             * starteten ihn neu oder entfernten ihn - auch einen eigenen
+             * Matter-Server des Anwenders bei eigener_container=0. "Starten"
+             * seit dem Nachtrag (ENTSCHEIDUNGEN Nr. 15): sonst startete der
+             * Knopf einen fremden, bewusst angehaltenen Container. Nicht zu
+             * klaeren heisst: nichts anfassen, den Befehl zum Abtippen nennen. */
+            list($eigen, $grund) = mt_container_eigen($cfg);
+            if ($eigen === 2) {
+                return array(0, sprintf(mt_t('EINST.CONTAINER_KEINER'), $name));
+            }
+            if ($eigen !== 1) {
+                $hand = $was === 'entfernen' ? 'rm -f' : $was;
+                return array(0, sprintf(mt_t('EINST.CONTAINER_NICHT_EIGEN'), $name, $grund,
+                                        'docker ' . $hand . ' ' . $name));
+            }
+            if ($was === 'start') {
+                return mt_docker('start ' . escapeshellarg($name));
+            }
+            if ($was === 'stop') {
+                return mt_docker('stop ' . escapeshellarg($name));
+            }
+            if ($was === 'restart') {
+                return mt_docker('restart ' . escapeshellarg($name));
+            }
             // Nur der Container, NIE der Datenordner: darin liegt die Fabric.
             return mt_docker('rm -f ' . escapeshellarg($name));
     }
     return array(0, 'Unbekannter Containerbefehl.');
+}
+
+/**
+ * Ist der Container mit dem eingestellten Namen der eigene? (Matter2Lox-a1)
+ *
+ * Gefragt wird bin/container_eigen.sh - dieselbe Datei, die uninstall/uninstall
+ * vor dem Entfernen fragt. Rueckgabe: array(Stand, Satz). Stand 1 eigen,
+ * 0 fremd, 2 kein Container dieses Namens, -1 nicht zu klaeren (kein Docker,
+ * keine Antwort, Pruefdatei fehlt). Nur 1 erlaubt anhalten, neu starten und
+ * entfernen; alles andere faellt geschlossen aus.
+ */
+function mt_container_eigen($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $p = mt_paths();
+    $skript = $p['bindir'] . '/container_eigen.sh';
+    if (!is_file($skript)) {
+        return array(-1, sprintf(mt_t('EINST.CONTAINER_PRUEFUNG_FEHLT'), $skript));
+    }
+    $eigen = (int) (isset($cfg['eigener_container']) && (string) $cfg['eigener_container'] === '1');
+    $aus = array();
+    $rc = 0;
+    @exec('timeout -k 5 100 bash ' . escapeshellarg($skript) . ' ' . escapeshellarg($p['plugin'])
+          . ' ' . escapeshellarg(mt_container_name($cfg)) . ' ' . $eigen . ' 2>&1', $aus, $rc);
+    $satz = trim(implode(' ', $aus));
+    $stand = array(0 => 1, 1 => 0, 2 => 2);
+    return array(isset($stand[$rc]) ? $stand[$rc] : -1, $satz !== '' ? $satz : 'Rueckgabe ' . (int) $rc);
 }
 
 /**
@@ -1461,6 +1810,14 @@ function mt_container_aktualisieren()
     $vorher = mt_container_fassung($cfg);
     if ($vorher['container'] === '') {
         return array(0, mt_t('EINST.M_AKT_KEIN_CONTAINER'));
+    }
+    /* Matter2Lox-a1: aktualisieren heisst entfernen und neu anlegen - nur
+     * beim eigenen Container, und gefragt wird VOR dem Abbildholen. */
+    list($eigen, $grund) = mt_container_eigen($cfg);
+    if ($eigen !== 1) {
+        $n = mt_container_name($cfg);
+        return array(0, mt_e(sprintf(mt_t('EINST.CONTAINER_NICHT_EIGEN'), $n, $grund,
+                                     'docker rm -f ' . $n)));
     }
     list($ok, $aus) = mt_container('holen');
     if (!$ok) {
@@ -2244,7 +2601,14 @@ function mt_sicherung_lesen($roh)
      * dann auch noch ueber die Zweitschrift geschrieben. Der Kommentar oben
      * verspricht "eine halb gueltige Datei ueberschreibt GAR NICHTS" - das
      * gilt jetzt auch fuer die unvollstaendige. */
-    $fehlend = array_diff($bekannt, array_keys($daten));
+    /* Tuer-1 (Verbesserungsbau 30.09.2026): ein Schluessel, den eine
+     * spaetere Fassung dazugebracht hat, darf in einer aelteren Sicherung
+     * fehlen - er behaelt seine Vorgabe (ab Werk aus), und der Hinweis sagt
+     * es. Sonst waere jede Sicherung bis 0.9.32 abgewiesen worden. Fuer alle
+     * anderen gilt weiter: ein fehlender Schluessel ist ein Mangel. */
+    $neu_fehlt = array_values(array_intersect(mt_sicherung_neue_schluessel(),
+                                              array_diff($bekannt, array_keys($daten))));
+    $fehlend = array_diff($bekannt, array_keys($daten), mt_sicherung_neue_schluessel());
     if ($fehlend) {
         $mangel[] = sprintf(mt_t('EINST.SICH_FEHLT'),
                              htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
@@ -2259,6 +2623,9 @@ function mt_sicherung_lesen($roh)
      * Token bleibt, und der vierte Rueckgabewert sagt es. Ein Token leeren
      * laesst sich nur bewusst, nicht nebenbei ueber eine Datei. */
     $hinweise = array();
+    if (!$mangel && $neu_fehlt) {
+        $hinweise[] = sprintf(mt_t('EINST.SICH_NEU_VORGABE'), implode(', ', $neu_fehlt));
+    }
     if (!$mangel && trim((string) $neu['aktionstoken']) === '') {
         $jetzt = mt_config(false);
         $neu['aktionstoken'] = is_scalar($jetzt['aktionstoken']) ? (string) $jetzt['aktionstoken'] : '';
@@ -2296,7 +2663,8 @@ function mt_zahlgrenzen()
 /** Die Haken der Konfiguration - dieselbe Liste wie HAKEN im Dienst. */
 function mt_haken()
 {
-    return array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein');
+    return array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein',
+                 'tuer_haus');
 }
 
 function mt_wert_pruefen($schluessel, $wert)

@@ -468,6 +468,29 @@ function mt_pruef_vorgaben()
     return array(1, sprintf(mt_t('TEST.A_VORGABEN_OK'), count($ober)));
 }
 
+/**
+ * Tuer-1 (Verbesserungsbau 30.09.2026): meldet das Plugin Tueren und
+ * Schloesser unter haus/tuer/? Gelesen wird die Merkdatei des Dienstes
+ * (config/plugins/<ordner>.haus_themen.json) - sie nennt jedes Thema, das je
+ * hinausging und noch nicht als leer bestaetigt ist. Aus ist eine
+ * Entscheidung (grau); aus, aber noch gemerkte Themen, ist rot - dort steht
+ * noch etwas im Broker, was Funkwacht oder Beschattungswaechter lesen.
+ */
+function mt_pruef_tuer($cfg)
+{
+    $haus = mt_haus_gemerkt();
+    $liste = mt_e(implode(', ', array_keys($haus)));
+    if (empty($cfg['tuer_haus'])) {
+        return $haus ? array(0, sprintf(mt_t('TEST.A_TUER_REST'), count($haus), $liste))
+                     : array(-1, mt_t('TEST.A_TUER_AUS'));
+    }
+    if (empty($cfg['mqtt_ein'])) {
+        return array(0, mt_t('TEST.A_TUER_MQTT_AUS'));
+    }
+    return $haus ? array(1, sprintf(mt_t('TEST.A_TUER_AN'), count($haus), $liste))
+                 : array(-1, mt_t('TEST.A_TUER_KEINE'));
+}
+
 function mt_pruefungen()
 {
     $cfg = mt_config();
@@ -606,6 +629,8 @@ function mt_pruefungen()
     $mqttEin = !empty($cfg['mqtt_ein']);
     $zeilen[] = mt_pruefzeile($mqttEin ? 1 : -1, mt_t('TEST.F_MQTT_EIN'),
         mt_t($mqttEin ? 'TEST.A_MQTT_EIN_JA' : 'TEST.A_MQTT_EIN_NEIN'));
+    $tu = mt_pruef_tuer($cfg);
+    $zeilen[] = mt_pruefzeile($tu[0], mt_t('TEST.F_TUER'), $tu[1]);
 
     $m = mt_mqtt_zustand();
     if (!$m['gefunden']) {

@@ -30,7 +30,8 @@
 #      bis 0.9.28 blieben sie nach dem Deinstallieren stehen und kamen nach
 #      jedem Neustart von Broker oder Gateway wieder am Miniserver an (in
 #      WSL gemessen 25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall U1).
-#      Schritt "MQTT" unten leert sie.
+#      Schritt "MQTT" unten leert sie - seit dem Verbesserungsbau vom
+#      30.09.2026 auch die Themen unter haus/tuer/ (Einstellung tuer_haus).
 #
 # ZUR PROZESSSUCHE: "pkill -f matter_dienst.py" waere unsauber - das
 # Muster traefe auch einen Editor, in dem die Datei offen ist. Verglichen
@@ -223,23 +224,20 @@ case "$NAME" in
 esac
 
 if [ -n "$NAME" ]; then
-    if command -v docker >/dev/null 2>&1; then
-        if timeout 30 docker inspect --type container -- "$NAME" >/dev/null 2>&1; then
-            LABEL=$(timeout 30 docker inspect --type container -f '{{index .Config.Labels "de.loxberry.plugin.folder"}}' -- "$NAME" 2>/dev/null)
-            [ "$LABEL" = "<no value>" ] && LABEL=""
-            ABBILD=$(timeout 30 docker inspect --type container -f '{{.Config.Image}}' -- "$NAME" 2>/dev/null)
-            GRUND=""
-            if [ "$EIGEN" = "0" ]; then
-                GRUND=""
-            elif [ "$LABEL" = "$PDIR" ]; then
-                GRUND="Label de.loxberry.plugin.folder=$PDIR"
-            elif [ "$EIGEN" = "1" ] && [ -z "$LABEL" ]; then
-                case "$ABBILD" in
-                    *python-matter-server*|*matterjs-server*)
-                        GRUND="Altbestand ohne Label, eigener Container, Abbild $ABBILD" ;;
-                esac
-            fi
-            if [ -n "$GRUND" ]; then
+    # Matter2Lox-a1 (Verbesserungsbau 30.09.2026): die Pruefung steht in
+    # bin/container_eigen.sh - dieselbe Datei fragen die Container-Knoepfe der
+    # Oberflaeche (mt_container_eigen() in mt_lib.php). Rueckgabe 0 eigen,
+    # 1 fremd, 2 keiner dieses Namens, 3 nicht zu klaeren. Fehlt die Datei
+    # oder ist nichts zu klaeren, wird NICHTS angefasst.
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "<INFO> Docker ist nicht installiert - es gibt keinen Container zu entfernen."
+    elif [ ! -f "$PBIN/container_eigen.sh" ]; then
+        echo "<WARNING> $PBIN/container_eigen.sh fehlt - der Container '$NAME' wird NICHT angefasst. Gehoert er zu diesem Plugin, von Hand: docker rm -f $NAME"
+    else
+        GRUND=$(bash "$PBIN/container_eigen.sh" "$PDIR" "$NAME" "$EIGEN" 2>&1)
+        ERC=$?
+        case "$ERC" in
+            0)
                 timeout 60 docker rm -f -- "$NAME" >/dev/null 2>&1
                 # Die Wirkung nachsehen, nicht dem Rueckgabewert glauben.
                 if timeout 30 docker inspect --type container -- "$NAME" >/dev/null 2>&1; then
@@ -249,19 +247,18 @@ if [ -n "$NAME" ]; then
                 fi
                 echo "<INFO> Das Abbild bleibt liegen - es kann von anderen Containern"
                 echo "<INFO> genutzt werden. Zum Aufraeumen: docker image prune"
-            else
-                if [ "$EIGEN" = "0" ]; then
-                    echo "<INFO> Der Container '$NAME' wird NICHT angefasst: in den Einstellungen steht, dass das Plugin keinen eigenen Matter-Server betreibt (eigener_container=0)."
-                else
-                    echo "<INFO> Der Container '$NAME' wird NICHT angefasst: er traegt nicht das Label de.loxberry.plugin.folder=$PDIR und ist kein Altbestand dieses Plugins (Label '${LABEL:-keines}', Abbild '${ABBILD:-unbekannt}')."
-                fi
+                ;;
+            2)
+                echo "<INFO> Kein Container namens '$NAME' vorhanden."
+                ;;
+            1)
+                echo "<INFO> Der Container '$NAME' wird NICHT angefasst: $GRUND."
                 echo "<INFO> Gehoert er doch zu diesem Plugin, von Hand: docker rm -f $NAME"
-            fi
-        else
-            echo "<INFO> Kein Container namens '$NAME' vorhanden."
-        fi
-    else
-        echo "<INFO> Docker ist nicht installiert - es gibt keinen Container zu entfernen."
+                ;;
+            *)
+                echo "<WARNING> Ob der Container '$NAME' zu diesem Plugin gehoert, liess sich nicht klaeren ($GRUND) - er wird NICHT angefasst. Gehoert er dazu, von Hand: docker rm -f $NAME"
+                ;;
+        esac
     fi
 fi
 
@@ -325,6 +322,9 @@ rm -f "$LIEFMARKE" "$UPGRADEMARKE" 2>/dev/null
 # M5 (Durchgang 30.09.2026): die Liste der je benutzten MQTT-Praefixe. Der
 # Schritt "MQTT" oben hat unter jedem davon abgeraeumt; danach geht sie.
 rm -f "$BASE/config/plugins/$PDIR.mqtt_praefixe.json" 2>/dev/null
+# Tuer-1 (Verbesserungsbau 30.09.2026): die Liste der je unter haus/tuer/
+# gesendeten Themen. Der Schritt "MQTT" oben hat sie abgeraeumt (--mqtt-leeren).
+rm -f "$BASE/config/plugins/$PDIR.haus_themen.json" 2>/dev/null
 # Der alte Ort bis 0.9.16 - liegt im Datenordner und geht mit ihm.
 [ -d "$PDATA/matter" ] && echo "<INFO> Ein alter Fabric-Ordner ($PDATA/matter) geht mit dem Datenordner."
 exit 0
