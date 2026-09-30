@@ -10,6 +10,14 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.31
+
+Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
+noch unter PHP 7 aufgerufen. Ab PHP 8.0 wirkt der Aufruf nicht mehr, und
+PHP 8.5 meldet ihn zur Laufzeit als veraltet. Bei eingeschalteter
+Fehleranzeige konnte diese Meldung vor einer Antwort an Loxone landen. Am
+LoxBerry mit PHP 7.4 ändert sich nichts.
+
 ## Neu in 0.9.30
 
 Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).

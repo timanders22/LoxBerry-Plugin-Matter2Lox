@@ -1609,7 +1609,7 @@ function mt_selbsttest_endpunkt($hoechstalter = 120)
         $body = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $netzfehler = (string) curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } else {
         $ctx = stream_context_create(array('http' => array(
             'method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
@@ -1711,7 +1711,7 @@ function mt_thread_dataset_holen($adresse)
         $body = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $netzfehler = (string) curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } else {
         $ctx = stream_context_create(array('http' => array(
             'method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
