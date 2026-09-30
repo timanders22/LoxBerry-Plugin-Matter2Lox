@@ -110,6 +110,13 @@ $mt_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  *
  * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
  * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ *
+ * Seit 0.9.30 (O1, Regeln/04) endet JEDER POST mit einer Umleitung 303 auf
+ * index.php?form=<reiter>; Meldungen reisen als Einmalmeldung
+ * (mt_einmal_schreiben()). Bis 0.9.30 antwortete jeder POST mit 200, und F5
+ * wiederholte Speichern, Token neu, Container entfernen, Schloss sperren und
+ * jeden anderen Knopf (Bericht oberflaeche Nr. 1 und 2, Bauart D).
+ * Ausgenommen sind nur die Downloads: sie liefern ihre Datei unmittelbar.
  * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($mt_post && isset($_POST['vorlage'])) {
@@ -169,13 +176,24 @@ if ($mt_post && isset($_POST['fabric_sichern'])) {
     } elseif (!mt_tar_da()) {
         $mt_fehler[] = mt_t('EINST.M_FABRIC_KEIN_TAR');
     } else {
-        $mt_dname = 'matter-fabric-' . date('Y-m-d_H-i') . '.tar.gz';
-        header('Content-Type: application/x-download');
-        header('Content-Disposition: attachment; filename="' . $mt_dname . '"');
-        /* Aus dem Ordner heraus packen, nicht den Pfad mitpacken: sonst
-         * traegt das Archiv den absoluten Pfad des Rechners in sich. */
-        passthru('tar -czf - -C ' . escapeshellarg($mt_quelle) . ' .');
-        exit;
+        /* O5 (Durchgang 30.09.2026): erst packen, den Rueckgabewert von tar
+         * pruefen, dann ausliefern (mt_fabric_packen()). Bis 0.9.30 gingen
+         * die Kopfzeilen vor dem Packen hinaus - eine unlesbare Datei ergab
+         * ein unvollstaendiges Archiv mit HTTP 200 und ohne Meldung. Aus dem
+         * Ordner heraus gepackt, nicht mit Pfad: sonst traegt das Archiv den
+         * absoluten Pfad des Rechners in sich. */
+        list($mt_fok, $mt_fwas, $mt_fzahl) = mt_fabric_packen();
+        if ($mt_fok) {
+            $mt_dname = 'matter-fabric-' . date('Y-m-d_H-i') . '.tar.gz';
+            header('Content-Type: application/x-download');
+            header('Content-Disposition: attachment; filename="' . $mt_dname . '"');
+            header('Content-Length: ' . (int) @filesize($mt_fwas));
+            header('X-Matter2Lox-Dateien: ' . (int) $mt_fzahl);
+            readfile($mt_fwas);
+            @unlink($mt_fwas);
+            exit;
+        }
+        $mt_fehler[] = $mt_fwas;
     }
     $mt_tab = 'tab-settings';
 }
@@ -197,10 +215,15 @@ if ($mt_post && isset($_POST['mqtt_probe'])) {
 /* ---------------- Einstellungen speichern ---------------- */
 if ($mt_post && isset($_POST['speichern'])) {
     $mt_cfg = mt_config();
+    $mt_adr_vorher = $mt_cfg['server_host'] . ':' . (int) $mt_cfg['server_port'];
+    /* O2 (Durchgang 30.09.2026): nur Leerraum am Rand entfernen, sonst
+     * nichts. Bis 0.9.30 entfernte diese Funktion still Anfuehrungs- und
+     * Steuerzeichen - eine Adresse in Anfuehrungszeichen wurde ohne Meldung
+     * zu einer anderen (Bericht oberflaeche Nr. 5). Was danach nicht ins
+     * Muster passt, wird unten abgewiesen und gemeldet; die Muster schliessen
+     * Anfuehrungs- und Steuerzeichen aus. */
     $sauber = function ($feld) {
-        // Nur Steuerzeichen, Anfuehrungszeichen und Leerraum entfernen - ein
-        // hartes Filtern auf eine Positivliste zerstoert gueltige Eingaben.
-        return trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST[$feld]) ? $_POST[$feld] : '')));
+        return isset($_POST[$feld]) && is_string($_POST[$feld]) ? trim($_POST[$feld]) : '';
     };
 
     $host = $sauber('server_host');
@@ -210,9 +233,8 @@ if ($mt_post && isset($_POST['speichern'])) {
         $mt_cfg['server_host'] = $host;
     }
 
-    foreach (array('server_port' => array(1, 65535), 'wartezeit' => array(0, 60),
-                   'bluetooth_adapter' => array(0, 9), 'sendetakt' => array(0, 60),
-                   'herzschlag' => array(0, 3600)) as $feld => $grenzen) {
+    /* O6: dieselben Grenzen wie beim Zurueckspielen (mt_zahlgrenzen()). */
+    foreach (mt_zahlgrenzen() as $feld => $grenzen) {
         $w = $sauber($feld);
         if (!preg_match('/^[0-9]+$/', $w)) {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_ZAHL'), mt_t('EINST.L_' . strtoupper($feld)));
@@ -246,6 +268,13 @@ if ($mt_post && isset($_POST['speichern'])) {
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_cfg)) {
             $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
+            /* C4 (Durchgang 30.09.2026): der Dienst vergleicht Adresse und Port
+             * bei jedem Lesen der Konfiguration und verbindet neu - das wird
+             * hier gesagt, statt nur "gespeichert". */
+            $mt_adr_nachher = $mt_cfg['server_host'] . ':' . (int) $mt_cfg['server_port'];
+            if ($mt_adr_nachher !== $mt_adr_vorher && mt_dienst_pid() > 0) {
+                $mt_meldungen[] = mt_e(sprintf(mt_t('EINST.ADRESSE_NEU'), $mt_adr_nachher));
+            }
         } else {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
         }
@@ -268,6 +297,7 @@ if ($mt_post && isset($_POST['speichern'])) {
  * ruehrt ausschliesslich die MQTT-Werte an. */
 if ($mt_post && isset($_POST['save_mqtt'])) {
     $mt_mcfg = mt_config();
+    $mt_praefix_vorher = mt_mqtt_praefix($mt_mcfg);
     $mt_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     /* Der Haken fuer die Rohdurchreichung steht in DIESEM Formular (Reiter
      * MQTT) und wird deshalb auch hier gelesen. Bis 0.9.16 las ihn der
@@ -276,8 +306,10 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
      * Einstellungen schaltete ihn ab. Genau die Fehlerklasse, die der
      * Kommentar am Ende des Einstellungen-Handlers fuer mqtt_ein beschreibt. */
     $mt_mcfg['roh_ein'] = isset($_POST['roh_ein']) ? 1 : 0;
-    $mt_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    /* O2: nicht still Zeichen entfernen, sondern gegen das Muster pruefen
+     * und abweisen (Bericht oberflaeche Nr. 5). */
+    $mt_mtopic = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])
+        ? trim($_POST['mqtt_topic']) : '';
     if ($mt_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $mt_mtopic)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_TOPIC');
     } else {
@@ -296,6 +328,15 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
     if (!$mt_fehler) {
         if (mt_config_speichern($mt_mcfg)) {
             $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
+            /* M5 (Durchgang 30.09.2026): altes und neues Praefix merken - die
+             * Deinstallation raeumt unter beiden ab, und ein laufender Dienst
+             * sendet unter dem neuen den vollen Satz und raeumt das alte ab. */
+            $mt_praefix_nachher = mt_mqtt_praefix($mt_mcfg);
+            if ($mt_praefix_nachher !== $mt_praefix_vorher) {
+                mt_praefix_merken(array($mt_praefix_vorher, $mt_praefix_nachher));
+                $mt_meldungen[] = mt_e(sprintf(mt_t('MQTT.PRAEFIX_GEWECHSELT'),
+                                               $mt_praefix_vorher, $mt_praefix_nachher));
+            }
         } else {
             /* Bis 0.9.16 fehlte dieser Zweig als einzigem der vier
              * Speichern-Handler: scheiterte das Schreiben, sah der Bediener
@@ -309,9 +350,15 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
 /* ---------------- Netz-Zugangsdaten speichern ---------------- */
 if ($mt_post && isset($_POST['netz_speichern'])) {
     $mt_cfg = mt_config();
-    $ssid = trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
-        (string) (isset($_POST['wlan_ssid']) ? $_POST['wlan_ssid'] : '')));
-    if ($ssid !== '') {
+    /* O2 (Durchgang 30.09.2026): eine SSID darf Anfuehrungszeichen tragen -
+     * sie wird unveraendert gespeichert (JSON maskiert sie). Bis 0.9.30
+     * wurden sie still entfernt, und beim Anlernen ging eine andere SSID an
+     * das Geraet (Bericht oberflaeche Nr. 5). Steuerzeichen werden
+     * abgewiesen, nicht entfernt. */
+    $ssid = isset($_POST['wlan_ssid']) && is_string($_POST['wlan_ssid']) ? $_POST['wlan_ssid'] : '';
+    if (preg_match('/[\x00-\x1F\x7F]/', $ssid)) {
+        $mt_fehler[] = mt_t('ANLERN.FEHLER_SSID');
+    } elseif ($ssid !== '') {
         $mt_cfg['wlan_ssid'] = $ssid;
     }
     // Leeres Passwortfeld loescht nichts.
@@ -385,8 +432,15 @@ if ($mt_post && isset($_POST['br_holen'])) {
 
 /* ---------------- Dienst ---------------- */
 if ($mt_post && isset($_POST['dienst'])) {
-    list($mt_ok, $mt_ausgabe) = mt_dienst((string) $_POST['dienst']);
-    if ($mt_ok) {
+    list($mt_ok, $mt_ausgabe, $mt_rc) = array_pad(mt_dienst((string) $_POST['dienst']), 3, 0);
+    if ((int) $mt_rc === 3) {
+        /* O4 (Durchgang 30.09.2026): dienst.sh hat wegen einer laufenden
+         * Aktualisierung nichts angefasst (Rueckgabe 3). Bis 0.9.30 stand
+         * hier "Dienst gestartet." bzw. "Dienst neu gestartet." - und "Neu
+         * starten" hatte den Dienst sogar angehalten (Bericht oberflaeche
+         * Nr. 7). */
+        $mt_meldungen[] = mt_e(mt_t('EINST.DIENST_MARKE'));
+    } elseif ($mt_ok) {
         $mt_meldungen[] = mt_t('EINST.DIENST_' . strtoupper((string) $_POST['dienst'])) . ' ' . mt_e($mt_ausgabe);
     } else {
         $mt_fehler[] = mt_e($mt_ausgabe);
@@ -427,7 +481,11 @@ if ($mt_post && isset($_POST['token_neu'])) {
 /* ---------------- Log leeren ---------------- */
 if ($mt_post && isset($_POST['log_leeren'])) {
     @mkdir(dirname($mt_p['log']), 0775, true);
-    @file_put_contents($mt_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . mt_t('LOG.GELEERT') . "\n");
+    /* O9 (Durchgang 30.09.2026): die Meldung haengt an der Wirkung. Bis
+     * 0.9.30 wurde der Rueckgabewert verworfen und "geleert" gemeldet, auch
+     * wenn die Datei unveraendert blieb (Bericht oberflaeche Nr. 13). */
+    $mt_lzeile = '[' . date('Y-m-d H:i:s') . '] ' . mt_t('LOG.GELEERT') . "\n";
+    $mt_lok = @file_put_contents($mt_p['log'], $mt_lzeile) === strlen($mt_lzeile);
     /* Der Dienst rotiert mit backupCount=1; ohne diese Zeile blieben bis zu
      * 512 kB in matter2lox.log.1 auf der Ramdisk liegen, und wer den Knopf
      * zum Platzsparen drueckte, gewann die Haelfte. Dazu die Startdatei. */
@@ -437,7 +495,11 @@ if ($mt_post && isset($_POST['log_leeren'])) {
     if (is_file(dirname($mt_p['log']) . '/matter2lox.start.log')) {
         @unlink(dirname($mt_p['log']) . '/matter2lox.start.log');
     }
-    $mt_meldungen[] = mt_t('LOG.GELEERT');
+    if ($mt_lok) {
+        $mt_meldungen[] = mt_t('LOG.GELEERT');
+    } else {
+        $mt_fehler[] = mt_e(sprintf(mt_t('LOG.FEHLER_LEEREN'), $mt_p['log']));
+    }
     $mt_tab = 'tab-log';
 }
 
@@ -452,12 +514,16 @@ if ($mt_post && isset($_POST['test'])) {
     $mt_tab = in_array((string) $_POST['test'], array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster', 'name'), true)
         ? 'tab-commission' : 'tab-test';
 }
+/* O1: Selbsttest und Containerprotokoll werden nach der Umleitung beim GET
+ * gebildet; mit der Einmalmeldung reist nur ihr Name, nicht ihr Inhalt (ein
+ * Containerprotokoll gehoert nicht in eine Datei unter data/). */
+$mt_zeige = '';
 if ($mt_post && isset($_POST['selbsttest'])) {
-    $mt_testausgabe = mt_selbsttest_ausgabe();
+    $mt_zeige = 'selbsttest';
     $mt_tab = 'tab-test';
 }
 if ($mt_post && isset($_POST['containerlog'])) {
-    $mt_testausgabe = mt_container_log(200);
+    $mt_zeige = 'containerlog';
     $mt_tab = 'tab-test';
 }
 
@@ -509,8 +575,8 @@ if ($mt_post && isset($_POST['mt_zurueck'])) {
     } elseif ((int) $_FILES['mt_sicherung']['size'] > 262144) {
         $mt_fehler[] = mt_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($mt_neu, $mt_mangel, $mt_n) = mt_sicherung_lesen(
-            (string) @file_get_contents($_FILES['mt_sicherung']['tmp_name']));
+        list($mt_neu, $mt_mangel, $mt_n, $mt_shinweise) = array_pad(mt_sicherung_lesen(
+            (string) @file_get_contents($_FILES['mt_sicherung']['tmp_name'])), 4, array());
         if ($mt_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
@@ -518,10 +584,47 @@ if ($mt_post && isset($_POST['mt_zurueck'])) {
                             . implode(' ', $mt_mangel);
         } elseif (mt_config_speichern($mt_neu)) {
             $mt_meldungen[] = sprintf(mt_t('EINST.SICH_UEBERNOMMEN'), $mt_n);
+            /* C5: das laufende Token blieb, weil die Datei ein leeres trug. */
+            foreach ((array) $mt_shinweise as $mt_sh) {
+                $mt_meldungen[] = mt_e($mt_sh);
+            }
         } else {
             $mt_fehler[] = mt_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+/* ---------------- Jeder POST endet mit einer Umleitung (O1, PRG) ----------------
+ *
+ * Auch ein abgewiesener POST (Formularmerkmal falsch). Laesst sich die
+ * Einmalmeldung nicht ablegen, wird wie bis 0.9.29 unmittelbar gerendert -
+ * eine verschluckte Meldung waere schlimmer als ein F5-Risiko. Die
+ * Einmalmeldung wird NUR beim GET gelesen (Regeln/04). */
+if ($mt_post) {
+    if (mt_einmal_schreiben(array('meldungen' => $mt_meldungen, 'fehler' => $mt_fehler,
+                                  'zeige' => $mt_zeige))) {
+        header('Location: index.php?form=' . substr($mt_tab, 4), true, 303);
+        exit;
+    }
+} else {
+    $mt_einmal = mt_einmal_lesen();
+    foreach (array('meldungen' => 'mt_meldungen', 'fehler' => 'mt_fehler') as $mt_q => $mt_z) {
+        if (isset($mt_einmal[$mt_q]) && is_array($mt_einmal[$mt_q])) {
+            foreach ($mt_einmal[$mt_q] as $mt_m) {
+                if (is_string($mt_m)) {
+                    ${$mt_z}[] = $mt_m;
+                }
+            }
+        }
+    }
+    if (isset($mt_einmal['zeige']) && in_array($mt_einmal['zeige'], array('selbsttest', 'containerlog'), true)) {
+        $mt_zeige = $mt_einmal['zeige'];
+    }
+}
+if ($mt_zeige === 'selbsttest' && $mt_tab === 'tab-test') {
+    $mt_testausgabe = mt_selbsttest_ausgabe();
+} elseif ($mt_zeige === 'containerlog' && $mt_tab === 'tab-test') {
+    $mt_testausgabe = mt_container_log(200);
 }
 
 /* ---------------- Laden ---------------- */
@@ -1159,13 +1262,12 @@ $mt_feld = function ($g, $name, $leer = '') {
 <p class="sm-hilfe"><?= mt_t('MQTT.RETAIN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('MQTT.T_THEMA')) ?></th><th><?= mt_e(mt_t('MQTT.T_RETAIN')) ?></th><th><?= mt_e(mt_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ok</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_OK') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/online</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_ONLINE') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/ts</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_TS') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraete</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_GERAETE') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/name</span></td><td><?= mt_e(mt_retain_text('name')) ?></td><td><?= mt_t('MQTT.B_NAME') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/knoten</span></td><td><?= mt_e(mt_retain_text('knoten')) ?></td><td><?= mt_t('MQTT.B_KNOTEN') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/erreichbar</span></td><td><?= mt_e(mt_retain_text('erreichbar')) ?></td><td><?= mt_t('MQTT.B_ERREICH') ?></td></tr>
+<?php /* M6 (Durchgang 30.09.2026): die festen Zeilen kommen aus EINER Liste
+   (mt_themen_fest()), gegen die auch die Pruefzeile im Reiter Test die
+   Themen des Dienstes haelt. */
+foreach (mt_themen_fest() as $mt_ft => $mt_fi) { ?>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e($mt_fi[0] . $mt_ft) ?></span></td><td><?= mt_e(mt_retain_text($mt_ft)) ?></td><td><?= mt_t($mt_fi[1]) ?></td></tr>
+<?php } ?>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/&lt;Endpunkt&gt;/&lt;Thema&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/roh/&lt;Pfad&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
 </table>
@@ -1224,6 +1326,14 @@ foreach ((array) (isset($mt_tabelle['abgeleitete_themen']['themen'])
 <div class="sm-seite<?= $mt_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= mt_e(mt_t('LOX.H_TITEL')) ?></h2>
 <p><?= mt_t('LOX.EINLEITUNG') ?></p>
+<?php /* O10 (Durchgang 30.09.2026): die Legende steht oben im Reiter, und die
+   Vorlage-Knoepfe sind grau - sie geben nur eine Datei aus. Bis 0.9.30 war
+   "Ausgaenge" orange und die Vorlagen gruen, und die einzige orange Legende
+   sprach vom Token (Bericht oberflaeche Nr. 14, Regeln/04). */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= mt_t('LEGENDE.VORLAGE') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION_TOKEN') ?></span>
+</div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S1_TITEL')) ?></b><br><?= mt_t('LOX.S1_TEXT') ?></div>
 
@@ -1257,7 +1367,7 @@ foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) 
         $mt_marke = strtoupper($mt_ep . '_' . $mt_thema); ?>
 <tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_marke) ?></span></td>
     <td><span class="sm-mono"><?= mt_e(mt_check($mt_marke)) ?></span></td>
-    <td><span class="sm-mono">&amp;aktion=wert&amp;endpunkt=<?= mt_e($mt_ep) ?>&amp;thema=<?= mt_e($mt_thema) ?></span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_endpunkt_adresse('wert', $mt_nr) . '&endpunkt=' . $mt_ep . '&thema=' . $mt_thema) ?></span></td>
     <td><?= mt_e(mt_thema_text($mt_thema, $mt_tabelle)) ?></td></tr>
 <?php } } ?>
 </table>
@@ -1266,13 +1376,13 @@ foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) 
   <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="<?= mt_e($mt_nr) ?>">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE')) ?> <?= mt_e($mt_feld($mt_g, 'name', '?')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE')) ?> <?= mt_e($mt_feld($mt_g, 'name', '?')) ?></button>
 </form>
 <form action="index.php" method="post">
   <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="aus<?= mt_e($mt_nr) ?>">
-  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_AUS')) ?> <?= mt_e($mt_feld($mt_g, 'name', '?')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_AUS')) ?> <?= mt_e($mt_feld($mt_g, 'name', '?')) ?></button>
 </form>
 </div>
 <?php } } ?>
@@ -1283,14 +1393,11 @@ foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) 
   <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <input data-role="none" type="hidden" name="vorlage" value="alle">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_ALLE')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_ALLE')) ?></button>
 </form>
 <div class="sm-hinweis"><?= mt_t('LOX.S3_EINZELN') ?></div>
 <div class="sm-warnung"><?= mt_t('LOX.S3_STRICH') ?></div>
 <div class="sm-warnung"><?= mt_t('LOX.S3_NEU_EINLESEN') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
-</div>
 </div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S4_TITEL')) ?></b><br>
@@ -1514,7 +1621,14 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 <?php if ($mt_logzeilen) { ?>
 <div class="sm-log"><?= mt_e(implode("\n", $mt_logzeilen)) ?></div>
 <?php } else { ?>
-<div class="sm-hinweis"><?= mt_t('LOG.LEER') ?></div>
+<?php /* O11 (Durchgang 30.09.2026): ein leerer Protokollreiter sagt, warum
+   er leer ist, und nennt das letzte Lebenszeichen des Dienstes aus
+   zustand.json (Regeln/04, Bericht oberflaeche Nr. 15). */
+$mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] > 0
+    ? date('Y-m-d H:i:s', (int) $mt_zustand['herzschlag'])
+    : (isset($mt_zustand['ts']) && (int) $mt_zustand['ts'] > 0
+        ? date('Y-m-d H:i:s', (int) $mt_zustand['ts']) : mt_t('LOG.KEIN_LEBENSZEICHEN')); ?>
+<div class="sm-hinweis"><?= sprintf(mt_t('LOG.LEER'), mt_e($mt_leben)) ?></div>
 <?php } ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION_LOG') ?></span>
@@ -1540,6 +1654,11 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 		if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '')); }
 	}
 	reiter.forEach(function (r) {
+		// O7 (Durchgang 30.09.2026): der Reiter Test wird NICHT abgefangen - sein
+		// Verweis laedt die Seite mit ?form=test, und erst dann laufen die
+		// Pruefungen (Regeln/04). Bis 0.9.30 zeigte ein Klick nur die
+		// Aufforderung, den Reiter aufzurufen (Bericht oberflaeche Nr. 10).
+		if (r.dataset.ziel === 'tab-test') { return; }
 		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
 	});
 	zeige(<?= json_encode($mt_tab) ?>);

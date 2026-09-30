@@ -139,7 +139,8 @@ done
 rm -f "$PDATA/soll_laufen" "$PDATA/dienst.pid" 2>/dev/null
 
 # ------------------------------------------------------------------ MQTT
-# Zurueckbehaltene Themen der Linie leeren. NACH dem Anhalten des Dienstes -
+# Zurueckbehaltene Themen der Linie leeren - unter dem eingestellten und
+# seit 0.9.30 (M5) unter jedem gemerkten Praefix. NACH dem Anhalten des Dienstes -
 # sonst schriebe er die Werte gleich wieder hinein - und vor dem Loeschen der
 # Ordner: Konfiguration (Praefix), Geraetenummern, letztes Abbild und bin/
 # sind hier noch da; der Installer loescht sie erst nach diesem Skript
@@ -184,18 +185,34 @@ else
 fi
 
 # ------------------------------------------------------------- Container
-# Der Name ist einstellbar; er steht in der Konfiguration. Faellt das
-# Auslesen aus, wird der Vorgabename genommen - lieber den falschen
-# Container NICHT anfassen als einen fremden.
+# I3 (Durchgang 30.09.2026, Entscheidung 9 sinngemaess): entfernt wird nur
+# ein Container, den DIESES Plugin betreibt:
+#   - er traegt das Label de.loxberry.plugin.folder=<ordner> (seit 0.9.30
+#     beim Anlegen gesetzt, mt_container_befehl() in mt_lib.php), oder
+#   - Altbestand ohne Label: nur mit eigener_container=1 UND einem Abbild des
+#     Matter-Servers (python-matter-server bzw. matterjs-server).
+# Bei eigener_container=0 nie. Bis 0.9.30 entfernte dieses Skript jeden
+# Container mit dem eingestellten Namen - ab Werk "matter-server", also auch
+# den eigenen Matter-Server eines Anwenders, der im Plugin nur dessen Adresse
+# eingetragen hatte (gemessen mit einer Docker-Attrappe, Bericht installer
+# I3). Jeder andere wird nicht angefasst; stattdessen steht der Befehl zum
+# Abtippen da.
 NAME=""
+EIGEN=""
 if [ -r "$PCONFIG/matter2lox.json" ] && command -v python3 >/dev/null 2>&1; then
-    NAME=$(python3 -c 'import json,sys
+    LESEN=$(python3 -c 'import json,sys
 try:
     d=json.load(open(sys.argv[1]))
     n=str(d.get("container_name") or "")
-    print(n if n else "")
+    e=d.get("eigener_container", 1)
+    e=1 if (e is True or (not isinstance(e, bool) and e == 1) or str(e).strip().lower() in ("1", "true", "ja", "on")) else 0
+    print(n)
+    print(e)
 except Exception:
+    print("")
     print("")' "$PCONFIG/matter2lox.json" 2>/dev/null)
+    NAME=$(printf '%s\n' "$LESEN" | sed -n 1p)
+    EIGEN=$(printf '%s\n' "$LESEN" | sed -n 2p)
 fi
 [ -n "$NAME" ] || NAME="matter-server"
 
@@ -207,12 +224,39 @@ esac
 
 if [ -n "$NAME" ]; then
     if command -v docker >/dev/null 2>&1; then
-        if docker inspect "$NAME" >/dev/null 2>&1; then
-            docker rm -f "$NAME" >/dev/null 2>&1 \
-                && echo "<OK> Docker-Container '$NAME' angehalten und entfernt." \
-                || echo "<WARNING> Container '$NAME' liess sich nicht entfernen. Von Hand: docker rm -f $NAME"
-            echo "<INFO> Das Abbild bleibt liegen - es kann von anderen Containern"
-            echo "<INFO> genutzt werden. Zum Aufraeumen: docker image prune"
+        if timeout 30 docker inspect --type container -- "$NAME" >/dev/null 2>&1; then
+            LABEL=$(timeout 30 docker inspect --type container -f '{{index .Config.Labels "de.loxberry.plugin.folder"}}' -- "$NAME" 2>/dev/null)
+            [ "$LABEL" = "<no value>" ] && LABEL=""
+            ABBILD=$(timeout 30 docker inspect --type container -f '{{.Config.Image}}' -- "$NAME" 2>/dev/null)
+            GRUND=""
+            if [ "$EIGEN" = "0" ]; then
+                GRUND=""
+            elif [ "$LABEL" = "$PDIR" ]; then
+                GRUND="Label de.loxberry.plugin.folder=$PDIR"
+            elif [ "$EIGEN" = "1" ] && [ -z "$LABEL" ]; then
+                case "$ABBILD" in
+                    *python-matter-server*|*matterjs-server*)
+                        GRUND="Altbestand ohne Label, eigener Container, Abbild $ABBILD" ;;
+                esac
+            fi
+            if [ -n "$GRUND" ]; then
+                timeout 60 docker rm -f -- "$NAME" >/dev/null 2>&1
+                # Die Wirkung nachsehen, nicht dem Rueckgabewert glauben.
+                if timeout 30 docker inspect --type container -- "$NAME" >/dev/null 2>&1; then
+                    echo "<WARNING> Container '$NAME' liess sich nicht entfernen. Von Hand: docker rm -f $NAME"
+                else
+                    echo "<OK> Docker-Container '$NAME' angehalten und entfernt ($GRUND)."
+                fi
+                echo "<INFO> Das Abbild bleibt liegen - es kann von anderen Containern"
+                echo "<INFO> genutzt werden. Zum Aufraeumen: docker image prune"
+            else
+                if [ "$EIGEN" = "0" ]; then
+                    echo "<INFO> Der Container '$NAME' wird NICHT angefasst: in den Einstellungen steht, dass das Plugin keinen eigenen Matter-Server betreibt (eigener_container=0)."
+                else
+                    echo "<INFO> Der Container '$NAME' wird NICHT angefasst: er traegt nicht das Label de.loxberry.plugin.folder=$PDIR und ist kein Altbestand dieses Plugins (Label '${LABEL:-keines}', Abbild '${ABBILD:-unbekannt}')."
+                fi
+                echo "<INFO> Gehoert er doch zu diesem Plugin, von Hand: docker rm -f $NAME"
+            fi
         else
             echo "<INFO> Kein Container namens '$NAME' vorhanden."
         fi
@@ -222,9 +266,30 @@ if [ -n "$NAME" ]; then
 fi
 
 # ------------------------------------------------------------- Sicherung
-if [ -f "$BK" ]; then
-    rm -f "$BK" && echo "<OK> Sicherung der Konfiguration entfernt: $PDIR.backup.json"
-    echo "<INFO> WLAN-Passwort, Thread-Dataset und Aktionstoken sind damit fort."
+# I2 (Durchgang 30.09.2026): mit der Zweitschrift gehen auch ihre Nachbarn -
+# die .kaputt, die mt_config() bei einer unlesbaren Zweitschrift anlegt
+# (mt_lib.php), und die .alt, die eine Neuinstallation beiseitelegt
+# (preinstall.sh, Entscheidung 1). Die Schlusszeile steht erst nach dem
+# Nachzaehlen. Bis 0.9.30 blieb die .kaputt mit Token und WLAN-Passwort
+# liegen, waehrend die Meldung "sind damit fort" sagte (gemessen, Bericht
+# installer I2, Fall X1).
+GEFUNDEN_BK=0
+REST=""
+for S in "$BK" "$BK.kaputt" "$BK.alt" "$BK.kaputt.alt"; do
+    if [ -e "$S" ] || [ -L "$S" ]; then
+        GEFUNDEN_BK=1
+        rm -f "$S" 2>/dev/null
+        if [ -e "$S" ] || [ -L "$S" ]; then
+            REST="$REST $S"
+        else
+            echo "<OK> Entfernt: $(basename "$S")"
+        fi
+    fi
+done
+if [ -n "$REST" ]; then
+    echo "<WARNING> Liegen geblieben (darin koennen WLAN-Passwort, Thread-Dataset und Aktionstoken stehen):$REST - bitte von Hand entfernen."
+elif [ "$GEFUNDEN_BK" -eq 1 ]; then
+    echo "<INFO> Nachgezaehlt: keine Zweitschrift der Konfiguration liegt mehr neben dem Plugin-Ordner - WLAN-Passwort, Thread-Dataset und Aktionstoken sind damit fort."
 else
     echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
 fi
@@ -257,6 +322,9 @@ if [ -f "$NUMMERN" ]; then
     rm -f "$NUMMERN" && echo "<OK> Geraetenummern entfernt: $PDIR.nummern.json"
 fi
 rm -f "$LIEFMARKE" "$UPGRADEMARKE" 2>/dev/null
+# M5 (Durchgang 30.09.2026): die Liste der je benutzten MQTT-Praefixe. Der
+# Schritt "MQTT" oben hat unter jedem davon abgeraeumt; danach geht sie.
+rm -f "$BASE/config/plugins/$PDIR.mqtt_praefixe.json" 2>/dev/null
 # Der alte Ort bis 0.9.16 - liegt im Datenordner und geht mit ihm.
 [ -d "$PDATA/matter" ] && echo "<INFO> Ein alter Fabric-Ordner ($PDATA/matter) geht mit dem Datenordner."
 exit 0

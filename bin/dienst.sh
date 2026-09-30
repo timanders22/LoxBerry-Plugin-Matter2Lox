@@ -231,6 +231,67 @@ marke_gilt() {
     return 1
 }
 
+# C2 (Durchgang 30.09.2026): Startsperre. Bis 0.9.30 stand zwischen "laeuft
+# er schon?" und "nohup" nichts, was einen zweiten Aufrufer haette aufhalten
+# koennen: zwei gleichzeitige "start" (Knopf und postinstall) oder zwei
+# Waechter derselben Minute (cron.01min holt nach dem Uhrsprung beim Booten
+# Minuten nach) ergaben in WSL fuenf von fuenf Runden zwei Dienste (Bericht
+# code C2). Gesperrt wird auf dieses Skript selbst (flock auf Deskriptor 8),
+# mit Warten bis 15 s: der zweite Aufrufer wartet, bis der erste seinen Start
+# samt Nachsehen hinter sich hat, und fragt DANACH, ob schon einer laeuft.
+# Ein zweites "exec 8<" im selben Lauf gaebe die Sperre frei - daher der
+# Merker MT_SPERRE_GEHALTEN (der Waechter sperrt und ruft starten()). Der
+# Dienst erbt den Deskriptor NICHT (8<&- beim Start), sonst hielte er die
+# Sperre, solange er laeuft, und kein Neustart kaeme mehr durch
+# (Regeln/03, "Sperre vererbt sich an Kinder"). Ohne flock bleibt es beim
+# Verhalten bis 0.9.30; der Dienst sperrt ausserdem selbst (dienst.lock,
+# matter_dienst.py). Bauart Bewaesserung 0.9.35.
+MT_SPERRE_GEHALTEN=0
+startsperre_nehmen() {
+    [ "$MT_SPERRE_GEHALTEN" = "1" ] && return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    [ -r "$0" ] || return 0
+    exec 8<"$0"
+    if flock -w 15 8; then
+        MT_SPERRE_GEHALTEN=1
+        return 0
+    fi
+    return 1
+}
+
+# C8 (Durchgang 30.09.2026): der Waechter misst das Erzeugnis, nicht nur die
+# Prozessnummer (Regeln/03 Abschnitt 5). Der Dienst schreibt seinen
+# Herzschlag in zustand.json - verbunden mit ok=1, in einer Stoerung mit
+# ok=0. Steht der Prozess da, laeuft laenger als 3 x Takt und hat seit mehr
+# als 3 x Takt keinen Herzschlag geschrieben, haengt er. Bis 0.9.30 sah der
+# Waechter nur, ob ein Prozess da ist (Bericht code C8). Bei herzschlag=0
+# gibt es kein Erzeugnis - dann nur die Prozessprobe wie bisher.
+HAENGER_MERKER="$PDATA/haenger_neustart"
+herzschlag_takt() {
+    t=$(sed -n 's/.*"herzschlag"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9][0-9]*\).*/\1/p' \
+        "$PCONFIG/matter2lox.json" 2>/dev/null | head -n 1)
+    case "$t" in ''|*[!0-9]*) t=60 ;; esac
+    [ "$t" -gt 3600 ] && t=3600
+    echo "$t"
+}
+haengt() {
+    hz=$(herzschlag_takt)
+    [ "$hz" -gt 0 ] || return 1
+    grenze=$((3 * hz))
+    P=$(cat "$PID" 2>/dev/null)
+    case "$P" in ''|*[!0-9]*) return 1 ;; esac
+    lz=$(ps -o etimes= -p "$P" 2>/dev/null | tr -d ' ')
+    case "$lz" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$lz" -gt "$grenze" ] || return 1
+    hs=$(sed -n 's/.*"herzschlag"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "$PDATA/zustand.json" 2>/dev/null | head -n 1)
+    case "$hs" in ''|*[!0-9]*) hs=0 ;; esac
+    jetzt=$(date +%s 2>/dev/null)
+    case "$jetzt" in ''|*[!0-9]*) return 1 ;; esac
+    hs_alter=$((jetzt - hs))
+    [ "$hs_alter" -gt "$grenze" ]
+}
+
 laeuft() {
     [ -f "$PID" ] || return 1
     P=$(cat "$PID" 2>/dev/null)
@@ -256,6 +317,10 @@ starten() {
         nicht_installiert
         return 1
     fi
+    if ! startsperre_nehmen; then
+        echo "Ein anderer Start dieses Plugins laeuft seit ueber 15 Sekunden - jetzt wird nichts gestartet."
+        return 0
+    fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
@@ -271,9 +336,14 @@ starten() {
     # Oberflaeche den Dienst mitten in der Installation (Fall L5: 1 Prozess),
     # und der Waechter hielt ihn danach am Leben, weil "start" den
     # Sollmerker neu anlegt (Fall L6).
+    # O4 (Durchgang 30.09.2026): Rueckgabe 3, nicht 0. Bis 0.9.30 meldete der
+    # Knopf der Oberflaeche daraufhin "Dienst gestartet." - und der Satz
+    # "wird danach gestartet" stimmte nur, wenn der Dienst vorher lief
+    # (Bericht oberflaeche Nr. 7). 3 heisst: nichts getan, weil eine
+    # Aktualisierung laeuft; die Oberflaeche sagt es so.
     if marke_gilt; then
-        echo "Eine Aktualisierung dieses Plugins laeuft - der Dienst wird danach gestartet."
-        return 0
+        echo "Eine Aktualisierung dieses Plugins laeuft - jetzt wird nichts gestartet. Lief der Dienst vorher, startet ihn die Installation am Ende selbst; sonst danach erneut starten."
+        return 3
     fi
     # Erst NACH der Markenpruefung: in der Upgrade-Luecke legt ein Start, der
     # nicht startet, auch keinen Ordner an.
@@ -313,7 +383,8 @@ starten() {
     # Genau ein Schreiber je Datei: Python die Logdatei, die Schale diese.
     # Sie wird bei jedem Start geleert (>), damit sie nicht waechst.
     : > "$STARTLOG"
-    nohup "$PY" "$SKRIPT" > "$STARTLOG" 2>&1 &
+    # 8<&-: der Dienst erbt die Startsperre nicht (C2).
+    nohup "$PY" "$SKRIPT" > "$STARTLOG" 2>&1 8<&- &
     echo $! > "$PID"
     sleep 1
     if laeuft; then
@@ -381,6 +452,15 @@ case "$1" in
             nicht_installiert
             exit 1
         fi
+        # O4 (Durchgang 30.09.2026): waehrend einer Aktualisierung haelt
+        # "restart" nichts an. Bis 0.9.30 hielt der Knopf "Neu starten" einen
+        # laufenden Dienst an, starten() verweigerte danach wegen der Marke,
+        # und die Oberflaeche meldete "Dienst neu gestartet." (Bericht
+        # oberflaeche Nr. 7).
+        if marke_gilt; then
+            echo "Eine Aktualisierung dieses Plugins laeuft - der Dienst wurde nicht angefasst. Die Installation startet ihn am Ende selbst, wenn er vorher lief."
+            exit 3
+        fi
         anhalten; sleep 1; starten ;;
     status)
         if laeuft; then
@@ -410,10 +490,35 @@ case "$1" in
         # Protokoll der Anlage (Fall H14). Der Logordner liegt auf der
         # RAM-Platte und kann fehlen - er wird vor der Zeile angelegt
         # (Fall H11).
-        if [ "$INSTALLIERT" = "1" ] && [ -f "$SOLL" ] && ! laeuft; then
-            ordner_anlegen
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
-            starten >> "$LOGDATEI" 2>&1
+        #
+        # C2 (Durchgang 30.09.2026): die ganze Frage "laeuft er? sonst
+        # starten" steht unter der Startsperre. Zwei Waechter derselben
+        # Sekunde laufen damit nacheinander, und der zweite findet den Dienst
+        # des ersten. Bekommt ein Waechter die Sperre in 15 s nicht, tut er
+        # nichts - der naechste kommt in einer Minute.
+        if [ "$INSTALLIERT" = "1" ] && [ -f "$SOLL" ]; then
+            startsperre_nehmen || exit 0
+            if ! laeuft; then
+                ordner_anlegen
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
+                starten >> "$LOGDATEI" 2>&1
+            elif haengt; then
+                # C8: Neustart hoechstens alle 15 Minuten, mit genau einer
+                # Zeile je Neustart (gebremst). Der Sollmerker wird nach dem
+                # Anhalten neu gelegt, damit ein gescheiterter Start in der
+                # naechsten Minute ueber den Zweig darueber wiederholt wird.
+                M=$(stat -c %Y "$HAENGER_MERKER" 2>/dev/null)
+                case "$M" in ''|*[!0-9]*) M=0 ;; esac
+                SEIT=$(( $(date +%s) - M ))
+                if [ "$SEIT" -ge 900 ] || [ "$SEIT" -lt 0 ]; then
+                    ordner_anlegen
+                    touch "$HAENGER_MERKER"
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: der Dienst (PID $(cat "$PID" 2>/dev/null)) laeuft, aber sein Herzschlag in zustand.json ist seit $hs_alter s aus (Grenze 3 x $hz s) - er haengt und wird neu gestartet. Naechster solcher Neustart fruehestens in 15 Minuten." >> "$LOGDATEI"
+                    anhalten >> "$LOGDATEI" 2>&1
+                    touch "$SOLL"
+                    starten >> "$LOGDATEI" 2>&1
+                fi
+            fi
         fi
         ;;
     *)

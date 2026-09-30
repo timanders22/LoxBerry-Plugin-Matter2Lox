@@ -48,8 +48,12 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
 fi
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
     echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
-    echo "<FAIL> Es wurde NICHTS gesichert. Bitte das Update abbrechen und melden."
-    exit 1
+    echo "<FAIL> Es wurde NICHTS gesichert. Das Update wird abgebrochen (Rueckgabe 2),"
+    echo "<FAIL> es wurde nichts geloescht. Bitte melden."
+    # I4 (Durchgang 30.09.2026): 2, nicht 1. plugininstall.pl wertet 1 nur
+    # als Fehlerzeile und raeumt danach ab (:855-874); ab 2 bricht es VOR dem
+    # Abraeumen ab (Bericht installer I4).
+    exit 2
 fi
 
 PDATA="$BASE/data/plugins/$PFOLDER"
@@ -240,8 +244,9 @@ if [ -d "$FABALT" ]; then
         echo "<INFO> druecken. Die Geraete bleiben dabei angelernt."
     else
         echo "<FAIL> Die Matter-Fabric liess sich NICHT umziehen."
-        echo "<FAIL> Sie liegt in $FABALT und wird vom Installer geloescht."
-        echo "<FAIL> Bitte das Update abbrechen und den Ordner von Hand sichern."
+        echo "<FAIL> Sie liegt in $FABALT. Das Update wird deshalb abgebrochen,"
+        echo "<FAIL> bevor der Installer den Ordner loescht (siehe Schluss)."
+        echo "<FAIL> Bitte den Ordner von Hand sichern und das Update danach wiederholen."
         FEHLER=1
     fi
 else
@@ -279,5 +284,24 @@ if [ "$FEHLER" -eq 0 ]; then
     echo "<OK> das Abraeumen durch den Installer."
     exit 0
 fi
+# I4 (Durchgang 30.09.2026): Abbruch mit 2, nicht 1. plugininstall.pl
+# (:855-874) schreibt bei 1 nur eine Fehlerzeile und ruft danach
+# purge_installation - data/plugins/<ordner>/ samt einer nicht umgezogenen
+# Fabric war fort, obwohl die Meldung "Update abbrechen" verlangte (Bericht
+# installer I4, Fall X3). Ab 2 ruft es &fail VOR dem Abraeumen. Weil danach
+# die alte Fassung stehen bleibt, raeumt dieses Skript seine eigenen Spuren:
+# die Marke faellt (sonst blieb der Dienststart eine Stunde gesperrt), und
+# ein Dienst, der vorher lief, wird wieder gestartet.
 echo "<FAIL> preupgrade mit Beanstandungen beendet - siehe oben."
-exit 1
+echo "<FAIL> Das Update wird ABGEBROCHEN (Rueckgabe 2): der Installer bricht vor dem"
+echo "<FAIL> Abraeumen ab, es wurde nichts geloescht. Die bisherige Fassung bleibt."
+rm -f "$MARKE" 2>/dev/null
+rm -f "$BASE/data/plugins/$PFOLDER.lief" 2>/dev/null
+if [ "$LIEF" -eq 1 ] && [ -x "$PBIN/dienst.sh" ]; then
+    if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+        echo "<INFO> Der Dienst lief vorher und wurde wieder gestartet."
+    else
+        echo "<WARNING> Der Dienst lief vorher, liess sich aber nicht wieder starten. Reiter Einstellungen, Knopf 'Dienst starten'."
+    fi
+fi
+exit 2

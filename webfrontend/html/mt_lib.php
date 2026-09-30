@@ -141,6 +141,10 @@ function mt_paths()
             'bindir'    => $home . '/bin/plugins/' . $dir,
             'logdir'    => $home . '/log/plugins/' . $dir,
             'log'       => $home . '/log/plugins/' . $dir . '/matter2lox.log',
+            /* O1: die Einmalmeldung nach der Umleitung (Regeln/04). */
+            'einmal'    => $home . '/data/plugins/' . $dir . '/einmalmeldung.json',
+            /* M5: jedes je benutzte MQTT-Praefix, NEBEN dem Konfigordner. */
+            'praefixe'  => $home . '/config/plugins/' . $dir . '.mqtt_praefixe.json',
             'tabelle'   => $home . '/templates/plugins/' . $dir . '/matter_cluster.json',
             'archiv'    => '',
         );
@@ -160,6 +164,8 @@ function mt_paths()
             'bindir'    => $basis . '/bin',
             'logdir'    => $basis . '/log',
             'log'       => $basis . '/log/matter2lox.log',
+            'einmal'    => $basis . '/data/einmalmeldung.json',
+            'praefixe'  => $basis . '/config/matter2lox.mqtt_praefixe.json',
             'tabelle'   => $basis . '/templates/matter_cluster.json',
         );
     }
@@ -564,6 +570,34 @@ function mt_alter()
     return isset($l['ts']) ? max(0, time() - (int) $l['ts']) : -1;
 }
 
+/**
+ * OK fuer den Endpunkt (C3, Durchgang 30.09.2026, Entscheidung 4).
+ *
+ * OK=1 nur, wenn das Abbild eine Verbindung meldet UND der Herzschlag des
+ * Dienstes in zustand.json hoechstens 3 x Takt alt ist. Bis 0.9.30 kam OK
+ * allein aus loxone.json: ein mit kill -9 beendeter Dienst meldete fuer immer
+ * OK=1 (gemessen, Bericht code C3). ALTER bleibt unveraendert daneben; es
+ * waechst in einem ruhigen Haus auch bei gesundem Dienst, weil loxone.json
+ * nur bei Aenderungen geschrieben wird - als Altersgrenze taugt es nicht.
+ * Ist der Herzschlag abgeschaltet (0), gibt es kein Erzeugnis, an dem sich
+ * das Alter messen liesse; dann bleibt es bei der Aussage aus loxone.json
+ * (Hilfe und Feldtabelle sagen es).
+ */
+function mt_ok_endpunkt($lox, $cfg)
+{
+    if (!is_array($lox) || empty($lox['ok'])) {
+        return 0;
+    }
+    $hz = isset($cfg['herzschlag']) && is_numeric($cfg['herzschlag']) ? (int) $cfg['herzschlag'] : 60;
+    $hz = max(0, min(3600, $hz));
+    if ($hz === 0) {
+        return 1;
+    }
+    $z = mt_zustand();
+    $hs = isset($z['herzschlag']) && is_numeric($z['herzschlag']) ? (int) $z['herzschlag'] : 0;
+    return ($hs > 0 && time() - $hs <= 3 * $hz) ? 1 : 0;
+}
+
 /* ---------------- Protokollierung ---------------- */
 
 function mt_log($text)
@@ -706,7 +740,9 @@ function mt_dienst($befehl)
     if ($code === 124 || $code === 137) {
         $ausgabe[] = sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), 60);
     }
-    return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
+    /* Dritter Wert: der Rueckgabewert selbst. 3 heisst seit 0.9.30 (O4):
+     * eine Aktualisierung laeuft, es wurde nichts angefasst. */
+    return array($code === 0 ? 1 : 0, implode("\n", $ausgabe), (int) $code);
 }
 
 /* ---------------- Befehlswarteschlange ----------------
@@ -926,7 +962,8 @@ function mt_mqtt_senden(array $paare, $praefix)
         $msg = 'publish ' . preg_replace('#[^A-Za-z0-9_/\-]#', '_', (string) $praefix)
              . '/' . preg_replace('#[^A-Za-z0-9_/\-]#', '_', (string) $k)
              . ' ' . mt_mqtt_wert_saeubern($v);
-        if (@fwrite($s, $msg) !== false) {
+        $n = @fwrite($s, $msg);
+        if ($n === strlen($msg)) {
             $gesendet++;
         }
     }
@@ -1303,6 +1340,12 @@ function mt_container_befehl($cfg = null)
     $zeile = 'run -d'
         . ' --name ' . escapeshellarg($name)
         . ' --restart=unless-stopped'
+        /* I3 (Durchgang 30.09.2026, Entscheidung 9 sinngemaess): das Label
+         * sagt, dass DIESES Plugin den Container betreibt. Nur einen solchen
+         * entfernt die Deinstallation; bis 0.9.30 entfernte sie jeden
+         * Container mit dem eingestellten Namen - auch einen eigenen
+         * Matter-Server des Anwenders (gemessen, Bericht installer I3). */
+        . ' --label ' . escapeshellarg('de.loxberry.plugin.folder=' . $p['plugin'])
         . ' --security-opt apparmor=unconfined'
         . ' --network=host'
         . ' -v ' . escapeshellarg($daten . ':/data');
@@ -1572,8 +1615,15 @@ function mt_selbsttest_endpunkt($hoechstalter = 120)
             'method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
             'header' => implode("\r\n", $kopf))));
         $body = @file_get_contents($url, false, $ctx);
-        if (isset($http_response_header[0])
-                && preg_match('#\s(\d{3})\s#', $http_response_header[0], $m)) {
+        /* C7 (Durchgang 30.09.2026): Hausform statt der Zauber-Variablen, die
+         * PHP 8.5 als veraltet meldet. Ab 8.4 gibt es die Funktion; darunter
+         * wird die Variable ueber ihren Namen gelesen. */
+        $kz = function_exists('http_get_last_response_headers') ? http_get_last_response_headers() : null;
+        if ($kz === null) {
+            $kn = 'http_response_header';
+            $kz = isset($$kn) ? $$kn : null;
+        }
+        if (is_array($kz) && isset($kz[0]) && preg_match('#\s(\d{3})\s#', $kz[0], $m)) {
             $code = (int) $m[1];
         }
     }
@@ -1667,8 +1717,13 @@ function mt_thread_dataset_holen($adresse)
             'method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
             'max_redirects' => 0, 'header' => implode("\r\n", $kopf))));
         $body = @file_get_contents($url, false, $ctx);
-        if (isset($http_response_header[0])
-                && preg_match('#\s(\d{3})\s#', $http_response_header[0], $m)) {
+        /* C7: Hausform wie in mt_selbsttest_endpunkt(). */
+        $kz = function_exists('http_get_last_response_headers') ? http_get_last_response_headers() : null;
+        if ($kz === null) {
+            $kn = 'http_response_header';
+            $kz = isset($$kn) ? $$kn : null;
+        }
+        if (is_array($kz) && isset($kz[0]) && preg_match('#\s(\d{3})\s#', $kz[0], $m)) {
             $code = (int) $m[1];
         }
     }
@@ -2146,6 +2201,7 @@ function mt_sicherung_lesen($roh)
     $neu = mt_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
+    $grenzen = mt_zahlgrenzen();
     foreach ($daten as $k => $w) {
         /* Der lesbare Kopf (_hinweis, _stand) wird UEBERGANGEN, nicht
          * beanstandet - Hausstandard. Bis 0.9.16 hat ihn diese Funktion als
@@ -2170,6 +2226,13 @@ function mt_sicherung_lesen($roh)
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), $grund);
             continue;
         }
+        /* C9 (Durchgang 30.09.2026): Haken und Zahlen als Zahl uebernehmen.
+         * Bis 0.9.30 blieb der Typ der Datei stehen: "schloss_ein": "0" kam
+         * als Zeichenkette in die Konfiguration, die Oberflaeche las "aus",
+         * der Dienst "ein" (gemessen, Bericht oberflaeche Nr. 3). */
+        if (in_array($k, mt_haken(), true) || isset($grenzen[$k])) {
+            $w = (int) $w;
+        }
         $neu[$k] = $w;
         $anzahl++;
     }
@@ -2189,7 +2252,20 @@ function mt_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = mt_t('EINST.SICH_LEER');
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    /* C5 (Durchgang 30.09.2026): ein LEERES Aktionstoken in der Datei loescht
+     * das laufende nicht. Bis 0.9.30 wurde es angenommen - danach antwortete
+     * jeder virtuelle Eingang mit 403 und dem falschen Satz "die Oberflaeche
+     * wurde noch nie geoeffnet" (gemessen, Bericht code C5). Das laufende
+     * Token bleibt, und der vierte Rueckgabewert sagt es. Ein Token leeren
+     * laesst sich nur bewusst, nicht nebenbei ueber eine Datei. */
+    $hinweise = array();
+    if (!$mangel && trim((string) $neu['aktionstoken']) === '') {
+        $jetzt = mt_config(false);
+        $neu['aktionstoken'] = is_scalar($jetzt['aktionstoken']) ? (string) $jetzt['aktionstoken'] : '';
+        $hinweise[] = mt_t($neu['aktionstoken'] !== '' ? 'EINST.SICH_TOKEN_BEHALTEN'
+                                                          : 'EINST.SICH_TOKEN_KEINS');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweise);
 }
 
 /**
@@ -2200,6 +2276,29 @@ function mt_sicherung_lesen($roh)
  * ueber das Formular abgewiesen wuerde, darf ueber die Sicherungsdatei nicht
  * hereinkommen.
  */
+/**
+ * Die Grenzen der Zahlenfelder - an EINER Stelle (O6, Durchgang 30.09.2026).
+ *
+ * Formular (htmlauth/index.php) und Zurueckspielen (mt_wert_pruefen) lesen
+ * beide hier. Bis 0.9.30 liess das Zurueckspielen wartezeit bis 200 zu, das
+ * Formular bis 60: nach dem Zurueckspielen einer Sicherung mit 150 liess
+ * sich der Reiter Einstellungen nicht mehr speichern (gemessen, Bericht
+ * oberflaeche Nr. 9). Es gilt 60 - die Grenze, die das Formular seit jeher
+ * zeigt; der Dienst klemmt ebenso (matter_dienst.py, config()).
+ */
+function mt_zahlgrenzen()
+{
+    return array('server_port' => array(1, 65535), 'wartezeit' => array(0, 60),
+                 'bluetooth_adapter' => array(0, 9), 'sendetakt' => array(0, 60),
+                 'herzschlag' => array(0, 3600));
+}
+
+/** Die Haken der Konfiguration - dieselbe Liste wie HAKEN im Dienst. */
+function mt_haken()
+{
+    return array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein');
+}
+
 function mt_wert_pruefen($schluessel, $wert)
 {
     /* 1. Am Eingang: taugt der Wert ueberhaupt fuer eine Konfigurationsdatei? */
@@ -2215,9 +2314,7 @@ function mt_wert_pruefen($schluessel, $wert)
     }
 
     /* 2. Je Schluessel: die Positivliste des Formulars. */
-    $zahlen = array('server_port' => array(1, 65535), 'wartezeit' => array(0, 200),
-                    'bluetooth_adapter' => array(0, 9), 'sendetakt' => array(0, 60),
-                    'herzschlag' => array(0, 3600));
+    $zahlen = mt_zahlgrenzen();
     if (isset($zahlen[$schluessel])) {
         if (preg_match('/^[0-9]+$/', $s) !== 1) {
             return mt_t('EINST.SICH_W_ZAHL');
@@ -2228,8 +2325,7 @@ function mt_wert_pruefen($schluessel, $wert)
         }
         return '';
     }
-    $haken = array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein');
-    if (in_array($schluessel, $haken, true)) {
+    if (in_array($schluessel, mt_haken(), true)) {
         return in_array($s, array('0', '1'), true) ? '' : mt_t('EINST.SICH_W_HAKEN');
     }
     $muster = array(
@@ -2404,4 +2500,172 @@ function mt_retain_text($thema)
     }
     $z = mt_zustandsthemen();
     return isset($z[$t]) ? mt_t('MQTT.RETAIN_JA') : mt_t('MQTT.RETAIN_NEIN');
+}
+
+
+/* ==================================================================
+ * Einmalmeldung fuer PRG (O1, Durchgang 30.09.2026; Regeln/04, Docker NG,
+ * Raumklima; Bauform Heimkino 1.3.15)
+ *
+ * Jeder POST endet mit 303 auf index.php?form=<reiter>; was er zu sagen hat,
+ * liegt bis zum naechsten GET in data/plugins/<ordner>/einmalmeldung.json
+ * (0600, hoechstens 120 s alt). Gelesen wird NUR beim GET, und die Datei
+ * wird dabei geloescht, VOR der Anzeige. Zugangsdaten stehen nie darin: die
+ * Meldungen sind fertige Saetze, und die Ausgaben von Selbsttest und
+ * Containerprotokoll reisen gar nicht mit - sie werden beim GET neu gebildet.
+ * ================================================================== */
+
+function mt_einmal_schreiben($daten)
+{
+    $daten['zeit'] = time();
+    return mt_json_schreiben(mt_paths()['einmal'], $daten, 0600);
+}
+
+function mt_einmal_lesen()
+{
+    $datei = mt_paths()['einmal'];
+    if (!is_file($datei)) {
+        return array();
+    }
+    $roh = (string) @file_get_contents($datei);
+    @unlink($datei);
+    $d = json_decode($roh, true);
+    if (!is_array($d) || !isset($d['zeit'])) {
+        return array();
+    }
+    $alter = time() - (int) $d['zeit'];
+    if ($alter > 120 || $alter < -5) {
+        return array();
+    }
+    return $d;
+}
+
+
+/**
+ * M5 (Durchgang 30.09.2026): MQTT-Praefixe merken.
+ *
+ * Beim Speichern eines neuen Praefixes merkt die Oberflaeche altes UND neues
+ * in config/plugins/<ordner>.mqtt_praefixe.json - dieselbe Datei, die der
+ * Dienst fuehrt (DATEI_PRAEFIXE). Die Deinstallation raeumt unter jedem
+ * gemerkten Praefix ab; bis 0.9.30 nur unter dem eingestellten (gemessen,
+ * Bericht mqtt Nr. 5: nach einem Wechsel blieben 126 Themen stehen).
+ */
+function mt_praefix_merken($liste)
+{
+    $datei = mt_paths()['praefixe'];
+    $d = mt_json_lesen($datei);
+    $alt = isset($d['praefixe']) && is_array($d['praefixe']) ? array_values($d['praefixe']) : array();
+    $neu = array();
+    foreach (array_merge($alt, (array) $liste) as $p) {
+        $p = (string) $p;
+        if (preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $p) && !in_array($p, $neu, true)) {
+            $neu[] = $p;
+        }
+    }
+    if ($neu === $alt) {
+        return true;
+    }
+    return mt_json_schreiben($datei, array(
+        '_hinweis' => 'MQTT-Praefixe, unter denen dieses Plugin je gesendet hat. Die '
+                    . 'Deinstallation raeumt unter jedem davon die zurueckbehaltenen '
+                    . 'Themen der Linie ab.',
+        'praefixe' => $neu), 0600);
+}
+
+
+/**
+ * O5 (Durchgang 30.09.2026): die Fabric in eine DATEI packen und den
+ * Rueckgabewert von tar pruefen, bevor irgendetwas ausgeliefert wird.
+ *
+ * Bis 0.9.30 gingen die Kopfzeilen des Downloads vor einem
+ * passthru('tar ...') hinaus; eine unlesbare Datei der Fabric ergab ein
+ * gueltiges, aber unvollstaendiges Archiv mit HTTP 200 und ohne jede Meldung
+ * (gemessen, Bericht oberflaeche Nr. 8). Gepackt wird mit umask 077 in den
+ * Datenordner; der Aufrufer liefert aus und loescht.
+ *
+ * Rueckgabe: array(ok, Pfad oder Meldung, Zahl der Dateien im Archiv)
+ */
+function mt_fabric_packen()
+{
+    $p = mt_paths();
+    $quelle = mt_fabric_pfad();
+    $ordner = $p['datadir'];
+    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
+        return array(0, sprintf(mt_t('EINST.M_FABRIC_TAR_FEHL'), -1, mt_e($ordner)), 0);
+    }
+    $ziel = $ordner . '/fabric_export.' . getmypid() . '.tar.gz';
+    $fehl = $ziel . '.err';
+    $aus = array();
+    $rc = 0;
+    @exec('umask 077; timeout -k 5 120 tar -czf ' . escapeshellarg($ziel)
+          . ' -C ' . escapeshellarg($quelle) . ' . 2>' . escapeshellarg($fehl), $aus, $rc);
+    $meld = trim((string) @file_get_contents($fehl));
+    @unlink($fehl);
+    if ($rc !== 0 || !is_file($ziel)) {
+        @unlink($ziel);
+        $erste = $meld !== '' ? (string) strtok($meld, "\n") : '';
+        return array(0, sprintf(mt_t('EINST.M_FABRIC_TAR_FEHL'), (int) $rc, mt_e($erste)), 0);
+    }
+    $liste = array();
+    $rc2 = 0;
+    @exec('tar -tzf ' . escapeshellarg($ziel) . ' 2>/dev/null', $liste, $rc2);
+    $n = 0;
+    foreach ($liste as $z) {
+        if ($z !== '' && substr($z, -1) !== '/') {
+            $n++;
+        }
+    }
+    return array(1, $ziel, $n);
+}
+
+
+/**
+ * Die festen Themen der Tabelle im Reiter MQTT - EINE Liste fuer die
+ * Anzeige und fuer die Pruefzeile "Nennt die Themenliste, was der Dienst
+ * wirklich sendet?" (M6). Wert: array(Ebene, Sprachschluessel).
+ */
+function mt_themen_fest()
+{
+    return array(
+        'ok'         => array('', 'MQTT.B_OK'),
+        'online'     => array('', 'MQTT.B_ONLINE'),
+        'ts'         => array('', 'MQTT.B_TS'),
+        'geraete'    => array('', 'MQTT.B_GERAETE'),
+        'name'       => array('geraetN/', 'MQTT.B_NAME'),
+        'knoten'     => array('geraetN/', 'MQTT.B_KNOTEN'),
+        'erreichbar' => array('geraetN/', 'MQTT.B_ERREICH'),
+    );
+}
+
+/**
+ * Welche Themenstaemme bildet der Dienst? (M6, Durchgang 30.09.2026)
+ *
+ * Gefragt wird der Dienst selbst: matter_dienst.py --themen fuehrt einen
+ * Knoten mit jedem Attribut der Tabelle durch dieselben Funktionen wie im
+ * Betrieb und gibt die Staemme als JSON aus. Schreibt nichts.
+ * Rueckgabe: array(Liste oder null, Grund, wenn null)
+ */
+function mt_themen_dienst()
+{
+    $p = mt_paths();
+    $py = $p['bindir'] . '/venv/bin/python3';
+    $skript = $p['bindir'] . '/matter_dienst.py';
+    if (!is_file($py) || !is_file($skript)) {
+        return array(null, $py);
+    }
+    $aus = array();
+    $rc = 0;
+    @exec('env PYTHONDONTWRITEBYTECODE=1 timeout -k 5 20 ' . escapeshellarg($py) . ' '
+          . escapeshellarg($skript) . ' --themen 2>&1', $aus, $rc);
+    $d = json_decode(implode("\n", $aus), true);
+    if ($rc !== 0 || !is_array($d) || !isset($d['themen']) || !is_array($d['themen'])) {
+        return array(null, 'rc ' . (int) $rc . ': ' . substr((string) (isset($aus[0]) ? $aus[0] : ''), 0, 120));
+    }
+    $liste = array();
+    foreach ($d['themen'] as $t) {
+        if (is_string($t)) {
+            $liste[] = $t;
+        }
+    }
+    return array($liste, '');
 }

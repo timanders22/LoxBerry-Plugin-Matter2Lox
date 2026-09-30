@@ -33,7 +33,13 @@ Aufrufe:
     matter_dienst.py --einmal      einmal verbinden, Bestand holen, Ende
     matter_dienst.py --selbsttest  Pruefungen ohne Matter-Server, Klartext
     matter_dienst.py --mqtt-leeren zurueckbehaltene Themen der Linie im Broker
-                                   leeren (aus uninstall/uninstall)
+                                   leeren (aus uninstall/uninstall) - unter dem
+                                   eingestellten und jedem gemerkten Praefix
+    matter_dienst.py --themen      die Themenstaemme, die der Dienst bildet, als
+                                   JSON (Pruefzeile im Reiter Test); schreibt nichts
+
+Ein unbekannter Schalter endet mit Rueckgabe 2 und startet nichts (seit
+0.9.30, C6; bis dahin lief "--selftest" als zweiter Dienst).
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ import signal
 import socket
 import sys
 import time
+import types
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -345,7 +352,10 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
     eine halb geschriebene Datei."""
     try:
         pfad.parent.mkdir(parents=True, exist_ok=True)
-        tmp = pfad.with_suffix(pfad.suffix + ".tmp")
+        # C2 (Durchgang 30.09.2026): die Nebendatei traegt die Prozessnummer.
+        # Bis 0.9.30 hiess sie fest <ziel>.tmp; liefen zwei Dienste, griff das
+        # os.replace des einen ins Leere, sobald der andere schneller war.
+        tmp = pfad.with_suffix(pfad.suffix + ".tmp.%d" % os.getpid())
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(daten, f, ensure_ascii=False, indent=1, default=str)
         if rechte is not None:
@@ -355,6 +365,29 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
     except (OSError, TypeError, ValueError) as err:
         _LOG.error("Datei %s konnte nicht geschrieben werden: %s", pfad, err)
         return False
+
+
+# C9 (Durchgang 30.09.2026): die Haken der Konfiguration. Sie werden an EINER
+# Stelle gelesen (haken()), und config() gibt sie als Zahl 0/1 weiter.
+#
+# Bis 0.9.30 las der Dienst den Wahrheitswert der Rohangabe: eine
+# zurueckgespielte Sicherung mit "schloss_ein": "0" (Zeichenkette) ergab
+# True - die Oberflaeche zeigte "gesperrt", der Dienst fuehrte Schlossbefehle
+# aus (gemessen, Bericht oberflaeche Nr. 3). Jetzt gilt nur 1, True und die
+# Zeichenketten "1", "true", "ja", "on" als ein; alles andere als aus - ein
+# Schutz faellt geschlossen aus.
+HAKEN = ("eigener_container", "mqtt_ein", "roh_ein", "steuerung_ein", "schloss_ein")
+
+
+def haken(cfg: dict, feld: str) -> bool:
+    w = cfg.get(feld)
+    if isinstance(w, bool):
+        return w
+    if isinstance(w, (int, float)):
+        return w == 1
+    if isinstance(w, str):
+        return w.strip().lower() in ("1", "true", "ja", "on")
+    return False
 
 
 def config() -> dict:
@@ -400,8 +433,11 @@ def config() -> dict:
     # in der Konfiguration (von Hand gesetzt oder aus einer Sicherung
     # zurueckgespielt) liess den Dienst bei JEDEM Start mit ValueError
     # sterben, und der minuetliche Waechter startete ihn endlos neu.
+    # O6 (Durchgang 30.09.2026): wartezeit 0..60 - dieselbe Grenze wie im
+    # Formular und beim Zurueckspielen (mt_zahlgrenzen() in mt_lib.php). Bis
+    # 0.9.30 stand hier und in der Sicherungspruefung 200, im Formular 60.
     for feld, klein, gross, vorgabe in (("server_port", 1, 65535, 5580),
-                                        ("wartezeit", 0, 200, 8)):
+                                        ("wartezeit", 0, 60, 8)):
         try:
             c[feld] = max(klein, min(gross, int(c.get(feld) or vorgabe)))
         except (TypeError, ValueError):
@@ -418,6 +454,8 @@ def config() -> dict:
             c[feld] = max(klein, min(gross, int(c.get(feld, vorgabe))))
         except (TypeError, ValueError):
             c[feld] = vorgabe
+    for feld in HAKEN:
+        c[feld] = 1 if haken(c, feld) else 0
     host = str(c.get("server_host") or "127.0.0.1").strip()
     c["server_host"] = host if re.match(r"^[A-Za-z0-9\.\-:_\[\]]{1,80}$", host) else "127.0.0.1"
     return c
@@ -644,6 +682,26 @@ ALTE_ZUSTANDSTHEMEN = (
 # Aussage des Matter-Servers bzw. dieses Dienstes, nicht des Geraets).
 NIE_RETAINED = ("online", "ok", "ts", "zaehler", "probe", "geraete", "erreichbar")
 
+# M6 (Durchgang 30.09.2026): die Kennung des Geraets (BasicInformation, liegt
+# immer auf Endpunkt 0) geht seit 0.9.30 als geraetN/0/<thema> zurueckbehalten
+# hinaus. Bis dahin nannte die Themenliste der Oberflaeche die vier Namen mit
+# "zurueckbehalten: ja", der Dienst legte sie aber nur im Abbild ab und sendete
+# sie nie (gemessen, Bericht mqtt Nr. 6).
+MQTT_INFO = ("hersteller", "produkt", "bezeichnung", "firmware")
+
+# M2/M3 (Durchgang 30.09.2026, Entscheidungen 5 und 8): ein Zustand ohne
+# Aussage - null vom Geraet, ein Feld, das der Abruf nicht mehr liefert, ein
+# entferntes Geraet - geht EINMAL als "-" zurueckbehalten hinaus, nie als
+# leere Nutzlast und nie als stehenbleibender Altwert.
+OHNE_AUSSAGE = "-"
+
+# M4 (Durchgang 30.09.2026, Regeln/07): alle 30 Minuten der volle Satz. Der
+# UDP-Eingang des Gateways verwirft unter Last Datagramme, und sendto()
+# meldet auch dann Erfolg; ein verlorener Zustandswechsel blieb bis 0.9.30
+# bis zur naechsten Aenderung falsch (gemessen, Bericht mqtt Nr. 4).
+VOLLVERSAND_S = 1800
+_VOLLVERSAND: dict = {"zuletzt": 0.0}
+
 
 def ist_zustand(schluessel: str) -> bool:
     """Traegt dieses Thema einen Zustand (retained) oder einen Messwert?
@@ -866,8 +924,10 @@ def altlast_lage(praefix: str) -> tuple:
                                            Merker - nach dem Abraeumen wird
                                            nachgelesen;
       er ist nicht zu fragen            -> ("unbekannt", leer), kein Merker;
-                                           dann geht vor JEDEM Wert die
-                                           Loeschung hinaus (mqtt_senden()).
+                                           seit 0.9.30 (M7) wird dann
+                                           nichts geloescht - bis dahin ging
+                                           vor JEDEM Wert die Loeschung
+                                           hinaus, mit jedem Herzschlag.
     """
     kennung = "leer-bestaetigt %s: %s" % (praefix, " ".join(ALTLAST_STAEMME))
     try:
@@ -903,8 +963,9 @@ def altlast_lage(praefix: str) -> tuple:
              else "keine Verbindung, keine Antwort, Anmeldung abgewiesen oder Abonnement abgelehnt")
     melde_gebremst("mqtt_rueckfrage",
                    f"MQTT: der Broker liess sich nicht befragen, ob unter {praefix}/ noch "
-                   f"frueher zurueckbehaltene Erreichbarkeiten stehen ({grund}). Sie werden "
-                   "deshalb unmittelbar vor jedem Senden geloescht, bis er antwortet.")
+                   f"frueher zurueckbehaltene Erreichbarkeiten stehen ({grund}). Es wird "
+                   "nichts geloescht und kein Merker gesetzt; gefragt wird wieder in "
+                   f"{ALTLAST_FRAGE_S} s.")
     _ALTLAST["lage"] = "unbekannt"
     return "unbekannt", set()
 
@@ -917,7 +978,11 @@ def _altlast_vorher_leeren(schluessel: str, praefix: str) -> bool:
     if _ALTLAST["praefix"] != praefix:
         return False
     if _ALTLAST["lage"] == "unbekannt":
-        return True
+        # M7 (Durchgang 30.09.2026): ohne Antwort des Brokers wird NICHT
+        # geleert. Bis 0.9.30 ging dann vor jedem Wert und mit jedem
+        # Herzschlag eine leere retain-Nutzlast hinaus, und jeder Eingang in
+        # Loxone sah je Minute kurz einen leeren Wert (Bericht mqtt Nr. 7).
+        return False
     if _ALTLAST["lage"] == "belegt":
         return f"{praefix}/{schluessel}" in _ALTLAST["belegt"]
     return False
@@ -1091,9 +1156,14 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         # geschrieben in Grad 0..360 (Aktion 'farbton', befehl_ausfuehren).
         # Bis 0.9.16 standen die beiden Einheiten unverbunden nebeneinander -
         # genau die Lage, die der Absatz darueber fuer Kelvin beschreibt.
-        roh = felder.get("farbton_roh")
-        if isinstance(roh, (int, float)) and 0 <= roh <= 254:
-            felder["farbton_grad"] = int(round(roh * 360 / 254))
+        # M1 (Durchgang 30.09.2026): ein eigener Name. Bis 0.9.30 stand hier
+        # "roh" - der Name der Rohdurchreichung weiter oben. Ein Farbton
+        # ungleich 0 liess abbild_schreiben() danach an roh.items() scheitern,
+        # und die Rohdurchreichung ging in keiner Lage hinaus (Bericht mqtt
+        # Nr. 1).
+        farbton = felder.get("farbton_roh")
+        if isinstance(farbton, (int, float)) and 0 <= farbton <= 254:
+            felder["farbton_grad"] = int(round(farbton * 360 / 254))
 
     bezeichnung = info.get("bezeichnung") or info.get("produkt") or f"Knoten {node_id}"
     return {
@@ -1105,6 +1175,8 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         "hersteller": info.get("hersteller"),
         "produkt": info.get("produkt"),
         "firmware": info.get("firmware"),
+        # M6: die Kennung fuer den Versand unter geraetN/0/<thema>.
+        "info": {t: info.get(t) for t in MQTT_INFO},
         "endpunkte": endpunkte,
         "typen": typen,
         "roh": roh,
@@ -1742,8 +1814,58 @@ def nummern_zuordnen(knoten_ids) -> dict:
     return karte
 
 
+def paare_bilden(geraete: dict, cfg: dict, ok: int) -> dict:
+    """Die Themenpaare eines Abbilds, relativ zum Praefix.
+
+    EINE Stelle fuer den Versand (abbild_schreiben()) und fuer die
+    Selbstauskunft --themen, gegen die der Reiter Test die Themenliste der
+    Oberflaeche haelt (M6, Durchgang 30.09.2026).
+
+    Ein Zustand ohne Aussage (None oder leer) wird hier zu OHNE_AUSSAGE (M2);
+    Messwerte ohne Wert bleiben None und gehen gar nicht hinaus.
+    """
+    # Auswahl, was ueberhaupt hinausgeht. Eine Bridge mit fuenfzig
+    # Endpunkten ist sonst der Unterschied zwischen benutzbar und
+    # unbenutzbar. Leer heisst: alles - das ist die Vorgabe, damit sich
+    # fuer bestehende Anlagen nichts aendert.
+    nur = set()
+    for stueck in str(cfg.get("mqtt_nur") or "").replace(";", ",").split(","):
+        stueck = stueck.strip()
+        if stueck.isdigit():
+            nur.add(stueck)
+    paare: dict[str, object] = {"ok": ok, "geraete": len(geraete)}
+    for nr, g in geraete.items():
+        if nur and nr not in nur:
+            continue
+        basis = f"geraet{nr}"
+        paare[f"{basis}/name"] = g["kurz"]
+        paare[f"{basis}/erreichbar"] = g["erreichbar"]
+        paare[f"{basis}/knoten"] = g["node_id"]
+        info = g.get("info") or {}
+        for thema in MQTT_INFO:
+            paare[f"{basis}/0/{thema}"] = info.get(thema)
+        for ep, felder in g["endpunkte"].items():
+            for thema, wert in felder.items():
+                paare[f"{basis}/{ep}/{thema}"] = wert
+        for pfad, wert in (g.get("roh") or {}).items():
+            paare[f"{basis}/roh/{pfad}"] = wert
+    for k, w in list(paare.items()):
+        if (w is None or w == "") and ist_zustand(k):
+            paare[k] = OHNE_AUSSAGE
+    return paare
+
+
+def vollversand_faellig(jetzt: float | None = None) -> bool:
+    """M4: ist der volle Satz wieder dran? Auch nach einem Uhrsprung zurueck."""
+    jetzt = time.time() if jetzt is None else jetzt
+    zuletzt = _VOLLVERSAND["zuletzt"]
+    return jetzt - zuletzt >= VOLLVERSAND_S or jetzt < zuletzt
+
+
 def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
                      fehler: str = "", voll: bool = False) -> dict:
+    if voll:
+        _VOLLVERSAND["zuletzt"] = time.time()
     karte = nummern_zuordnen(v.knoten.keys())
     geraete: dict[str, dict] = {}
     for node_id in sorted(v.knoten):
@@ -1787,38 +1909,32 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
 
     if cfg.get("mqtt_ein"):
         praefix = mqtt_praefix(cfg)
-        # Auswahl, was ueberhaupt hinausgeht. Eine Bridge mit fuenfzig
-        # Endpunkten ist sonst der Unterschied zwischen benutzbar und
-        # unbenutzbar. Leer heisst: alles - das ist die Vorgabe, damit sich
-        # fuer bestehende Anlagen nichts aendert.
-        nur = set()
-        for stueck in str(cfg.get("mqtt_nur") or "").replace(";", ",").split(","):
-            stueck = stueck.strip()
-            if stueck.isdigit():
-                nur.add(stueck)
-        paare: dict[str, object] = {"ok": ok, "geraete": len(geraete)}
-        for nr, g in geraete.items():
-            if nur and nr not in nur:
-                continue
-            basis = f"geraet{nr}"
-            paare[f"{basis}/name"] = g["kurz"]
-            paare[f"{basis}/erreichbar"] = g["erreichbar"]
-            paare[f"{basis}/knoten"] = g["node_id"]
-            for ep, felder in g["endpunkte"].items():
-                for thema, wert in felder.items():
-                    paare[f"{basis}/{ep}/{thema}"] = wert
-            for pfad, wert in (g.get("roh") or {}).items():
-                paare[f"{basis}/roh/{pfad}"] = wert
+        paare = paare_bilden(geraete, cfg, ok)
         # Nur senden, was sich geaendert hat. Bis 0.9.9 ging bei JEDEM einzelnen
         # attribute_updated der vollstaendige Bestand aller Geraete erneut
         # hinaus - ein bewegter Dimmer erzeugte damit hunderte Telegramme je
         # Sekunde. 'voll' erzwingt das Vollbild; das geschieht nach jedem
-        # Verbindungsaufbau, damit ein verpasstes Telegramm nicht dauerhaft
-        # fehlt.
+        # Verbindungsaufbau, nach einem Praefixwechsel und seit 0.9.30 (M4)
+        # alle 30 Minuten (vollversand_faellig()).
         if voll:
             senden = dict(paare)
         else:
             senden = {k: w for k, w in paare.items() if _LETZTE_PAARE.get(k) != str(w)}
+        # M2/M3 (Durchgang 30.09.2026): ein zurueckbehaltener Zustand, der im
+        # neuen Abbild fehlt - ein Attribut, das nicht mehr kommt, ein
+        # entferntes Geraet (node_removed), ein Geraet, das mqtt_nur abwaehlt -,
+        # geht EINMAL als "-" hinaus und wird danach vergessen. Bis 0.9.30
+        # blieb der Altwert im Broker stehen und galt nach jedem Neustart von
+        # Broker, Gateway oder Miniserver als aktueller Stand (Bericht mqtt
+        # Nr. 2 und 3).
+        weg = [k for k in _LETZTE_PAARE
+               if k not in paare and ist_zustand(k) and _LETZTE_PAARE[k] != OHNE_AUSSAGE]
+        for k in weg:
+            senden[k] = OHNE_AUSSAGE
+        vergessen = [k for k in _LETZTE_PAARE
+                     if k not in paare and (not ist_zustand(k) or _LETZTE_PAARE[k] == OHNE_AUSSAGE)]
+        for k in vergessen:
+            _LETZTE_PAARE.pop(k, None)
         # Altwerte der Erreichbarkeit (bis 0.9.28 retained). Steht einer
         # noch im Broker, geht sein Thema jetzt hinaus - Loeschung und Wert
         # hintereinander, auch wenn sich der Wert nicht geaendert hat. Das
@@ -1838,13 +1954,17 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
         _ERREICHBAR.update({k: w for k, w in paare.items()
                             if k.rsplit("/", 1)[-1] == "erreichbar"})
         if senden or allein:
-            # Fortgeschrieben wird NUR, was wirklich hinausging. Bis 0.9.16
-            # stand der Merker vor dem Senden und wurde bedingungslos auf
-            # alle Paare gesetzt - fiel das Gateway kurz aus, galten die
-            # Werte als gesendet und fehlten danach dauerhaft, weil nur
-            # noch Aenderungen hinausgehen.
+            # Fortgeschrieben wird nur, was sendto() angenommen hat. Das ist
+            # KEIN Beleg, dass es ankam: der UDP-Eingang des Gateways verwirft
+            # unter Last Datagramme, und sendto() meldet trotzdem Erfolg
+            # (Regeln/07). Bis 0.9.30 sagte dieser Kommentar mehr zu, als
+            # sendto() belegen kann; die Luecke schliesst der Vollversand alle
+            # 30 Minuten (M4). Bis 0.9.16 stand der Merker sogar vor dem Senden.
             for k in mqtt_senden(senden, praefix, allein_leeren=allein):
-                _LETZTE_PAARE[k] = str(paare[k])
+                if k in paare:
+                    _LETZTE_PAARE[k] = str(paare[k])
+                else:
+                    _LETZTE_PAARE.pop(k, None)     # einmal "-", dann vergessen
         else:
             _LETZTE_PAARE.update({k: str(w) for k, w in paare.items()})
     return geraete
@@ -1883,6 +2003,12 @@ def abbild_stoerung(cfg: dict, fehler: str) -> None:
             _LETZTE_PAARE["ok"] = "0"
 
 
+def herzschlag_paare(ok: int) -> dict:
+    """Die Themen des Lebenszeichens - EINE Stelle fuer den Versand und fuer
+    die Selbstauskunft --themen."""
+    return {"online": 1, "ok": int(ok), "ts": int(time.time())}
+
+
 def herzschlag_senden(cfg: dict, ok: int) -> None:
     """Lebenszeichen, unabhaengig davon, ob sich ein Wert geaendert hat.
 
@@ -1903,7 +2029,7 @@ def herzschlag_senden(cfg: dict, ok: int) -> None:
     if not cfg.get("mqtt_ein"):
         return
     praefix = mqtt_praefix(cfg)
-    paare: dict[str, object] = {"online": 1, "ok": int(ok), "ts": int(time.time())}
+    paare = herzschlag_paare(ok)
     # Die Erreichbarkeit geht seit 0.9.29 fluechtig. Bis dahin hatte Loxone
     # sie nach einem Neustart von Broker, Gateway oder Miniserver sofort aus
     # dem Broker; jetzt bringt sie der Herzschlag spaetestens nach einem Takt
@@ -2036,7 +2162,16 @@ def signal_behandeln(*_):
     _LOG.info("Beendigungssignal erhalten - Dienst haelt an.")
 
 
+def soll_laufen_da() -> bool:
+    return (PDATA / "soll_laufen").is_file()
+
+
 async def dienst(einmal: bool = False) -> int:
+    # C1 (Durchgang 30.09.2026): fehlt der Merker soll_laufen, endet der Dienst
+    # ganz. Bis 0.9.30 verliess das "break" nur die innere Schleife; die
+    # aeussere verband nach 5 s neu, alle ~5 s, mit Vollbild und Protokollzeile
+    # "Dienst haelt an" (gemessen, Bericht code C1). Deshalb global.
+    global _LAUF
     cfg = config()
     tab = tabelle()
     _LOG.info("Dienst startet: Matter-Server %s:%s, Steuerung %s.",
@@ -2070,6 +2205,9 @@ async def dienst(einmal: bool = False) -> int:
         # einzelne attribute_updated config() auf, was die Konfiguration von
         # der Platte las, und danach mqtt_zustand(), was die general.json las.
         lauf = {"cfg": cfg, "offen": False}
+        # C4: die Adresse des Matter-Servers wurde geaendert - ohne Pause neu
+        # verbinden.
+        neu_verbinden = False
         try:
             await v.verbinden()
             fehler_folge = 0
@@ -2095,6 +2233,9 @@ async def dienst(einmal: bool = False) -> int:
                     "Der Matter-Server hat auf start_listening binnen 30 s keinen "
                     "Knotenbestand geliefert.") from None
 
+            # M5: das Praefix merken (und frueher benutzte abraeumen), bevor
+            # das Vollbild hinausgeht.
+            praefix_pflegen(lauf["cfg"])
             # Nach jedem Verbindungsaufbau einmal das Vollbild, damit ein
             # waehrend der Stoerung verpasstes Telegramm nicht dauerhaft fehlt.
             abbild_schreiben(v, lauf["cfg"], tab, 1, voll=True)
@@ -2105,17 +2246,43 @@ async def dienst(einmal: bool = False) -> int:
 
             # Waehrend gelauscht wird, im Sekundentakt die Warteschlange leeren.
             while _LAUF and not aufgabe.done():
-                if not (PDATA / "soll_laufen").is_file():
-                    _LOG.info("Der Merker soll_laufen ist weg - Dienst haelt an.")
+                if not einmal and not soll_laufen_da():
+                    _LOG.info("Der Merker soll_laufen ist weg - der Dienst endet.")
+                    _LAUF = False
                     break
                 lauf["cfg"] = config()
                 c = lauf["cfg"]
+                # C4 (Durchgang 30.09.2026): Adresse und Port bei jedem Lesen
+                # der Konfiguration mit denen der offenen Verbindung vergleichen.
+                # Bis 0.9.30 griff eine neue Adresse erst, wenn die alte
+                # Verbindung abriss - unter Umstaenden tagelang nicht (gemessen,
+                # Bericht code C4).
+                if (c["server_host"], int(c["server_port"])) \
+                        != (cfg["server_host"], int(cfg["server_port"])):
+                    _LOG.info("Die Adresse des Matter-Servers wurde geaendert (%s:%s -> %s:%s) - "
+                              "der Dienst verbindet neu.", cfg["server_host"], cfg["server_port"],
+                              c["server_host"], c["server_port"])
+                    neu_verbinden = True
+                    break
                 try:
                     if await warteschlange(v, c, tab):
                         lauf["offen"] = True
                 except Exception as err:  # noqa: BLE001
                     _LOG.error("Warteschlange: %s", fehlertext(err))
                 jetzt = time.time()
+                if praefix_pflegen(c):
+                    # M5: neues Praefix - dort sofort der volle Satz samt
+                    # Lebenszeichen; das alte hat praefix_pflegen() abgeraeumt.
+                    abbild_schreiben(v, c, tab, 1, voll=True)
+                    herzschlag_senden(c, 1)
+                    lauf["offen"] = False
+                    letzte_sendung = jetzt
+                    letzter_herzschlag = jetzt
+                elif vollversand_faellig(jetzt):
+                    # M4: der volle Satz alle 30 Minuten.
+                    abbild_schreiben(v, c, tab, 1, voll=True)
+                    lauf["offen"] = False
+                    letzte_sendung = jetzt
                 if lauf["offen"] and jetzt - letzte_sendung >= int(c.get("sendetakt") or 0):
                     abbild_schreiben(v, c, tab, 1)
                     lauf["offen"] = False
@@ -2161,6 +2328,8 @@ async def dienst(einmal: bool = False) -> int:
 
         if not _LAUF:
             break
+        if neu_verbinden:
+            continue
         # Nach mehreren Fehlschlaegen den Abstand vergroessern, statt gegen
         # einen nicht laufenden Server anzurennen.
         pause = min(300, 5 * max(1, fehler_folge))
@@ -2179,6 +2348,12 @@ async def dienst(einmal: bool = False) -> int:
         # macht es seit jeher richtig.
         for _ in range(pause):
             if not _LAUF:
+                break
+            # C1: auch in der Wartezeit - sonst liefe ein Dienst ohne
+            # Matter-Server nach dem Entfernen des Merkers weiter.
+            if not soll_laufen_da():
+                _LOG.info("Der Merker soll_laufen ist weg - der Dienst endet.")
+                _LAUF = False
                 break
             jetzt = time.time()
             if hz and jetzt - letzter_herzschlag >= hz:
@@ -2240,6 +2415,8 @@ def mqtt_leer_themen_aus_bestand(praefix: str) -> list:
     for nr in sorted(nummern | {int(n) for n in geraete if str(n).isdigit()}):
         for st in ("name", "knoten", "erreichbar"):
             themen.append(f"{praefix}/geraet{nr}/{st}")
+        for st in MQTT_INFO:
+            themen.append(f"{praefix}/geraet{nr}/0/{st}")
         g = geraete.get(str(nr)) or {}
         for ep, felder in sorted((g.get("endpunkte") or {}).items()):
             if isinstance(felder, dict):
@@ -2250,33 +2427,118 @@ def mqtt_leer_themen_aus_bestand(praefix: str) -> list:
     return themen
 
 
+# M5 (Durchgang 30.09.2026): jedes je benutzte Praefix wird gemerkt, NEBEN
+# dem Konfigordner (config/plugins/<ordner>.mqtt_praefixe.json; der Ordner
+# selbst wird bei jedem Upgrade geloescht). Bis 0.9.30 blieben nach einem
+# Praefixwechsel alle Zustaende unter dem alten Praefix im Broker stehen, und
+# die Deinstallation raeumte nur das eingestellte ab (gemessen, Bericht mqtt
+# Nr. 5: 126 Themen blieben). Die Oberflaeche merkt beim Speichern altes und
+# neues Praefix, der Dienst beim Start und bei jedem Wechsel. Vergessen wird
+# ein Praefix erst, wenn der Broker bestaetigt, dass darunter nichts mehr
+# zurueckbehalten steht.
+DATEI_PRAEFIXE = PCONFIG.parent / (PNAME + ".mqtt_praefixe.json")
+_PRAEFIX: dict = {"aktiv": None}
+
+
+def praefixe_gemerkt() -> list:
+    aus = []
+    for p in json_lesen(DATEI_PRAEFIXE).get("praefixe") or []:
+        p = str(p)
+        if re.match(r"^[A-Za-z0-9_/\-]{1,64}$", p) and p not in aus:
+            aus.append(p)
+    return aus
+
+
+def _praefixe_schreiben(liste: list) -> bool:
+    return json_schreiben(DATEI_PRAEFIXE, {
+        "_hinweis": "MQTT-Praefixe, unter denen dieses Plugin je gesendet hat. Die "
+                    "Deinstallation raeumt unter jedem davon die zurueckbehaltenen "
+                    "Themen der Linie ab.",
+        "praefixe": liste}, 0o600)
+
+
+def praefix_merken(praefix: str) -> bool:
+    liste = praefixe_gemerkt()
+    if praefix in liste:
+        return True
+    return _praefixe_schreiben(liste + [praefix])
+
+
+def praefix_vergessen(praefix: str) -> bool:
+    liste = praefixe_gemerkt()
+    if praefix not in liste:
+        return True
+    return _praefixe_schreiben([p for p in liste if p != praefix])
+
+
+def praefix_pflegen(cfg: dict) -> bool:
+    """Rueckgabe True: das Praefix hat gewechselt, das naechste Abbild muss
+    voll hinausgehen. Beim ersten Aufruf je Prozess (Dienststart) werden die
+    gemerkten, nicht mehr gueltigen Praefixe abgeraeumt."""
+    if not cfg.get("mqtt_ein"):
+        return False
+    neu = mqtt_praefix(cfg)
+    alt = _PRAEFIX["aktiv"]
+    if alt == neu:
+        return False
+    _PRAEFIX["aktiv"] = neu
+    if not praefix_merken(neu):
+        melde_gebremst("praefix_merken", f"MQTT: das Praefix {neu} liess sich nicht in "
+                       f"{DATEI_PRAEFIXE} merken.")
+    if alt is not None:
+        _LOG.info("MQTT: Themenpraefix %s -> %s. Unter %s/ geht der volle Satz hinaus, "
+                  "unter %s/ wird abgeraeumt.", alt, neu, neu, alt)
+        _LETZTE_PAARE.clear()
+    abraeumen = ([alt] if alt is not None else []) \
+        + [p for p in praefixe_gemerkt() if p not in (alt, neu)]
+    for p in abraeumen:
+        _rc, bestaetigt = praefix_leeren(p, melden=lambda t: _LOG.info("%s", t))
+        if bestaetigt:
+            praefix_vergessen(p)
+    return alt is not None
+
+
 def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> int:
-    """Rueckgabe 0 geleert (vom Broker bestaetigt) oder nicht nachpruefbar
-    gesendet, 1 es steht noch etwas bzw. das Senden scheiterte, 2 nicht
-    moeglich. Schreibt kein Protokoll und legt nichts an."""
-    praefix = mqtt_praefix(config())
+    """Fuer die Deinstallation: das eingestellte Praefix und jedes gemerkte
+    (M5). Rueckgabe wie praefix_leeren(), der schlechteste Ausgang zaehlt."""
+    aktuell = mqtt_praefix(config())
+    liste = [aktuell] + [p for p in praefixe_gemerkt() if p != aktuell]
+    rc = 0
+    for p in liste:
+        r, _bestaetigt = praefix_leeren(p, runden, pause)
+        rc = max(rc, r)
+    return rc
+
+
+def praefix_leeren(praefix: str, runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S,
+                   melden=print) -> tuple:
+    """Rueckgabe (rc, bestaetigt). rc 0 geleert (vom Broker bestaetigt) oder
+    nicht nachpruefbar gesendet, 1 es steht noch etwas bzw. das Senden
+    scheiterte, 2 nicht moeglich. bestaetigt: der Broker hat nachgelesen und
+    nennt nichts mehr. Schreibt kein Protokoll (ausser ueber 'melden') und
+    legt nichts an."""
     z = mqtt_zustand()
     if not z["udpport"]:
-        print("<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
-              f"zurueckbehaltene Themen unter {praefix}/ wurden nicht geleert.")
-        return 2
+        melden("<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+               f"zurueckbehaltene Themen unter {praefix}/ wurden nicht geleert.")
+        return 2, False
     passt = _leer_passt(praefix)
     lage, belegt = mqtt_behalten_liste([f"{praefix}/#"], passt)
     nachgelesen = lage == "ok"
     offen = sorted(belegt) if nachgelesen else mqtt_leer_themen_aus_bestand(praefix)
     if nachgelesen and not offen:
-        print(f"<OK> MQTT: der Broker bestaetigt: unter {praefix}/ steht kein zurueckbehaltenes "
-              "Thema dieses Plugins - nichts zu leeren.")
-        return 0
+        melden(f"<OK> MQTT: der Broker bestaetigt: unter {praefix}/ steht kein zurueckbehaltenes "
+               "Thema dieses Plugins - nichts zu leeren.")
+        return 0, True
     zu_leeren = len(offen)
     gesendet = 0
     runde = 0
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError as err:
-        print(f"<WARNING> MQTT: kein Socket ({err}) - zurueckbehaltene Themen unter {praefix}/ "
-              "wurden nicht geleert.")
-        return 2
+        melden(f"<WARNING> MQTT: kein Socket ({err}) - zurueckbehaltene Themen unter {praefix}/ "
+               "wurden nicht geleert.")
+        return 2, False
     try:
         while offen and runde < max(1, int(runden)):
             if runde:
@@ -2293,30 +2555,30 @@ def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> i
                 else:
                     nachgelesen = False
     except OSError as err:
-        print(f"<WARNING> MQTT: Senden an den UDP-Eingang {z['udpport']} gescheitert ({err}) - "
-              f"zurueckbehaltene Themen unter {praefix}/ stehen womoeglich noch im Broker.")
-        return 1
+        melden(f"<WARNING> MQTT: Senden an den UDP-Eingang {z['udpport']} gescheitert ({err}) - "
+               f"zurueckbehaltene Themen unter {praefix}/ stehen womoeglich noch im Broker.")
+        return 1, False
     finally:
         s.close()
-    print(f"<INFO> MQTT: {zu_leeren} Themen unter {praefix}/ mit leerer Nutzlast an den "
-          f"UDP-Eingang {z['udpport']} des Gateways gesendet ({runde} Runde(n), "
-          f"{gesendet} Datagramme).")
+    melden(f"<INFO> MQTT: {zu_leeren} Themen unter {praefix}/ mit leerer Nutzlast an den "
+           f"UDP-Eingang {z['udpport']} des Gateways gesendet ({runde} Runde(n), "
+           f"{gesendet} Datagramme).")
     if not z["autostart"]:
-        print("<INFO> MQTT: das Gateway steht nicht auf Autostart - vermutlich hat niemand "
-              "zugehoert.")
+        melden("<INFO> MQTT: das Gateway steht nicht auf Autostart - vermutlich hat niemand "
+               "zugehoert.")
     if nachgelesen and not offen:
-        print(f"<OK> MQTT: der Broker bestaetigt: keines der {zu_leeren} Themen steht mehr "
-              "zurueckbehalten.")
-        return 0
+        melden(f"<OK> MQTT: der Broker bestaetigt: keines der {zu_leeren} Themen unter {praefix}/ "
+               "steht mehr zurueckbehalten.")
+        return 0, True
     if nachgelesen:
-        print(f"<WARNING> MQTT: {len(offen)} Themen stehen noch zurueckbehalten im Broker "
-              f"({', '.join(offen[:5])}{', ...' if len(offen) > 5 else ''}). "
-              "Von Hand: mosquitto_pub -r -n -t <thema>")
-        return 1
-    print("<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der "
-          "UDP-Eingang verwirft unter Last Datagramme; was dort noch steht, zeigt "
-          f"mosquitto_sub -v --retained-only -t '{praefix}/#'.")
-    return 0
+        melden(f"<WARNING> MQTT: {len(offen)} Themen stehen noch zurueckbehalten im Broker "
+               f"({', '.join(offen[:5])}{', ...' if len(offen) > 5 else ''}). "
+               "Von Hand: mosquitto_pub -r -n -t <thema>")
+        return 1, False
+    melden("<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der "
+           "UDP-Eingang verwirft unter Last Datagramme; was dort noch steht, zeigt "
+           f"mosquitto_sub -v --retained-only -t '{praefix}/#'.")
+    return 0, False
 
 
 # ---------------------------------------------------------------------------
@@ -2427,7 +2689,91 @@ def selbsttest() -> int:
     return 1 if fehler else 0
 
 
+# M6 (Durchgang 30.09.2026): welche Themenstaemme bildet der Dienst? Ein
+# Knoten, der JEDES Attribut der Cluster-Tabelle traegt, geht durch dieselben
+# Funktionen wie im Betrieb (knoten_abbilden, _taste, paare_bilden,
+# herzschlag_paare). Die Pruefzeile im Reiter Test haelt das Ergebnis in
+# beiden Richtungen gegen die Themenliste der Oberflaeche. Bis 0.9.30 suchte
+# sie nur die Woerter online, ok und ts im Quelltext und blieb gruen, waehrend
+# vier Namen der Liste nie hinausgingen (Bericht oberflaeche Nr. 11).
+def themen_selbstauskunft() -> dict:
+    tab = tabelle()
+    probe = {"bool": True, "bit0": 1, "text": "x", "energie_struct": {"energy": 1000000}}
+    attr: dict[str, object] = {}
+    for cl, c in (tab.get("cluster") or {}).items():
+        ep = "0" if c.get("nur_info") else "1"
+        for at, a in (c.get("attribute") or {}).items():
+            attr[f"{ep}/{cl}/{at}"] = probe.get(str(a.get("typ") or "zahl"), 100)
+    g = knoten_abbilden({"node_id": 1, "available": True, "attributes": attr}, tab,
+                        dict(VORGABEN, roh_ein=0))
+    stummel = types.SimpleNamespace(ereignisse={})
+    MatterVerbindung._taste(stummel, {"node_id": 1, "endpoint_id": 1, "cluster_id": 59,
+                                      "event_id": 1, "data": {"NewPosition": 1}})
+    for ep, felder in (stummel.ereignisse.get(1) or {}).items():
+        ziel = g["endpunkte"].setdefault(ep, {})
+        for thema, wert in felder.items():
+            if wert is not None:
+                ziel[thema] = wert
+    paare = paare_bilden({"1": g}, dict(VORGABEN, mqtt_ein=1, roh_ein=0), 1)
+    paare.update(herzschlag_paare(1))
+    staemme = sorted({k.rsplit("/", 1)[-1] for k in paare})
+    return {"themen": staemme, "retained": [t for t in staemme if ist_zustand(t)]}
+
+
+# C2 (Durchgang 30.09.2026): nur EIN Dienst je Installation. Sperrdatei
+# dienst.lock im Datenordner, fcntl.flock ohne Warten; der Deskriptor wird
+# mit O_CLOEXEC geoeffnet und bleibt offen, solange der Dienst laeuft - das
+# Betriebssystem gibt die Sperre beim Prozessende frei. Bis 0.9.30 ergaben
+# zwei gleichzeitige "dienst.sh start" (oder zwei Waechter derselben Minute)
+# fuenf von fuenf Runden zwei Dienste (gemessen, Bericht code C2). Die
+# Startsperre in dienst.sh ist die erste Stufe, diese die zweite. Bauart
+# Bewaesserung 0.9.35. Ohne fcntl oder ohne anlegbare Datei faellt sie offen
+# aus (dann gilt nur die Sperre in dienst.sh).
+DATEI_DIENSTSPERRE = PDATA / "dienst.lock"
+_DIENSTSPERRE = None
+
+
+def dienstsperre_nehmen() -> bool:
+    global _DIENSTSPERRE
+    try:
+        import fcntl  # noqa: PLC0415
+    except ImportError:
+        return True
+    try:
+        PDATA.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(DATEI_DIENSTSPERRE),
+                     os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644)
+    except OSError as err:
+        _LOG.warning("Sperrdatei %s nicht anlegbar (%s) - es gilt nur die Startsperre "
+                     "in dienst.sh.", DATEI_DIENSTSPERRE, err)
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    _DIENSTSPERRE = fd
+    return True
+
+
+# C6 (Durchgang 30.09.2026): die bekannten Schalter. Bis 0.9.30 lief jeder
+# andere Aufruf ("--selftest", ein Tippfehler) als Dienst - neben dem
+# eigentlichen und ohne PID-Datei (gemessen, Bericht code C6).
+BEKANNTE_SCHALTER = ("--einmal", "--selbsttest", "--mqtt-leeren", "--themen")
+
+
 def main() -> int:
+    fremd = [a for a in sys.argv[1:] if a not in BEKANNTE_SCHALTER]
+    if fremd:
+        print("[FEHL] Unbekannter Schalter: %s. Bekannt sind: %s. Es wurde nichts "
+              "gestartet und nichts angelegt." % (" ".join(fremd), ", ".join(BEKANNTE_SCHALTER)),
+              file=sys.stderr)
+        return 2
+    # --themen schreibt nichts und legt nichts an; es braucht nur die
+    # Cluster-Tabelle (auch aus dem ausgepackten Archiv).
+    if "--themen" in sys.argv:
+        print(json.dumps(themen_selbstauskunft(), ensure_ascii=False))
+        return 0
     # VOR log_einrichten(): das legt den Logordner an. Ein Schutz faellt
     # geschlossen aus (CLAUDE.md 4) - auch "--selbsttest" aus einem
     # Pruefarchiv schreibt nichts in die Anlage (Faelle P1, P2, P5).
@@ -2448,10 +2794,17 @@ def main() -> int:
     log_einrichten()
     if "--selbsttest" in sys.argv:
         return selbsttest()
+    einmal = "--einmal" in sys.argv
+    if not einmal and not dienstsperre_nehmen():
+        satz = ("Ein anderer Dienst dieses Plugins haelt die Sperre %s - dieser Start endet, "
+                "ohne zu verbinden oder zu senden." % DATEI_DIENSTSPERRE)
+        _LOG.warning(satz)
+        print(satz, file=sys.stderr)
+        return 3
     signal.signal(signal.SIGTERM, signal_behandeln)
     signal.signal(signal.SIGINT, signal_behandeln)
     try:
-        return asyncio.run(dienst(einmal="--einmal" in sys.argv))
+        return asyncio.run(dienst(einmal=einmal))
     except KeyboardInterrupt:
         return 0
     except Exception as err:  # noqa: BLE001

@@ -57,6 +57,48 @@ VENV="$PBIN/venv"
 # die Fabric darin, und jedes Update kostete alle angelernten Geraete.
 PFABRIC="$BASE/data/plugins/$PFOLDER.matter"
 PNUMMERN="$BASE/data/plugins/$PFOLDER.nummern.json"
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+LIEF="$BASE/data/plugins/$PFOLDER.lief"
+BK="$BASE/config/plugins/$PFOLDER.backup.json"
+
+# I1 (Durchgang 30.09.2026, Entscheidung 1): eingespielt wird aus der
+# Zweitschrift und gestartet nach dem Startmerker NUR bei einer
+# Aktualisierung - und die erkennt dieses Skript allein an der Marke, die
+# preupgrade.sh als Erstes anlegt (kein Altersvergleich). Festgehalten wird
+# es hier, am Anfang, bevor irgendetwas die Marke entfernt. Bis 0.9.30
+# spielte eine Neuinstallation eine liegengebliebene Zweitschrift samt Token,
+# WLAN-Passwort und Thread-Dataset zurueck, startete den Dienst und meldete
+# "Aktualisierung abgeschlossen" (gemessen, Bericht installer I1, Fall N2).
+UPGRADE=0
+[ -f "$MARKE" ] && UPGRADE=1
+# Die Marke faellt spaetestens beim Ende dieses Skripts - auch nach einem
+# "exit 1" (Python, venv, pip). Ohne den trap bliebe der Dienststart eine
+# Stunde gesperrt. Entfernt wird sie ausserdem ausdruecklich nach dem
+# Dienststart unten, und postupgrade.sh raeumt sie als Fangnetz noch einmal.
+trap 'rm -f "$MARKE" 2>/dev/null' EXIT
+
+# Neuinstallation: preinstall.sh hat die Zweitschrift schon beiseitegelegt.
+# Liegt sie trotzdem noch da (preinstall.sh lief nicht), geschieht es hier -
+# bevor irgendetwas sie lesen kann (die Selbstheilung der Oberflaeche liest
+# backup.json, nie .alt).
+if [ "$UPGRADE" = 0 ]; then
+    BEISEITE=""
+    for ZIEL in "$BK" "$BK.kaputt"; do
+        if [ -f "$ZIEL" ] && [ ! -L "$ZIEL" ]; then
+            rm -f "$ZIEL.alt" 2>/dev/null
+            if mv -f "$ZIEL" "$ZIEL.alt" 2>/dev/null; then
+                chmod 600 "$ZIEL.alt" 2>/dev/null
+                BEISEITE="$BEISEITE $ZIEL.alt"
+            fi
+        fi
+    done
+    if [ -e "$LIEF" ]; then
+        rm -f "$LIEF" && BEISEITE="$BEISEITE (Startmerker $LIEF entfernt)"
+    fi
+    if [ -n "$BEISEITE" ]; then
+        echo "<WARNING> Neuinstallation: Einstellungen und Zugangsdaten einer frueheren Installation werden NICHT eingespielt. Beiseitegelegt:$BEISEITE (die Deinstallation raeumt sie ab)."
+    fi
+fi
 
 mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PFABRIC" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
@@ -86,7 +128,6 @@ fi
 [ -f "$PCONFIG/matter2lox.json" ] || echo '{}' > "$PCONFIG/matter2lox.json"
 chmod 600 "$PCONFIG/matter2lox.json"
 
-BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/matter2lox.json"
 # Zurueckgespielt wird nach INHALT, nie nach Groesse. Stufe 2 = JSON-Objekt
 # mit nicht leerem aktionstoken, 1 = JSON-Objekt mit mindestens einem
@@ -112,7 +153,8 @@ else:
     print(1)
 ' "$1" 2>/dev/null || echo 0
 }
-if [ -f "$BK" ]; then
+# Nur bei einer Aktualisierung (I1).
+if [ "$UPGRADE" = 1 ] && [ -f "$BK" ]; then
     CF_STUFE=$(mt_inhalt "$CF")
     BK_STUFE=$(mt_inhalt "$BK")
     if [ "$CF_STUFE" -lt 2 ] && [ "$BK_STUFE" -gt "$CF_STUFE" ]; then
@@ -257,15 +299,15 @@ chmod 700 "$PDATA/befehle" 2>/dev/null
 # die Marke um Sekunden verpasst hat, oder ein Dienst aus der Zeit vor 0.9.26.
 # Er laeuft mit altem Code und ohne PID-Datei; 'dienst.sh stop' sucht seit
 # 0.9.26 argumentweise und findet auch ihn. Danach laeuft genau einer.
-MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
-LIEF="$BASE/data/plugins/$PFOLDER.lief"
 if [ -f "$MARKE" ] && [ -x "$PBIN/dienst.sh" ]; then
     MT_STOPP=$("$PBIN/dienst.sh" stop 2>&1)
     case "$MT_STOPP" in
         *angehalten*) echo "<INFO> Ein Dienst lief waehrend der Installation und wurde beendet." ;;
     esac
 fi
-if [ -f "$LIEF" ]; then
+# Nur bei einer Aktualisierung (I1): eine Neuinstallation startet nichts
+# (Regeln/06).
+if [ "$UPGRADE" = 1 ] && [ -f "$LIEF" ]; then
     rm -f "$LIEF"
     if [ -x "$PBIN/dienst.sh" ]; then
         # MT_START_TROTZ_MARKE=1: die Marke liegt noch (sie faellt erst
@@ -281,11 +323,13 @@ if [ -f "$LIEF" ]; then
             echo "<INFO> starten. Reiter Einstellungen, Knopf 'Dienst starten'."
         fi
     fi
-else
+elif [ "$UPGRADE" = 1 ]; then
     echo "<INFO> Der Dienst lief vorher nicht und wurde nicht gestartet."
+else
+    echo "<INFO> Neuinstallation - der Dienst wird nicht gestartet. Reiter Einstellungen, Knopf 'Dienst starten'."
 fi
-# Die Marke faellt NACH dem Start. postupgrade.sh entfernt sie noch einmal;
-# bei einer Neuinstallation gibt es sie gar nicht.
+# Die Marke faellt NACH dem Start. postupgrade.sh entfernt sie als Fangnetz
+# noch einmal; bei einer Neuinstallation gibt es sie gar nicht.
 rm -f "$MARKE" 2>/dev/null
 
 # ---------- Schlusszeile ----------
@@ -313,8 +357,10 @@ sys.exit(0 if ok else 1)
     MT_EINGERICHTET=1
 fi
 
-if [ "$MT_EINGERICHTET" -eq 1 ]; then
+if [ "$UPGRADE" = 1 ] && [ "$MT_EINGERICHTET" -eq 1 ]; then
     echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+elif [ "$UPGRADE" = 1 ]; then
+    echo "<OK> Aktualisierung abgeschlossen."
 else
     echo "<OK> Installation abgeschlossen."
 fi

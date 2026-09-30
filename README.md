@@ -10,6 +10,68 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.30
+
+Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
+Gemessen an Attrappen für Matter-Server, Broker und Docker unter PHP 7.4, 8.3
+und 8.5 sowie Python 3.12; nicht am Gerät. Befunde mit Datei:Zeile:
+`Pruefung-Durchgang-2026-09-29/Matter2Lox_BEFUNDE_UND_VERBESSERUNGEN.md`.
+Die Abschnitte zu älteren Fassungen darunter beschreiben den damaligen Stand.
+
+**MQTT**
+
+* **Farblampen legten alle MQTT-Werte lahm.** Hatte eine Lampe einen Farbton
+  ungleich 0, brach das Abbild ab, und kein Gerätewert ging mehr hinaus. Das
+  ist behoben; die Rohdurchreichung (`roh_ein`) wirkt jetzt auch.
+* Zustände ohne Aussage und entfernte Geräte gehen einmal als `-` retained
+  hinaus, statt alt stehen zu bleiben.
+* Alle 30 Minuten geht der volle Satz hinaus; ein verlorenes Datagramm wird
+  damit nachgeholt.
+* Hersteller, Produkt, Bezeichnung und Firmware gehen unter `geraetN/0/`
+  hinaus, wie die Themenliste es schon versprach.
+* Ein Präfixwechsel sendet unter dem neuen Präfix sofort alles und räumt das
+  alte ab; die Deinstallation räumt jedes je benutzte Präfix ab.
+* Ist der Broker nicht zu befragen, gehen keine leeren Löschnachrichten mehr
+  hinaus.
+
+**Dienst und Endpunkt**
+
+* Nur noch ein Dienst je Installation (Startsperre). Fehlt `soll_laufen`,
+  endet der Dienst wirklich; bisher verband er sich alle 5 s neu.
+* Der Endpunkt meldet `OK=0`, wenn der Dienst tot ist oder hängt (Herzschlag
+  älter als das Dreifache des Takts). Der Wächter startet einen hängenden
+  Dienst neu, höchstens alle 15 Minuten.
+* Eine neue Adresse oder ein neuer Port des Matter-Servers greift sofort.
+* Aus einer Sicherung übernommene Haken werden als Zahl gespeichert. Bisher
+  hätte der Dienst eine Sicherung mit `"schloss_ein":"0"` als eingeschaltet
+  gelesen und Schlossbefehle ausgeführt, während die Oberfläche „gesperrt“
+  zeigte.
+* Eine Sicherung mit leerem Token lässt das laufende Token in Kraft.
+
+**Oberfläche**
+
+* Nach jedem Knopf leitet die Seite um; F5 wiederholt nichts mehr, auch nicht
+  Schloss sperren oder Container entfernen.
+* Eingaben werden nicht mehr still geändert; Anführungszeichen in der SSID
+  sind erlaubt. `wartezeit` ist in Formular und Sicherung auf 0–60 begrenzt.
+* „Fabric sichern“ meldet einen Fehler statt ein halbes Archiv zu liefern.
+* Die Einzelabruf-Spalte zeigt die volle Adresse; der Reiter Test lädt beim
+  Klick.
+* Die Dienstknöpfe sagen ehrlich, wenn gerade ein Update läuft.
+
+**Installation**
+
+* Eine Neuinstallation spielt keine alten Einstellungen (Token, WLAN-Passwort)
+  mehr ein und startet nichts (neu: `preinstall.sh`, Reste nach `.alt`).
+  Fabric und Gerätenummern bleiben liegen; die Warnung nennt sie.
+* Die Deinstallation entfernt nur den eigenen Container: einen mit dem Label
+  `de.loxberry.plugin.folder=matter2lox` (neu beim Anlegen) oder einen
+  Altbestand, den das Plugin laut Einstellung selbst betreibt. Einen eigenen
+  Matter-Server des Anwenders fasst sie nicht mehr an.
+* Ein abgebrochenes Update bricht jetzt vor dem Abräumen ab, statt die Fabric
+  zu löschen.
+* Cron-Fehler landen in `cron.err`.
+
 ## Neu in 0.9.29
 
 - **`geraetN/erreichbar` geht nicht mehr zurückbehalten (retained) hinaus.**

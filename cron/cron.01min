@@ -1,7 +1,20 @@
 #!/bin/sh
 # Matter to Loxone - Waechter, minuetlich.
-# Der Platzhalter in der naechsten Zeile wird bei der Installation durch
-# den bin-Pfad des Plugins ersetzt. Er steht bewusst nicht im Kommentar:
-# die Ersetzung trifft jede Fundstelle, und der Satz laese sich danach
-# nicht mehr verstehen.
-"REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
+# Die Platzhalter in den Befehlszeilen unten werden bei der Installation durch
+# den bin- bzw. log-Pfad des Plugins ersetzt. Sie stehen bewusst nicht im
+# Kommentar: die Ersetzung trifft jede Fundstelle, und der Satz laese sich
+# danach nicht mehr verstehen.
+#
+# I6 (Durchgang 30.09.2026, Bauform Abfahrts-Assistent 1.6.10): die
+# FEHLERausgabe geht nach cron.err neben dem Protokoll, nicht mehr ins Leere.
+# Bis 0.9.30 endete die Zeile auf ">/dev/null 2>&1" - "kein
+# LoxBerry-Wurzelverzeichnis" oder ein fehlendes Ausfuehrungsrecht sah
+# niemand (Regeln/03, "Der Cron-Eintrag verschluckt seine Fehlerausgabe
+# nicht"). Erst den Ordner anlegen und cron.err anfassen: log/plugins liegt
+# auf der RAM-Platte und kann fehlen; scheitert die Umlenkung, fuehrt die
+# Schale den Befehl gar nicht aus. Ein Anhaengen ohne Inhalt frischt die
+# Aenderungszeit nicht auf, und die Protokollwartung raeumt eine alte Datei
+# weg (Regeln/06). Die regulaere Ausgabe bleibt still.
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
+/bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"

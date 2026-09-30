@@ -88,15 +88,25 @@ function mt_pruef_formulare()
  * Die Tabelle im Reiter MQTT ist die Anleitung. Laeuft sie gegen den
  * Sendecode auseinander, traegt jemand Eingaenge in Loxone ein, die nie einen
  * Wert bekommen - oder er sucht einen Wert, den es nicht gibt.
+ *
+ * Seit 0.9.30 (M6, Durchgang 30.09.2026) in BEIDEN Richtungen gemessen: die
+ * Themen der Liste (Cluster-Tabelle, Ereignis- und abgeleitete Themen, die
+ * festen Zeilen aus mt_themen_fest()) gegen die Staemme, die der Dienst selbst
+ * bildet (matter_dienst.py --themen, mt_themen_dienst()). Bis 0.9.30 las die
+ * Zeile nur die Tabelle und suchte im Dienst die Woerter online, ok und ts;
+ * sie blieb gruen, waehrend hersteller, produkt, bezeichnung und firmware nie
+ * hinausgingen, und ebenso bei einem zusaetzlich gesendeten Thema (gemessen,
+ * Bericht oberflaeche Nr. 11). Laesst sich der Dienst nicht fragen, ist die
+ * Zeile grau - "nicht gemessen" sieht nie wie "in Ordnung" aus.
  */
 function mt_pruef_themen()
 {
     $tab = mt_tabelle();
-    $bekannt = array();
+    $liste = array();
     foreach ((array) (isset($tab['cluster']) ? $tab['cluster'] : array()) as $c) {
         foreach ((array) (isset($c['attribute']) ? $c['attribute'] : array()) as $a) {
             if (isset($a['thema'])) {
-                $bekannt[(string) $a['thema']] = 1;
+                $liste[(string) $a['thema']] = 1;
             }
         }
     }
@@ -104,31 +114,44 @@ function mt_pruef_themen()
         $q = isset($tab[$gruppe]['themen']) ? $tab[$gruppe]['themen'] : array();
         foreach ((array) $q as $a) {
             if (isset($a['thema'])) {
-                $bekannt[(string) $a['thema']] = 1;
+                $liste[(string) $a['thema']] = 1;
             }
         }
     }
-    if (!$bekannt) {
+    if (!$liste) {
         return array(0, mt_t('TEST.A_THEMEN_LEER'));
     }
-    /* Was der Dienst zusaetzlich zu den Attributthemen sendet, steht in
-     * seiner Quelle. Gesucht werden die woertlichen Schluessel des
-     * Lebenszeichens - sie sind der Teil, der ohne Geraet hinausgeht. */
-    $lebens = array('online', 'ok', 'ts');
-    $fehlend = array();
-    $datei = mt_paths()['bindir'] . '/matter_dienst.py';
-    if (is_file($datei)) {
-        $py = (string) @file_get_contents($datei);
-        foreach ($lebens as $l) {
-            if (strpos($py, '"' . $l . '"') === false) {
-                $fehlend[] = $l;
-            }
+    foreach (array_keys(mt_themen_fest()) as $t) {
+        $liste[(string) $t] = 1;
+    }
+    list($dienst, $grund) = mt_themen_dienst();
+    if ($dienst === null) {
+        return array(-1, sprintf(mt_t('TEST.A_THEMEN_UNKLAR'), mt_e($grund)));
+    }
+    $gesendet = array();
+    foreach ($dienst as $t) {
+        $gesendet[(string) $t] = 1;
+    }
+    $nur_liste = array();
+    foreach ($liste as $t => $_egal) {
+        if (!isset($gesendet[$t])) {
+            $nur_liste[] = (string) $t;
         }
     }
-    if ($fehlend) {
-        return array(0, sprintf(mt_t('TEST.A_THEMEN_FEHL'), mt_e(implode(', ', $fehlend))));
+    $nur_dienst = array();
+    foreach ($gesendet as $t => $_egal) {
+        if (!isset($liste[$t])) {
+            $nur_dienst[] = (string) $t;
+        }
     }
-    return array(1, sprintf(mt_t('TEST.A_THEMEN_OK'), count($bekannt), count($lebens)));
+    sort($nur_liste);
+    sort($nur_dienst);
+    if ($nur_liste || $nur_dienst) {
+        return array(0, sprintf(mt_t('TEST.A_THEMEN_FEHL'),
+            mt_e($nur_liste ? implode(', ', $nur_liste) : '-'),
+            mt_e($nur_dienst ? implode(', ', $nur_dienst) : '-')));
+    }
+    return array(1, sprintf(mt_t('TEST.A_THEMEN_OK'), count($liste)));
 }
 
 /**

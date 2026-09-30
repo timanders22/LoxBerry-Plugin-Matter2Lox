@@ -73,6 +73,11 @@
  *
  * Ein Strich als Wert bedeutet: dieses Feld gibt es bei diesem Geraet nicht.
  * Es wird bewusst keine 0 gesendet - eine 0 waere eine stille Falschaussage.
+ *
+ * OK (seit 0.9.30, C3, Entscheidung 4): 1 nur, wenn das Abbild eine
+ * Verbindung zum Matter-Server meldet UND der Herzschlag des Dienstes
+ * hoechstens 3 x Takt alt ist (mt_ok_endpunkt()). ALTER bleibt daneben
+ * unveraendert das Alter des Abbilds.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -126,7 +131,15 @@ if ($mt_soll === '') {
         exit;
     }
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
-    echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
+    /* C5 (Durchgang 30.09.2026): der Satz nennt die Ursache, die vorliegt.
+     * Bis 0.9.30 stand hier immer "noch nie geoeffnet" - auch wenn eine
+     * Konfiguration da war und nur ihr Token leer (nach dem Zurueckspielen
+     * einer Sicherung mit leerem Token, Bericht code C5). */
+    if (in_array(mt_config_lage(), array('fehlt', 'leer'), true)) {
+        echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
+    } else {
+        echo "Das Aktionstoken ist leer. Reiter Einbindung in Loxone, Knopf 'Neues Token erzeugen'.\n";
+    }
     exit;
 }
 if (!hash_equals($mt_soll, $mt_ist)) {
@@ -265,7 +278,7 @@ if ($mt_aktion === 'roh') {
 if ($mt_aktion === 'liste') {
     $srv = mt_serverinfo();
     printf("LISTE;OK=%d;N=%d;ALTER=%d;SDK=%s;BLUETOOTH=%s\n",
-        (int) (!empty($mt_lox['ok'])), count($mt_alle), $mt_alter,
+        mt_ok_endpunkt($mt_lox, $mt_cfg), count($mt_alle), $mt_alter,
         isset($srv['sdk_version']) ? $srv['sdk_version'] : '-',
         isset($srv['bluetooth']) ? (int) $srv['bluetooth'] : 0);
     foreach ($mt_alle as $nr => $g) {
@@ -293,7 +306,7 @@ if ($mt_aktion === 'statusalle') {
         if (!mt_f($g, 'erreichbar', 0)) { $mt_alleda = false; break; }
     }
     $teile = array(
-        'MATTER;OK=' . (int) (!empty($mt_lox['ok'])),
+        'MATTER;OK=' . mt_ok_endpunkt($mt_lox, $mt_cfg),
         'ERREICH=' . (int) $mt_alleda,
         'ALTER=' . $mt_alter,
     );
@@ -390,7 +403,7 @@ if ($mt_aktion === 'wert') {
 
 if ($mt_aktion === 'status') {
     $teile = array(
-        'MATTER;OK=' . (int) (!empty($mt_lox['ok'])),
+        'MATTER;OK=' . mt_ok_endpunkt($mt_lox, $mt_cfg),
         'ERREICH=' . (int) mt_f($mt_g, 'erreichbar', 0),
         'ALTER=' . $mt_alter,
     );
