@@ -263,19 +263,26 @@ echo "<OK> websockets geladen, Fassung $WSVER"
 
 # ---------- Docker ----------
 if command -v docker >/dev/null 2>&1; then
-    if docker info >/dev/null 2>&1; then
+    # docker info mit Frist: ein haengender Docker-Dienst haelt die
+    # Installation sonst unbegrenzt auf (Welle 2, E4).
+    if timeout -k 5 20 docker info >/dev/null 2>&1; then
         echo "<OK> Docker vorhanden und ansprechbar: $(docker --version 2>/dev/null)"
     else
         echo "<INFO> Docker ist installiert, antwortet aber nicht."
         echo "<INFO> Meist fehlt dem Benutzer loxberry die Gruppe docker:"
         echo "<INFO>   sudo usermod -aG docker loxberry   (danach neu anmelden)"
+        echo "<INFO> Gruppe und Dienst richtet das LoxBerry-Plugin Docker NG ein:"
+        echo "<INFO>   https://github.com/timanders22/LoxBerry-Plugin-Docker-NG"
     fi
 else
     echo "<INFO> Docker ist nicht installiert."
     echo "<INFO> Das ist nur dann ein Problem, wenn das Plugin den Matter-Server"
     echo "<INFO> selbst betreiben soll. Wer bereits einen Matter-Server hat,"
     echo "<INFO> traegt in den Einstellungen einfach dessen Adresse ein."
-    echo "<INFO> Docker nachruesten: LoxBerry-Plugin Docker installieren."
+    echo "<INFO> Docker nachruesten: LoxBerry-Plugin Docker NG installieren:"
+    echo "<INFO>   https://github.com/timanders22/LoxBerry-Plugin-Docker-NG"
+    echo "<INFO> (das aeltere Plugin Docker geht auch). Danach im Reiter"
+    echo "<INFO> Einstellungen den Knopf 'Matter-Server einrichten' druecken."
 fi
 
 chmod 755 "$PBIN/dienst.sh" "$PBIN/matter_dienst.py" 2>/dev/null

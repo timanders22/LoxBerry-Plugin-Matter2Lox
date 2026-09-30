@@ -202,9 +202,26 @@ if ($mt_post && isset($_POST['fabric_sichern'])) {
     $mt_tab = 'tab-settings';
 }
 
-/* ---------------- Container aktualisieren ---------------- */
+/* ---------------- Matter-Server einrichten (E1, Welle 2) ----------------
+ *
+ * Ein Knopf statt der Reihenfolge "Abbild holen, Container anlegen,
+ * starten": bin/container_vorgang.php einrichten im Hintergrund
+ * (mt_ct_vorgang_starten()). Bis 0.9.33 liefen Anlegen und Holen im
+ * Seitenaufruf, beim ersten Mal bis zu 15 Minuten. Die Meldung sagt nur
+ * "gestartet"; das Ergebnis steht danach im Reiter (mt_ct_vorgang_anzeige()).
+ * Ein zweiter Druck startet keinen zweiten Vorgang, aus dem Archivmodus und
+ * bei eigener_container=0 wird nichts angelegt. */
+if ($mt_post && isset($_POST['mt_einrichten'])) {
+    list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('einrichten');
+    if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+    $mt_tab = 'tab-settings';
+}
+
+/* ---------------- Container aktualisieren ----------------
+ * Seit Welle 2 im Hintergrund, mit dem Verhalten von
+ * mt_container_aktualisieren() (unveraendert). */
 if ($mt_post && isset($_POST['container_akt'])) {
-    list($mt_ok, $mt_ausgabe) = mt_container_aktualisieren();
+    list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('aktualisieren');
     if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
     $mt_tab = 'tab-settings';
 }
@@ -503,8 +520,19 @@ if ($mt_post && isset($_POST['dienst'])) {
 /* ---------------- Container ---------------- */
 if ($mt_post && isset($_POST['container'])) {
     $mt_was = (string) $_POST['container'];
-    if (!in_array($mt_was, array('anlegen', 'start', 'stop', 'restart', 'entfernen', 'holen'), true)) {
+    /* E3 (Welle 2): "anlegen" gibt es als Einzelknopf nicht mehr - das tut
+     * "Matter-Server einrichten" im Hintergrund, und ein Seitenaufruf soll
+     * nicht mehr 15 Minuten stehen. "holen" laeuft aus demselben Grund im
+     * Hintergrund (derselbe Aufruf mt_container('holen')). starten, anhalten,
+     * neu starten, entfernen wirken wie bisher. Solange ein Vorgang laeuft,
+     * fasst kein Einzelknopf den Container an. */
+    if (!in_array($mt_was, array('start', 'stop', 'restart', 'entfernen', 'holen'), true)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_CONTAINERBEFEHL');
+    } elseif (mt_ct_vorgang_aktiv() !== null) {
+        $mt_fehler[] = mt_t('EINST.V_LAEUFT_SCHON');
+    } elseif ($mt_was === 'holen') {
+        list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('holen');
+        if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
     } else {
         list($mt_ok, $mt_ausgabe) = mt_container($mt_was);
         if ($mt_ok) {
@@ -732,6 +760,12 @@ $mt_tabelle = mt_tabelle();
  * stand bis 0.9.9 nirgends - und ohne die Abbildkennung laesst sich die
  * Wirkung des Knopfs 'Abbild neu holen' gar nicht beurteilen. */
 $mt_fassung = mt_container_fassung($mt_cfg);
+/* E1/E2 (Welle 2): Stand des Hintergrundvorgangs (nur eine Datei lesen) und
+ * die Ampel - gemessen nur, wenn der Reiter Einstellungen serverseitig offen
+ * ist (docker info mit 5 s Frist, container_eigen.sh, mt_erreichbar() mit
+ * seinem 30-s-Zwischenspeicher). Die anderen Reiter fragen nichts neu. */
+$mt_vorgang = mt_ct_vorgang();
+$mt_ampel = $mt_tab === 'tab-settings' ? mt_ct_ampel($mt_cfg) : null;
 $mt_fabricgroesse = mt_fabric_groesse();
 $mt_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
     ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
@@ -830,6 +864,13 @@ if ($mt_rahmen) {
    sechs Spalten und ein Formular je Zeile. */
 .sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
 .sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+/* Eigener Zusatz (Welle 2, E2): die Punkte der Ampel im Reiter
+   Einstellungen, wortgleich aus MGiSmart 1.1.20. Feste Klassen, keine
+   zusammengesetzte. */
+.sm-ampel { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+.sm-ampel-gruen { background: #6dac20; }
+.sm-ampel-rot   { background: #b00000; }
+.sm-ampel-grau  { background: #9e9e9e; }
 </style>
 <div class="sm-wrap">
 
@@ -942,15 +983,67 @@ foreach (array('start' => 'sm-b-aktion', 'restart' => 'sm-b-aktion', 'stop' => '
 
 <h2><?= mt_e(mt_t('EINST.H_CONTAINER')) ?></h2>
 <div class="sm-hinweis"><?= mt_t('EINST.CONTAINER_ERKLAERUNG') ?></div>
-<?php if (!mt_docker_da()) { ?>
-<div class="sm-fehler"><?= mt_t('EINST.KEIN_DOCKER') ?></div>
+<?php
+/* E1-E4 (Welle 2, Muster MGiSmart "Gateway einrichten"): ein Knopf
+ * "Matter-Server einrichten" im Hintergrund, eine Ampel mit drei Zeilen, die
+ * Einzelknoepfe unter "Fuer Fortgeschrittene". Bei eigener_container=0 gibt es
+ * keinen Knopf, nur die Adresse. Die Ampelfarben sind feste Klassen. */
+$mt_eigener = (string) $mt_cfg['eigener_container'] === '1';
+$mt_vakt = in_array($mt_vorgang['zustand'], array('gestartet', 'laeuft'), true);
+$mt_vanz = mt_ct_vorgang_anzeige($mt_vorgang);
+$mt_dhinweis = ($mt_ampel !== null && $mt_eigener) ? mt_docker_hinweis($mt_ampel['docker']) : '';
+$mt_afarbe = array('gruen' => 'sm-ampel sm-ampel-gruen', 'rot' => 'sm-ampel sm-ampel-rot',
+                   'grau' => 'sm-ampel sm-ampel-grau');
+?>
+<?php if ($mt_vakt && $mt_tab === 'tab-settings') { ?>
+<meta http-equiv="refresh" content="5;url=index.php?form=settings">
+<?php } ?>
+<?php if ($mt_vanz !== null && $mt_vanz[0] === 'sm-hinweis') { ?>
+<div class="sm-hinweis"><?= $mt_vanz[1] ?></div>
+<?php } elseif ($mt_vanz !== null) { ?>
+<div class="sm-warnung"><?= $mt_vanz[1] ?></div>
+<?php } ?>
+<?php if (!$mt_eigener) { ?>
+<div class="sm-hinweis"><?= sprintf(mt_t('EINST.EIGENER_SERVER'), mt_e($mt_cfg['server_host'] . ':' . (int) $mt_cfg['server_port'])) ?></div>
+<?php } elseif ($mt_dhinweis !== '') { ?>
+<div class="sm-warnung"><?= $mt_dhinweis ?></div>
+<?php } ?>
+<?php if ($mt_ampel === null) { ?>
+<div class="sm-hilfe"><?= mt_t('EINST.A_UNGEMESSEN') ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th style="width:2.5em;"></th><th><?= mt_e(mt_t('EINST.A_FRAGE')) ?></th><th><?= mt_e(mt_t('EINST.A_BEFUND')) ?></th></tr>
+<?php foreach (array('container' => 'EINST.A_CONTAINER', 'server' => 'EINST.A_SERVER', 'bruecke' => 'EINST.A_BRUECKE') as $mt_ak => $mt_ab) {
+    $mt_af = isset($mt_afarbe[$mt_ampel[$mt_ak][0]]) ? $mt_afarbe[$mt_ampel[$mt_ak][0]] : $mt_afarbe['grau']; ?>
+<tr><td style="text-align:center;"><i class="<?= $mt_af ?>" title="<?= mt_e($mt_ampel[$mt_ak][0]) ?>"></i></td>
+    <td><?= mt_e(mt_t($mt_ab)) ?></td>
+    <td><?= $mt_ampel[$mt_ak][1] ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+<?php if ($mt_eigener && !$mt_vakt && $mt_dhinweis === '') { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-hilfe"><?= mt_t('EINST.EINRICHTEN_HILFE') ?></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="mt_einrichten" value="1"><?= mt_e(mt_t('EINST.K_EINRICHTEN')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="container_akt" value="1"><?= mt_e(mt_t('EINST.KC_AKTUALISIEREN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('EINST.H_AKTUALISIEREN') ?></div>
 <?php } ?>
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('ALLG.EIGENSCHAFT')) ?></th><th><?= mt_e(mt_t('ALLG.WERT')) ?></th></tr>
 <tr><td><?= mt_e(mt_t('EINST.T_CONTZUSTAND')) ?></td>
     <td class="<?= $mt_contzustand === 'laeuft' ? 'sm-an' : 'sm-aus' ?>"><?= mt_e(mt_t('ALLG.CONT_' . strtoupper($mt_contzustand))) ?></td></tr>
-<tr><td><?= mt_e(mt_t('EINST.T_AUFRUF')) ?></td>
-    <td><span class="sm-mono">docker <?= mt_e(mt_container_befehl($mt_cfg)) ?></span></td></tr>
 <tr><td><?= mt_e(mt_t('EINST.T_DATENORDNER')) ?></td>
     <td><span class="sm-mono"><?= mt_e($mt_p['fabric']) ?></span>
         <?php if ($mt_fabricgroesse >= 0) { ?>(<?= (int) round($mt_fabricgroesse / 1024) ?> kB)<?php } ?></td></tr>
@@ -963,15 +1056,24 @@ foreach (array('start' => 'sm-b-aktion', 'restart' => 'sm-b-aktion', 'stop' => '
     <?php } ?></td></tr>
 </table>
 <div class="sm-warnung"><?= mt_t('EINST.FABRIC_WARNUNG') ?></div>
+
+<details class="sm-step"><summary><b><?= mt_e(mt_t('EINST.H_FORTGESCHRITTEN')) ?></b></summary>
+<div class="sm-hilfe"><?= mt_t('EINST.FORTGESCHRITTEN') ?></div>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('ALLG.EIGENSCHAFT')) ?></th><th><?= mt_e(mt_t('ALLG.WERT')) ?></th></tr>
+<tr><td><?= mt_e(mt_t('EINST.T_AUFRUF')) ?></td>
+    <td><span class="sm-mono">docker <?= mt_e(mt_container_befehl($mt_cfg)) ?></span></td></tr>
+</table>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
-<?php /* Alle sechs veraendern etwas: 'anlegen' erzeugt einen Container,
-   'holen' zieht ein Abbild von mehreren hundert Megabyte. Bis 0.9.16 trugen
-   drei davon Gruen bzw. Grau - und die Legende darueber erklaerte Gruen mit
-   "veraendert nichts". */
-foreach (array('anlegen' => 'sm-b-aktion', 'start' => 'sm-b-aktion', 'holen' => 'sm-b-aktion',
+<?php /* Alle fuenf veraendern etwas: 'holen' zieht ein Abbild von mehreren
+   hundert Megabyte (im Hintergrund). Bis 0.9.16 trugen einige Gruen bzw.
+   Grau - und die Legende erklaerte Gruen mit "veraendert nichts".
+   "Container anlegen" entfaellt seit Welle 2 (E3): das tut der Knopf
+   "Matter-Server einrichten". */
+foreach (array('start' => 'sm-b-aktion', 'holen' => 'sm-b-aktion',
                      'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion', 'entfernen' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
   <form action="index.php" method="post">
     <?php echo mt_fmt(); ?>
@@ -979,13 +1081,8 @@ foreach (array('anlegen' => 'sm-b-aktion', 'start' => 'sm-b-aktion', 'holen' => 
     <button data-role="none" class="sm-btn <?= $mt_farbe ?>" type="submit" name="container" value="<?= $mt_b ?>"><?= mt_e(mt_t('EINST.KC_' . strtoupper($mt_b))) ?></button>
   </form>
 <?php } ?>
-  <form action="index.php" method="post">
-    <?php echo mt_fmt(); ?>
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="container_akt" value="1"><?= mt_e(mt_t('EINST.KC_AKTUALISIEREN')) ?></button>
-  </form>
 </div>
-<div class="sm-hilfe"><?= mt_t('EINST.H_AKTUALISIEREN') ?></div>
+</details>
 
 <h2><?= mt_e(mt_t('EINST.H_FABRIC')) ?></h2>
 <div class="sm-warnung"><?= mt_t('EINST.FABRIC_SICHERN_ERKLAERUNG') ?></div>

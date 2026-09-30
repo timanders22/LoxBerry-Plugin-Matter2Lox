@@ -10,6 +10,30 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.33
+
+Der Matter-Server lässt sich jetzt mit einem Knopf einrichten – so einfach wie
+das Gateway bei MGiSmart. Gemessen mit einer Docker-Attrappe unter PHP 7.4,
+8.3 und 8.5; nicht am Gerät.
+
+* **Ein Knopf „Matter-Server einrichten“:** holt das Abbild, legt den Container
+  mit dem Label des Plugins an und startet ihn – im Hintergrund, höchstens
+  15 Minuten. Die Seite zeigt „wird eingerichtet … seit N s“ und bleibt
+  bedienbar; bis 0.9.32 stand sie beim ersten Anlegen bis zu 15 Minuten. Ein
+  eigener Container wird nur gestartet, ein fremder mit gleichem Namen nie
+  angefasst. Auch „Abbild aktualisieren“ läuft jetzt im Hintergrund.
+* **Ampel mit drei Zeilen:** Läuft der Container? Antwortet der Matter-Server?
+  Ist die Brücke verbunden? Unbekannt ist grau, nie grün.
+* Die Einzelschritte (starten, anhalten, neu starten, entfernen, Abbild holen)
+  und die Aufrufzeile stehen zugeklappt unter „Für Fortgeschrittene“; der
+  Einzelknopf „Container anlegen“ entfällt.
+* **Docker kommt über das Plugin
+  [Docker NG](https://github.com/timanders22/LoxBerry-Plugin-Docker-NG).** Die
+  Oberfläche unterscheidet „Docker fehlt“ von „kein Zugriff auf Docker“ und
+  nennt jeweils den Weg; ein Matter-Server auf einem anderen Rechner geht
+  weiterhin. Das Installationsprotokoll fragt Docker mit 20 s Frist und meldet
+  einen hängenden Docker-Dienst nicht mehr als „OK“.
+
 ## Neu in 0.9.32
 
 Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
@@ -964,6 +988,21 @@ sind**: Container, Brücke und Loxone-Anbindung liegen in einem Plugin.
 
 Thread-Geräte brauchen zusätzlich einen Thread-Border-Router im Haus (Apple TV,
 HomePod, Google Nest Hub, eigener Router). Der LoxBerry ist keiner.
+
+**Docker** braucht es nur, wenn das Plugin den Matter-Server selbst betreibt. Es
+kommt mit dem LoxBerry-Plugin **Docker NG**
+([github.com/timanders22/LoxBerry-Plugin-Docker-NG](https://github.com/timanders22/LoxBerry-Plugin-Docker-NG));
+das ältere Plugin Docker geht auch. Danach genügt im Reiter *Einstellungen* ein
+Knopf: **Matter-Server einrichten** holt das Abbild, falls es fehlt, legt den
+Container mit der Aufrufzeile unter *Für Fortgeschrittene* an und startet ihn –
+im Hintergrund, höchstens 15 Minuten; die Seite zeigt „läuft … seit N s“ und
+lädt sich selbst neu. Eine Ampel darunter sagt, ob der Container läuft, ob der
+Matter-Server antwortet und ob die Brücke verbunden ist. Ein eigener Container
+wird nur gestartet, ein fremder mit demselben Namen nie angefasst. Die
+Einzelschritte (starten, Abbild neu holen, neu starten, anhalten, entfernen)
+stehen zugeklappt unter *Für Fortgeschrittene*. Wer den Matter-Server auf einem
+anderen Rechner betreibt, nimmt den Haken „Den Matter-Server selbst betreiben“
+ab und trägt nur dessen Adresse ein; Docker ist dann nicht nötig.
 
 Was das Plugin seit 0.9.18 abnimmt, ist das Abschreiben des Datasets. Wer einen
 eigenen Border-Router auf Grundlage von OpenThread betreibt (`ot-br-posix`, das

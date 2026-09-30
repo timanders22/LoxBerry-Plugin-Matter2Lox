@@ -1554,8 +1554,8 @@ function mt_docker_da()
     return count($a) > 0 ? 1 : 0;
 }
 
-/** Rueckgabe: array(ok, Ausgabe) */
-function mt_docker($argumente)
+/** Rueckgabe: array(ok, Ausgabe). $frist in Sekunden, ohne Angabe 900 (pull, run) bzw. 30. */
+function mt_docker($argumente, $frist = null)
 {
     if (!mt_docker_da()) {
         return array(0, 'Docker ist auf diesem LoxBerry nicht installiert.');
@@ -1570,7 +1570,9 @@ function mt_docker($argumente)
      * Abbild zieht) duerfen 15 Minuten dauern, alles andere 30 s; danach
      * SIGTERM, nach weiteren 5 s SIGKILL (Muster 13 der Nachlese). */
     $wort = strtok(ltrim((string) $argumente), ' ');
-    $frist = in_array($wort, array('pull', 'run'), true) ? 900 : 30;
+    /* E1 (Welle 2): der Hintergrundvorgang "Matter-Server einrichten" gibt die
+     * Restzeit seiner 15-Minuten-Frist mit; ohne Angabe wie bisher. */
+    $frist = $frist === null ? (in_array($wort, array('pull', 'run'), true) ? 900 : 30) : max(1, (int) $frist);
     @exec('timeout -k 5 ' . $frist . ' docker ' . $argumente . ' 2>&1', $ausgabe, $code);
     if ($code === 124 || $code === 137) {
         $ausgabe[] = sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), $frist);
@@ -1844,6 +1846,455 @@ function mt_container_aktualisieren()
                             mt_e(substr($vorher['container'], 0, 19)),
                             mt_e(substr($nachher['container'], 0, 19)),
                             $nachher['marke'] !== '' ? mt_e($nachher['marke']) : '?'));
+}
+
+/* ==================================================================
+ * Matter-Server einrichten per Knopf, im Hintergrund (E1), und die Ampel
+ * (E2) - Verbesserungsbau Welle 2, 30.09.2026.
+ *
+ * Muster: MGiSmart 1.1.20 (mg_gw_vorgang_*, mg_gw_ampel, bin/gateway_vorgang.php)
+ * und Sprachsteuerung 0.11.12 (sp_ct_vorgang_*, bin/container_vorgang.php).
+ * Bis 0.9.33 liefen "Container anlegen" und "Abbild holen" im Seitenaufruf
+ * (mt_docker mit Frist 900 s): beim ersten Mal stand die Seite bis zu
+ * 15 Minuten, und der Anwender musste die Reihenfolge (erst holen, dann
+ * anlegen) selbst kennen.
+ *
+ * Unveraendert (Entscheidungen 11 und 15): die Aufrufzeile ist
+ * mt_container_befehl(), die Eigentumspruefung ist EINE Stelle
+ * (bin/container_eigen.sh ueber mt_container_eigen()), Fabric und
+ * Datenordner werden nie angefasst, eigener_container=0 legt nichts an.
+ * ================================================================== */
+
+/** Hoechstdauer des Vorgangs "Matter-Server einrichten" in Sekunden. */
+function mt_ct_frist()
+{
+    return 900;
+}
+
+/**
+ * Ist Docker da und ansprechbar? Rueckgabe array(lage, satz) mit lage
+ * ok | fehlt | kein_zugriff | dienst_aus | haengt | fehler; satz ist
+ * schlichter Text (nicht maskiert). Bauart mg_docker_lage() (MGiSmart) bzw.
+ * dk_zustand() (Docker NG): "docker info" mit Frist.
+ */
+function mt_docker_lage($sekunden = 10)
+{
+    if (!mt_docker_da()) {
+        return array('fehlt', mt_t('EINST.A_DOCKER_FEHLT'));
+    }
+    $sekunden = max(1, (int) $sekunden);
+    $aus = array();
+    $rc = 0;
+    @exec('timeout -k 2 ' . $sekunden . ' docker info --format ' . escapeshellarg('{{.ServerVersion}}')
+          . ' 2>&1', $aus, $rc);
+    $text = trim(implode(' ', $aus));
+    if ($rc === 0) {
+        return array('ok', sprintf(mt_t('EINST.A_DOCKER_OK'), substr($text, 0, 40)));
+    }
+    if ($rc === 124 || $rc === 137) {
+        return array('haengt', sprintf(mt_t('EINST.A_DOCKER_HAENGT'), $sekunden));
+    }
+    $t = strtolower($text);
+    if (strpos($t, 'permission denied') !== false) {
+        return array('kein_zugriff', mt_t('EINST.A_DOCKER_ZUGRIFF'));
+    }
+    if (strpos($t, 'cannot connect') !== false || strpos($t, 'daemon running') !== false) {
+        return array('dienst_aus', mt_t('EINST.A_DOCKER_DIENST'));
+    }
+    return array('fehler', sprintf(mt_t('EINST.A_DOCKER_FEHLER'), $rc, substr($text, 0, 200)));
+}
+
+/** Der lange Hinweis (HTML) zu einer Lage ohne Docker, oder ''. */
+function mt_docker_hinweis($lage)
+{
+    if ($lage === 'fehlt') {
+        return mt_t('EINST.DOCKER_FEHLT');
+    }
+    if (in_array($lage, array('kein_zugriff', 'dienst_aus'), true)) {
+        return mt_t('EINST.DOCKER_KEIN_ZUGRIFF');
+    }
+    return '';
+}
+
+function mt_ct_vorgang_datei()
+{
+    return mt_paths()['datadir'] . '/container_vorgang.json';
+}
+
+/** Das Programm des Hintergrundvorgangs (installiert unter bin/plugins/<ordner>/). */
+function mt_ct_vorgang_programm()
+{
+    return mt_paths()['bindir'] . '/container_vorgang.php';
+}
+
+/** Stand schreiben: atomar, Rechte 0600 vor dem Inhalt (mt_json_schreiben). */
+function mt_ct_vorgang_schreiben(array $d)
+{
+    return mt_json_schreiben(mt_ct_vorgang_datei(), $d, 0600);
+}
+
+/** Laeuft der Prozess $pid wirklich als dieser Hintergrundvorgang? Argumentweise. */
+function mt_ct_vorgang_prozess($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0 || !is_readable('/proc/' . $pid . '/cmdline')) {
+        return false;
+    }
+    $a = explode("\0", (string) @file_get_contents('/proc/' . $pid . '/cmdline'));
+    return isset($a[1]) && $a[1] === mt_ct_vorgang_programm()
+        && preg_match('#(^|/)php[0-9.]*\z#', (string) $a[0]) === 1;
+}
+
+/**
+ * Der Stand des Hintergrundvorgangs. zustand: keiner | gestartet | laeuft |
+ * fertig | fehler | abgebrochen. "abgebrochen": die Datei sagt "laeuft",
+ * aber der Prozess ist fort - oder er ist nach 20 s nie angelaufen.
+ */
+function mt_ct_vorgang()
+{
+    $d = mt_json_lesen(mt_ct_vorgang_datei());
+    if (!isset($d['zustand']) || !is_string($d['zustand'])) {
+        return array('zustand' => 'keiner');
+    }
+    $d += array('vorgang' => '', 'start' => 0, 'pid' => 0, 'meldung' => '', 'schritt' => '', 'ende' => 0);
+    if ($d['zustand'] === 'laeuft' && !mt_ct_vorgang_prozess($d['pid'])) {
+        $d['zustand'] = 'abgebrochen';
+    }
+    if ($d['zustand'] === 'gestartet' && time() - (int) $d['start'] > 20) {
+        $d['zustand'] = 'abgebrochen';
+    }
+    return $d;
+}
+
+/** Laeuft gerade ein Vorgang? Dann sein Stand, sonst null. */
+function mt_ct_vorgang_aktiv()
+{
+    $v = mt_ct_vorgang();
+    return in_array($v['zustand'], array('gestartet', 'laeuft'), true) ? $v : null;
+}
+
+/**
+ * Einen Hintergrundvorgang starten: 'einrichten', 'holen' oder
+ * 'aktualisieren'. Kein Warten im Seitenaufbau (hoechstens 2 s, bis der
+ * Vorgang seine Prozessnummer eingetragen hat). Zweimal starten geht nicht:
+ * Pruefen und Eintragen stehen unter einer Sperre, die VOR dem Abzweigen
+ * wieder freigegeben wird - eine offene Sperre vererbte sich sonst an den
+ * Kindprozess (Muster sp_ct_vorgang_starten()). Aus dem Archivmodus wird
+ * nichts gestartet (wie mt_container()). Rueckgabe array(ok, satz als HTML).
+ */
+function mt_ct_vorgang_starten($auftrag)
+{
+    if (!in_array($auftrag, array('einrichten', 'holen', 'aktualisieren'), true)) {
+        return array(0, mt_t('EINST.FEHLER_CONTAINERBEFEHL'));
+    }
+    $p = mt_paths();
+    if ($p['home'] === '') {
+        return array(0, mt_t('EINST.ARCHIV_VERWEIGERT'));
+    }
+    $cfg = mt_config();
+    if ($auftrag === 'einrichten' && (string) $cfg['eigener_container'] !== '1') {
+        return array(0, mt_t('EINST.V_NUR_EIGENER'));
+    }
+    $prog = mt_ct_vorgang_programm();
+    if (!is_file($prog) || !function_exists('proc_open')) {
+        return array(0, sprintf(mt_t('EINST.V_PROGRAMM_FEHLT'), mt_e($prog)));
+    }
+    if (!is_dir($p['datadir'])) {
+        @mkdir($p['datadir'], 0775, true);
+    }
+    $sperre = @fopen($p['datadir'] . '/container_vorgang.lock', 'c');
+    if ($sperre === false) {
+        return array(0, mt_t('EINST.V_DATEI'));
+    }
+    if (!flock($sperre, LOCK_EX | LOCK_NB)) {
+        fclose($sperre);
+        return array(0, mt_t('EINST.V_LAEUFT_SCHON'));
+    }
+    $frei = mt_ct_vorgang_aktiv() === null;
+    $geschrieben = $frei && mt_ct_vorgang_schreiben(array('vorgang' => $auftrag, 'zustand' => 'gestartet',
+        'start' => time(), 'pid' => 0, 'schritt' => '', 'meldung' => ''));
+    flock($sperre, LOCK_UN);
+    fclose($sperre);
+    if (!$frei) {
+        return array(0, mt_t('EINST.V_LAEUFT_SCHON'));
+    }
+    if (!$geschrieben) {
+        return array(0, mt_t('EINST.V_DATEI'));
+    }
+    $desk = array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'),
+                  2 => array('file', '/dev/null', 'w'));
+    $pipes = array();
+    // setsid loest den Vorgang von Apache; "&" laesst die Schale sofort enden.
+    $proc = @proc_open(array('sh', '-c', 'setsid "$0" "$@" </dev/null >/dev/null 2>&1 &', 'php', $prog, $auftrag),
+                       $desk, $pipes);
+    if (!is_resource($proc)) {
+        mt_ct_vorgang_schreiben(array('vorgang' => $auftrag, 'zustand' => 'fehler', 'start' => time(),
+            'ende' => time(), 'pid' => 0, 'schritt' => '', 'meldung' => mt_t('EINST.V_START_FEHL')));
+        return array(0, mt_t('EINST.V_START_FEHL'));
+    }
+    proc_close($proc);
+    mt_log('Container: Vorgang "' . $auftrag . '" gestartet.');
+    // Gemeldet wird "gestartet" erst, wenn der Vorgang seine Prozessnummer
+    // eingetragen hat - nicht auf den Rueckgabewert der Schale, die meldet nur,
+    // dass sie abgezweigt hat (Muster sp_ct_vorgang_starten()).
+    for ($i = 0; $i < 20; $i++) {
+        $v = mt_ct_vorgang();
+        if ($v['zustand'] !== 'gestartet') {
+            return array(1, mt_t('EINST.V_GESTARTET_' . strtoupper($auftrag)));
+        }
+        usleep(100000);
+    }
+    return array(1, mt_t('EINST.V_NOCH_NICHT'));
+}
+
+/**
+ * Der Stand fuer die Seite: array(klasse, html) oder null (nichts zu sagen).
+ * Ein Ergebnis bleibt eine Stunde lang stehen.
+ */
+function mt_ct_vorgang_anzeige($v = null)
+{
+    if ($v === null) {
+        $v = mt_ct_vorgang();
+    }
+    $z = $v['zustand'];
+    $schritt = (isset($v['schritt']) && $v['schritt'] !== '') ? mt_t('EINST.V_S_' . strtoupper((string) $v['schritt'])) : '-';
+    $art = mt_t('EINST.V_ART_' . strtoupper((string) (isset($v['vorgang']) && $v['vorgang'] !== '' ? $v['vorgang'] : 'einrichten')));
+    if ($z === 'gestartet' || $z === 'laeuft') {
+        return array('sm-hinweis', sprintf(mt_t('EINST.V_LAEUFT'), mt_e($art), max(0, time() - (int) $v['start']),
+                                           mt_e($schritt)));
+    }
+    if ($z === 'abgebrochen') {
+        return array('sm-warnung', sprintf(mt_t('EINST.V_ABGEBROCHEN'), mt_e($art), mt_e($schritt)));
+    }
+    if (($z === 'fertig' || $z === 'fehler') && time() - (int) $v['ende'] < 3600) {
+        $wann = date('d.m.Y H:i', (int) $v['ende']);
+        // Die Meldung ist HTML, dessen veraenderliche Teile beim Schreiben
+        // maskiert wurden (wie die Einmalmeldung, mt_einmal_schreiben()).
+        return array($z === 'fertig' ? 'sm-hinweis' : 'sm-warnung',
+                     sprintf(mt_t($z === 'fertig' ? 'EINST.V_FERTIG' : 'EINST.V_FEHLER'), mt_e($art), $wann)
+                     . ' ' . (string) $v['meldung']);
+    }
+    return null;
+}
+
+/**
+ * Den Matter-Server einrichten - nur aus dem Hintergrundvorgang.
+ * 1. Docker ansprechbar? 2. Gibt es den Container schon? Eigen: laeuft ->
+ * "schon eingerichtet", steht -> starten. Fremd oder nicht zu klaeren:
+ * nichts anfassen. 3. Abbild da? Sonst holen. 4. Anlegen (mt_container_befehl,
+ * docker run -d startet ihn). Alles zusammen hoechstens mt_ct_frist() ab dem
+ * Knopfdruck. $stand wird fuer die Anzeige fortgeschrieben.
+ * Rueckgabe array(ok, satz als HTML).
+ */
+function mt_ct_einrichten(array &$stand)
+{
+    if (mt_paths()['home'] === '') {
+        return array(0, mt_t('EINST.ARCHIV_VERWEIGERT'));
+    }
+    $cfg = mt_config();
+    if ((string) $cfg['eigener_container'] !== '1') {
+        return array(0, mt_t('EINST.V_NUR_EIGENER'));
+    }
+    $ende = (int) $stand['start'] + mt_ct_frist();
+    $name = mt_container_name($cfg);
+    list($lage, $lsatz) = mt_docker_lage(20);
+    if ($lage !== 'ok') {
+        $h = mt_docker_hinweis($lage);
+        return array(0, $h !== '' ? $h : mt_e($lsatz));
+    }
+    list($eigen, $grund) = mt_container_eigen($cfg);
+    if ($eigen === 1) {
+        if (mt_container_zustand() === 'laeuft') {
+            return array(1, sprintf(mt_t('EINST.E_SCHON'), mt_e($name), mt_e($grund)));
+        }
+        $stand['schritt'] = 'starten';
+        mt_ct_vorgang_schreiben($stand);
+        list($ok, $aus) = mt_container('start');
+        if ($ok && mt_container_zustand() === 'laeuft') {
+            return array(1, sprintf(mt_t('EINST.E_SCHON_GESTARTET'), mt_e($name)));
+        }
+        return array(0, sprintf(mt_t('EINST.E_START_FEHL'), mt_e($name))
+                        . ' <span class="sm-mono">' . mt_e(substr($aus, 0, 400)) . '</span>');
+    }
+    if ($eigen !== 2) {
+        // Fremd oder nicht zu klaeren: NICHTS anfassen (Entscheidung 11/15).
+        return array(0, mt_e(sprintf(mt_t('EINST.CONTAINER_NICHT_EIGEN'), $name, $grund,
+                                     'docker start ' . $name)));
+    }
+    $abbild = mt_container_abbild($cfg);
+    $geholt = '';
+    list($da, ) = mt_docker('image inspect ' . escapeshellarg($abbild), 30);
+    if (!$da) {
+        $rest = $ende - time();
+        if ($rest < 5) {
+            return array(0, sprintf(mt_t('EINST.E_FRIST'), mt_ct_frist() / 60, mt_e(mt_t('EINST.V_S_HOLEN'))));
+        }
+        $stand['schritt'] = 'holen';
+        mt_ct_vorgang_schreiben($stand);
+        list($ok, $aus) = mt_docker('pull ' . escapeshellarg($abbild), $rest);
+        if (!$ok) {
+            // Die Restfrist ist abgelaufen: mt_docker() haengt dann den Satz
+            // FRIST_ABGELAUFEN mit genau dieser Frist an (Rueckgabe 124/137).
+            // Nicht ueber die Uhr entschieden - in WSL endete "timeout" bis zu
+            // 1,5 s vor der Frist (gemessen 30.09.2026, frist_debug).
+            if (strpos($aus, sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), $rest)) !== false) {
+                return array(0, sprintf(mt_t('EINST.E_FRIST'), mt_ct_frist() / 60, mt_e(mt_t('EINST.V_S_HOLEN'))));
+            }
+            return array(0, sprintf(mt_t('EINST.E_PULL_FEHL'), mt_e($abbild))
+                            . ' <span class="sm-mono">' . mt_e(substr($aus, 0, 400)) . '</span>');
+        }
+        $geholt = mt_t('EINST.E_ABBILD_GEHOLT');
+    }
+    $rest = $ende - time();
+    if ($rest < 5) {
+        return array(0, sprintf(mt_t('EINST.E_FRIST'), mt_ct_frist() / 60, mt_e(mt_t('EINST.V_S_ANLEGEN'))));
+    }
+    $stand['schritt'] = 'anlegen';
+    mt_ct_vorgang_schreiben($stand);
+    $p = mt_paths();
+    if (!is_dir($p['fabric'])) {
+        @mkdir($p['fabric'], 0700, true);
+    }
+    mt_erreichbar_vergessen();
+    list($ok, $aus) = mt_docker(mt_container_befehl($cfg), $rest);
+    if (!$ok) {
+        if (strpos($aus, sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), $rest)) !== false) {
+            return array(0, sprintf(mt_t('EINST.E_FRIST'), mt_ct_frist() / 60, mt_e(mt_t('EINST.V_S_ANLEGEN'))));
+        }
+        return array(0, mt_t('EINST.E_RUN_FEHL') . ' <span class="sm-mono">' . mt_e(substr($aus, 0, 400)) . '</span>');
+    }
+    $zu = mt_container_zustand();
+    if ($zu === 'laeuft') {
+        return array(1, sprintf(mt_t('EINST.E_OK'), mt_e($name), $geholt));
+    }
+    return array(0, sprintf(mt_t('EINST.E_STEHT'), mt_e($name), mt_e(mt_t('ALLG.CONT_' . strtoupper($zu)))));
+}
+
+/**
+ * Den Auftrag ausfuehren - von bin/container_vorgang.php gerufen. Schreibt
+ * den Stand (laeuft, Schritt, fertig/fehler mit Meldung) und ins Protokoll.
+ * "aktualisieren" ist mt_container_aktualisieren() unveraendert, "holen" ist
+ * mt_container('holen') unveraendert - nur eben im Hintergrund.
+ */
+function mt_ct_vorgang_ausfuehren($auftrag)
+{
+    $v = mt_json_lesen(mt_ct_vorgang_datei());
+    $stand = array('vorgang' => $auftrag, 'zustand' => 'laeuft', 'pid' => getmypid(),
+                   'start' => isset($v['start']) && (int) $v['start'] > 0 ? (int) $v['start'] : time(),
+                   'schritt' => 'pruefen', 'meldung' => '');
+    mt_ct_vorgang_schreiben($stand);
+    mt_log('Container ' . $auftrag . ': Vorgang laeuft (PID ' . getmypid() . ').');
+    try {
+        if ($auftrag === 'einrichten') {
+            list($ok, $satz) = mt_ct_einrichten($stand);
+        } elseif ($auftrag === 'holen') {
+            $stand['schritt'] = 'holen';
+            mt_ct_vorgang_schreiben($stand);
+            list($ok, $aus) = mt_container('holen');
+            $satz = sprintf(mt_t($ok ? 'EINST.CONTAINER_OK' : 'EINST.CONTAINER_FEHL'), 'holen')
+                  . ' <span class="sm-mono">' . mt_e(substr($aus, 0, $ok ? 200 : 800)) . '</span>';
+        } else {
+            $stand['schritt'] = 'aktualisieren';
+            mt_ct_vorgang_schreiben($stand);
+            list($ok, $satz) = mt_container_aktualisieren();
+        }
+    } catch (Throwable $e) {
+        $ok = 0;
+        $satz = sprintf(mt_t('EINST.V_AUSNAHME'), mt_e(substr($e->getMessage(), 0, 200)));
+    }
+    $stand['zustand'] = $ok ? 'fertig' : 'fehler';
+    $stand['ende'] = time();
+    $stand['meldung'] = (string) $satz;
+    mt_ct_vorgang_schreiben($stand);
+    mt_log('Container ' . $auftrag . ': ' . ($ok ? 'fertig' : 'nicht gelungen') . ' - '
+           . trim(preg_replace('/\s+/', ' ', strip_tags((string) $satz))));
+    return $ok ? 1 : 0;
+}
+
+/**
+ * Die Ampel (E2): drei Zeilen, jede array(farbe, html) mit farbe
+ * gruen | rot | grau. Unbekannt ist grau, nie gruen.
+ *  container - laeuft der eigene Container? Grau: eigener Matter-Server
+ *              (eigener_container=0), kein Docker / kein Zugriff, fremder
+ *              Container, nicht zu klaeren.
+ *  server    - antwortet der Matter-Server? Ist der Brueckendienst mit ihm
+ *              verbunden (Herzschlag frisch), genuegt das; sonst die
+ *              vorhandene Erreichbarkeitspruefung mt_erreichbar() mit ihrem
+ *              30-s-Zwischenspeicher (hoechstens ein Verbindungsversuch je
+ *              30 s, derselbe wie im Reiter Test) - und nur, wenn der eigene
+ *              Container laeuft oder der Server nicht vom Plugin betrieben
+ *              wird; sonst grau, ohne Verbindungsversuch.
+ *  bruecke   - ist die Bruecke verbunden, kommen Werte? Aus dem Dienststand
+ *              (dienst.pid, zustand.json, loxone.json, mt_ok_endpunkt()).
+ * Dazu 'docker' (Lage oder '') fuer den langen Hinweis.
+ */
+function mt_ct_ampel($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $adr = (string) $cfg['server_host'] . ':' . (int) $cfg['server_port'];
+    $a = array('docker' => '', 'eigen' => 0);
+    // Zeile 1
+    if ((string) $cfg['eigener_container'] !== '1') {
+        $a['container'] = array('grau', sprintf(mt_t('EINST.A_C_EIGENER'), mt_e($adr)));
+    } else {
+        list($lage, $lsatz) = mt_docker_lage(5);
+        $a['docker'] = $lage;
+        if ($lage !== 'ok') {
+            $a['container'] = array('grau', mt_e($lsatz));
+        } else {
+            $name = mt_container_name($cfg);
+            list($eigen, $grund) = mt_container_eigen($cfg);
+            if ($eigen === 1) {
+                $a['eigen'] = 1;
+                $a['container'] = mt_container_zustand() === 'laeuft'
+                    ? array('gruen', sprintf(mt_t('EINST.A_C_LAEUFT'), mt_e($name), mt_e($grund)))
+                    : array('rot', sprintf(mt_t('EINST.A_C_STEHT'), mt_e($name)));
+            } elseif ($eigen === 2) {
+                $a['container'] = array('rot', sprintf(mt_t('EINST.A_C_KEINER'), mt_e($name)));
+            } elseif ($eigen === 0) {
+                $a['container'] = array('grau', sprintf(mt_t('EINST.A_C_FREMD'), mt_e($name), mt_e($grund)));
+            } else {
+                $a['container'] = array('grau', sprintf(mt_t('EINST.A_C_UNKLAR'), mt_e($grund)));
+            }
+        }
+    }
+    // Zeile 2 und 3
+    $pid = mt_dienst_pid();
+    $lox = mt_loxone();
+    $verbunden = $pid > 0 && mt_ok_endpunkt($lox, $cfg) === 1;
+    if ($verbunden) {
+        $a['server'] = array('gruen', sprintf(mt_t('EINST.A_S_DIENST'), mt_e($adr)));
+    } elseif ((string) $cfg['eigener_container'] === '1' && $a['container'][0] !== 'gruen') {
+        // Betreibt das Plugin den Server selbst und laeuft dessen Container
+        // nicht, wird gar nicht erst gefragt: unbekannt, grau.
+        $a['server'] = array('grau', mt_t('EINST.A_S_OHNE'));
+    } else {
+        list($ok, $alter, $fehler) = mt_erreichbar();
+        $a['server'] = $ok
+            ? array('gruen', sprintf(mt_t('EINST.A_S_PORT'), mt_e($adr), (int) $alter))
+            : array('rot', sprintf(mt_t('EINST.A_S_NEIN'), mt_e($adr), mt_e($fehler !== '' ? $fehler : '-'),
+                                   (int) $alter));
+    }
+    $z = mt_zustand();
+    if ($pid === 0) {
+        $a['bruecke'] = array('rot', mt_t(mt_dienst_soll() ? 'EINST.A_B_TOT' : 'EINST.A_B_AUS'));
+    } elseif ($verbunden) {
+        $n = count(mt_geraete());
+        $al = mt_alter();
+        $a['bruecke'] = array('gruen', sprintf(mt_t('EINST.A_B_OK'), $n, $al < 0 ? '-' : (int) $al . ' s'));
+    } elseif (!isset($z['ok']) && empty($lox)) {
+        $a['bruecke'] = array('grau', mt_t('EINST.A_B_UNBEKANNT'));
+    } elseif ((isset($z['ok']) && (int) $z['ok'] !== 1) || empty($lox['ok'])) {
+        $a['bruecke'] = array('rot', sprintf(mt_t('EINST.A_B_FEHLER'),
+            mt_e(isset($z['fehler']) && (string) $z['fehler'] !== '' ? (string) $z['fehler'] : '-')));
+    } else {
+        $hs = isset($z['herzschlag']) ? (int) $z['herzschlag'] : 0;
+        $a['bruecke'] = array('rot', sprintf(mt_t('EINST.A_B_ALT'),
+            $hs > 0 ? max(0, time() - $hs) : -1, 3 * (int) $cfg['herzschlag']));
+    }
+    return $a;
 }
 
 /**
