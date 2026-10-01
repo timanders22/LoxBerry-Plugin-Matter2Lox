@@ -125,7 +125,8 @@ $mt_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($mt_post && isset($_POST['vorlage'])) {
     // 'alle' = Sammelvorlage, 'aus<N>' = virtuelle Ausgaenge, '<N>' = Eingaenge
-    $mt_wunsch = (string) $_POST['vorlage'];
+    // Nachtrag: eine Liste statt Text ist kein Geraetewunsch (keine PHP-Warnung).
+    $mt_wunsch = is_string($_POST['vorlage']) ? $_POST['vorlage'] : '';
     if ($mt_wunsch === 'alle') {
         list($mt_name, $mt_inhalt) = mt_vorlage_alle();
     } elseif (preg_match('/^aus([0-9]{1,3})$/', $mt_wunsch, $mt_tr)) {
@@ -272,18 +273,27 @@ if ($mt_post && isset($_POST['speichern'])) {
         $mt_cfg[$feld] = (int) $w;
     }
 
+    /* Nr. 19 (B-Nachzug 01.10.2026): ein leeres Feld wird beanstandet. Bis
+     * 0.9.34 behielt es still den alten Namen bzw. das alte Abbild - die Seite
+     * meldete "gespeichert" und zeigte im Feld wieder den alten Wert. */
     $name = $sauber('container_name');
-    if ($name !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/', $name)) {
+    if ($name === '') {
+        $mt_fehler[] = mt_t('EINST.FEHLER_CONTAINERNAME_LEER');
+        $mt_bean[] = 'container_name';
+    } elseif (!preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/', $name)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_CONTAINERNAME');
         $mt_bean[] = 'container_name';
-    } elseif ($name !== '') {
+    } else {
         $mt_cfg['container_name'] = $name;
     }
     $abbild = $sauber('container_abbild');
-    if ($abbild !== '' && !preg_match('#^[A-Za-z0-9][A-Za-z0-9_./\-]{2,120}(:[A-Za-z0-9_.\-]{1,40})?$#', $abbild)) {
+    if ($abbild === '') {
+        $mt_fehler[] = mt_t('EINST.FEHLER_ABBILD_LEER');
+        $mt_bean[] = 'container_abbild';
+    } elseif (!preg_match('#^[A-Za-z0-9][A-Za-z0-9_./\-]{2,120}(:[A-Za-z0-9_.\-]{1,40})?$#', $abbild)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_ABBILD');
         $mt_bean[] = 'container_abbild';
-    } elseif ($abbild !== '') {
+    } else {
         $mt_cfg['container_abbild'] = $abbild;
     }
 
@@ -347,7 +357,15 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
      * und abweisen (Bericht oberflaeche Nr. 5). */
     $mt_mtopic = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])
         ? trim($_POST['mqtt_topic']) : '';
-    if ($mt_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $mt_mtopic)) {
+    /* Nr. 19: ein Praefix nur aus Schraegstrichen ("///") wurde bis 0.9.34
+     * nach dem Abschneiden der Randstriche still LEER gespeichert, und Dienst
+     * wie Oberflaeche nahmen dann die Vorgabe "matter". Jetzt beanstandet -
+     * dieselbe Regel steht in mt_wert_pruefen() (Zurueckspielen, X-3).
+     * Schraegstriche am Rand eines sonst gueltigen Praefixes werden weiter
+     * entfernt: "matter/" und "matter" sind dasselbe Praefix (der Dienst
+     * schneidet sie ebenso ab), es wird kein anderer Wert daraus. */
+    if ($mt_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $mt_mtopic)
+        || trim($mt_mtopic, '/') === '') {
         $mt_fehler[] = mt_t('EINST.FEHLER_TOPIC');
         $mt_bean[] = 'mqtt_topic';
     } else {
@@ -357,12 +375,17 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
      * das ist die Vorgabe, damit sich fuer bestehende Anlagen nichts
      * aendert. Was nicht ins Muster passt, wird ABGEWIESEN, nicht still
      * zurechtgebogen. */
-    $mt_nur = trim((string) (isset($_POST['mqtt_nur']) ? $_POST['mqtt_nur'] : ''));
-    if ($mt_nur !== '' && !preg_match('/^[0-9]{1,3}([ ,;]+[0-9]{1,3})*$/', $mt_nur)) {
+    /* Nr. 19: ein Feld statt Text wird beanstandet, ohne erst "Array" daraus
+     * zu machen (PHP 8: Warnung vor der Umleitung). */
+    $mt_nur_feld = isset($_POST['mqtt_nur']) && !is_string($_POST['mqtt_nur']);
+    $mt_nur = $mt_nur_feld ? '' : trim(isset($_POST['mqtt_nur']) ? $_POST['mqtt_nur'] : '');
+    if ($mt_nur_feld || !mt_mqtt_nur_gueltig($mt_nur)) {
         $mt_fehler[] = mt_t('EINST.FEHLER_MQTT_NUR');
         $mt_bean[] = 'mqtt_nur';
     } else {
-        $mt_mcfg['mqtt_nur'] = preg_replace('/[ ;]+/', ',', $mt_nur);
+        // Gespeichert durch einfache Kommas getrennt ("1, 2" -> "1,2"); bis
+        // 0.9.34 entstand daraus "1,,2".
+        $mt_mcfg['mqtt_nur'] = preg_replace('/[ ,;]+/', ',', $mt_nur);
     }
     /* X-2: abgewiesen - die Eingaben reisen zurueck ins Formular. */
     if ($mt_fehler) {
@@ -411,17 +434,31 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
      * wurden sie still entfernt, und beim Anlernen ging eine andere SSID an
      * das Geraet (Bericht oberflaeche Nr. 5). Steuerzeichen werden
      * abgewiesen, nicht entfernt. */
+    /* Nr. 19 (B-Nachzug 01.10.2026): ein geleertes Feld WLAN-Name wird
+     * gespeichert, wie es dasteht. Bis 0.9.34 behielt es still den alten
+     * Namen - die Seite meldete "gespeichert", und der Name liess sich nie
+     * mehr entfernen. Der WLAN-Name ist kein Geheimnis (er steht sichtbar im
+     * Feld); "leer = unveraendert" gilt nur fuer Passwort und Dataset.
+     * Kommt eines der Felder nicht als Text an (nur bei einer gebauten
+     * Anfrage), wird es beanstandet; bis 0.9.34 blieb es still beim alten
+     * Wert. */
     $ssid = isset($_POST['wlan_ssid']) && is_string($_POST['wlan_ssid']) ? $_POST['wlan_ssid'] : '';
-    if (preg_match('/[\x00-\x1F\x7F]/', $ssid)) {
+    if (isset($_POST['wlan_ssid']) && !is_string($_POST['wlan_ssid'])) {
+        $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_KEIN_TEXT'), mt_t('ANLERN.L_SSID'));
+        $mt_bean[] = 'wlan_ssid';
+    } elseif (preg_match('/[\x00-\x1F\x7F]/', $ssid)) {
         $mt_fehler[] = mt_t('ANLERN.FEHLER_SSID');
         $mt_bean[] = 'wlan_ssid';
-    } elseif ($ssid !== '') {
+    } elseif (isset($_POST['wlan_ssid'])) {
         $mt_cfg['wlan_ssid'] = $ssid;
     }
-    // Leeres Passwortfeld loescht nichts.
+    // Leeres Passwortfeld loescht nichts (Geheimnisfeld).
     $pw = isset($_POST['wlan_passwort']) && is_string($_POST['wlan_passwort'])
         ? $_POST['wlan_passwort'] : '';
-    if ($pw !== '') {
+    if (isset($_POST['wlan_passwort']) && !is_string($_POST['wlan_passwort'])) {
+        $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_KEIN_TEXT'), mt_t('ANLERN.L_WLANPW'));
+        $mt_bean[] = 'wlan_passwort';
+    } elseif ($pw !== '') {
         $mt_cfg['wlan_passwort'] = $pw;
     }
     /* ERST pruefen, DANN uebernehmen. Bis 0.9.16 wurde jedes Nicht-Hex-
@@ -429,8 +466,9 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
      * nur noch an der Laenge scheitern. Das widerspricht der eigenen Regel
      * im Endpunkt: was nicht ins Muster passt, wird abgewiesen und gemeldet,
      * nie zurechtgebogen. */
-    $ds = trim((string) (isset($_POST['thread_dataset']) ? $_POST['thread_dataset'] : ''));
-    if ($ds !== '' && !preg_match('/^[0-9A-Fa-f]{20,600}$/', $ds)) {
+    $ds_feld = isset($_POST['thread_dataset']) && !is_string($_POST['thread_dataset']);
+    $ds = $ds_feld ? '' : trim(isset($_POST['thread_dataset']) ? $_POST['thread_dataset'] : '');
+    if ($ds_feld || ($ds !== '' && !preg_match('/^[0-9A-Fa-f]{20,600}$/', $ds))) {
         $mt_fehler[] = mt_t('ANLERN.FEHLER_THREAD');
         $mt_bean[] = 'thread_dataset';
     } elseif ($ds !== '') {
@@ -473,8 +511,15 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
  */
 if ($mt_post && isset($_POST['br_holen'])) {
     $mt_cfg = mt_config();
-    $mt_adr = trim((string) (isset($_POST['thread_br']) ? $_POST['thread_br'] : ''));
-    list($mt_stand, $mt_text) = mt_thread_dataset_holen($mt_adr);
+    /* Nr. 19: ein Feld statt Text wird abgewiesen wie eine falsche Adresse,
+     * ohne erst "Array" daraus zu machen. */
+    if (isset($_POST['thread_br']) && !is_string($_POST['thread_br'])) {
+        $mt_adr = '';
+        list($mt_stand, $mt_text) = array(0, mt_t('ANLERN.BR_FORM'));
+    } else {
+        $mt_adr = trim(isset($_POST['thread_br']) ? $_POST['thread_br'] : '');
+        list($mt_stand, $mt_text) = mt_thread_dataset_holen($mt_adr);
+    }
     /* X-2: nur Stand 0 beanstandet die Eingabe (Adresse abgewiesen, nichts
      * gespeichert); bei Stand 2 ist die Adresse gemerkt. */
     if ($mt_stand === 0) {
@@ -501,7 +546,11 @@ if ($mt_post && isset($_POST['br_holen'])) {
 
 /* ---------------- Dienst ---------------- */
 if ($mt_post && isset($_POST['dienst'])) {
-    list($mt_ok, $mt_ausgabe, $mt_rc) = array_pad(mt_dienst((string) $_POST['dienst']), 3, 0);
+    /* Nachtrag B-Nachzug 01.10.2026: is_string() statt (string). Eine Liste
+     * ergab unter PHP 8 eine Warnung vor der Umleitung (kein 303); jetzt ist
+     * sie ein unbekannter Befehl. */
+    $mt_dw = is_string($_POST['dienst']) ? $_POST['dienst'] : '';
+    list($mt_ok, $mt_ausgabe, $mt_rc) = array_pad(mt_dienst($mt_dw), 3, 0);
     if ((int) $mt_rc === 3) {
         /* O4 (Durchgang 30.09.2026): dienst.sh hat wegen einer laufenden
          * Aktualisierung nichts angefasst (Rueckgabe 3). Bis 0.9.30 stand
@@ -510,7 +559,7 @@ if ($mt_post && isset($_POST['dienst'])) {
          * Nr. 7). */
         $mt_meldungen[] = mt_e(mt_t('EINST.DIENST_MARKE'));
     } elseif ($mt_ok) {
-        $mt_meldungen[] = mt_t('EINST.DIENST_' . strtoupper((string) $_POST['dienst'])) . ' ' . mt_e($mt_ausgabe);
+        $mt_meldungen[] = mt_t('EINST.DIENST_' . strtoupper($mt_dw)) . ' ' . mt_e($mt_ausgabe);
     } else {
         $mt_fehler[] = mt_e($mt_ausgabe);
     }
@@ -519,7 +568,7 @@ if ($mt_post && isset($_POST['dienst'])) {
 
 /* ---------------- Container ---------------- */
 if ($mt_post && isset($_POST['container'])) {
-    $mt_was = (string) $_POST['container'];
+    $mt_was = is_string($_POST['container']) ? $_POST['container'] : '';   // Liste: unbekannter Befehl
     /* E3 (Welle 2): "anlegen" gibt es als Einzelknopf nicht mehr - das tut
      * "Matter-Server einrichten" im Hintergrund, und ein Seitenaufruf soll
      * nicht mehr 15 Minuten stehen. "holen" laeuft aus demselben Grund im
@@ -585,13 +634,14 @@ if ($mt_post && isset($_POST['log_leeren'])) {
 
 /* ---------------- Aktionen aus Test und Anlernen ---------------- */
 if ($mt_post && isset($_POST['test'])) {
-    list($mt_stand, $mt_text) = mt_test_aktion((string) $_POST['test']);
+    $mt_tw = is_string($_POST['test']) ? $_POST['test'] : '';   // Liste: unbekannte Aktion
+    list($mt_stand, $mt_text) = mt_test_aktion($mt_tw);
     if ($mt_stand === 1) {
         $mt_meldungen[] = mt_e($mt_text);
     } else {
         $mt_fehler[] = mt_e($mt_text);
     }
-    $mt_tab = in_array((string) $_POST['test'], array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster', 'name'), true)
+    $mt_tab = in_array($mt_tw, array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster', 'name'), true)
         ? 'tab-commission' : 'tab-test';
 }
 /* O1: Selbsttest und Containerprotokoll werden nach der Umleitung beim GET
@@ -1339,7 +1389,12 @@ if ($mt_sich_alt) { ?>
 </div>
 <div class="sm-feld">
   <label for="thread_dataset"><?= mt_e(mt_t('ANLERN.L_THREAD')) ?></label>
-  <input data-role="none" type="text" id="thread_dataset" name="thread_dataset" value="<?= mt_e($mt_cfg['thread_dataset']) ?>"<?= mt_markierung('netz_speichern', 'thread_dataset') ?>>
+  <?php /* Nachtrag B-Nachzug 01.10.2026 (Nr. 15: das Dataset traegt den
+         Netzschluessel): gefuehrt wie das WLAN-Passwort - nie im HTML, leer
+         lassen behaelt den gespeicherten Wert. Bis 0.9.34 stand es im Klartext
+         im Feld. */ ?>
+  <input data-role="none" type="password" autocomplete="off" id="thread_dataset" name="thread_dataset" value=""<?= mt_markierung('netz_speichern', 'thread_dataset') ?>
+         placeholder="<?= (string) $mt_cfg['thread_dataset'] !== '' ? mt_e(mt_t('ANLERN.PW_GESETZT')) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_THREAD') ?></div>
 </div>
 <div class="sm-knopfreihe">
@@ -1680,6 +1735,7 @@ foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
 </table>
 <?= mt_t('LOX.S4_ROH') ?>
 <div class="sm-warnung"><?= mt_t('LOX.S4_WARNUNG') ?></div>
+<p><?= mt_t('LOX.S4_GLEICHWERT') ?></p>
 </div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S5_TITEL')) ?></b>

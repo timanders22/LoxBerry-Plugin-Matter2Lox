@@ -923,6 +923,227 @@ function mt_log_gebremst($schluessel, $text, $sekunden = 3600)
     }
 }
 
+/* ==================================================================
+ * Gleichwert-Unterdrueckung des Endpunkts (X-7, B-Nachzug 01.10.2026,
+ * ENTSCHEIDUNGEN Nr. 19). Vorbild: die Schlossbremse in html/index.php,
+ * EVCC 0.9.37 (Befehlsbremse) und der Heimkino-Nachzug.
+ *
+ * Ein Sollwert-Befehl mit DEMSELBEN Wert fuer dasselbe Geraet (Knoten und
+ * Endpunkt) geht innerhalb von 60 s nicht erneut hinaus (HTTP 200,
+ * UNVERAENDERT=1). Bis 0.9.34 ging jeder Aufruf eines flatternden
+ * Loxone-Ausgangs bis zum Geraet. Ein anderer Wert geht sofort hinaus -
+ * ein zusaetzliches 429 gibt es nicht (Dimmen schickt mehrere Werte je
+ * Sekunde). Ereignisse (umschalten, rollo_auf/_zu/_stopp, identify) und die
+ * Rohwege (attribut, befehl) gehen immer hinaus. sperren/entsperren haben
+ * ihre eigene Schlossbremse und kommen hier nicht vor.
+ *
+ * Gemerkt wird der zuletzt ueber den Endpunkt GESENDETE Wert, nicht der
+ * Zustand des Geraets: was in derselben Minute am Wandschalter, in einer App
+ * oder im Reiter Test geschieht, sieht der Merker nicht.
+ * ================================================================== */
+
+/**
+ * Merkerschluessel eines Sollwert-Befehls, '' fuer alle anderen.
+ *
+ * ein und aus teilen sich 'schalter': der Sollwert ist der Zustand, nicht
+ * der Befehl - aus nach ein geht hinaus. farbton und saettigung sind
+ * Teilwerte der Farbe und ebenso Sollwerte (Nr. 19 "Farbe").
+ */
+function mt_gleichwert_schluessel($aktion)
+{
+    $s = array(
+        'ein' => 'schalter', 'aus' => 'schalter', 'helligkeit' => 'helligkeit',
+        'farbtemperatur' => 'farbtemperatur', 'farbe' => 'farbe', 'farbton' => 'farbton',
+        'saettigung' => 'saettigung', 'rollo' => 'rollo', 'soll_heizen' => 'soll_heizen',
+        'soll_kuehlen' => 'soll_kuehlen', 'betriebsart' => 'betriebsart', 'luefter' => 'luefter',
+    );
+    return isset($s[$aktion]) ? $s[$aktion] : '';
+}
+
+/**
+ * Welche gemerkten Sollwerte DESSELBEN Geraets ein Befehl veraendern kann -
+ * sie verfallen nach dem Befehl, damit der naechste gleiche Wert hinausgeht.
+ * '*' heisst: alle Eintraege des Knotens (Rohwege koennen alles aendern).
+ *
+ * - ein/aus/umschalten stellen den Schalter und koennen die Helligkeit
+ *   aendern (On stellt die zuletzt gemerkte Stufe des Geraets her);
+ * - helligkeit schaltet mit (MoveToLevelWithOnOff);
+ * - die vier Farbbefehle ueberschreiben einander;
+ * - rollo_auf/_zu/_stopp bewegen den Behang.
+ */
+function mt_gleichwert_verfaellt($aktion)
+{
+    $farbe = array('farbtemperatur', 'farbe', 'farbton', 'saettigung');
+    if (in_array($aktion, array('ein', 'aus', 'umschalten'), true)) {
+        return array('schalter', 'helligkeit');
+    }
+    if ($aktion === 'helligkeit') {
+        return array('schalter');
+    }
+    if (in_array($aktion, $farbe, true)) {
+        return array_values(array_diff($farbe, array($aktion)));
+    }
+    if (in_array($aktion, array('rollo_auf', 'rollo_zu', 'rollo_stopp'), true)) {
+        return array('rollo');
+    }
+    if ($aktion === 'attribut' || $aktion === 'befehl') {
+        return array('*');
+    }
+    return array();
+}
+
+/** Betrifft ein Befehl den Merker (pruefen oder nachfuehren)? */
+function mt_gleichwert_betrifft($aktion)
+{
+    return mt_gleichwert_schluessel($aktion) !== '' || mt_gleichwert_verfaellt($aktion) !== array();
+}
+
+/**
+ * Der verglichene Wert in einer Form: bei ein/aus der Befehl, sonst die Zahl
+ * mit hoechstens drei Nachkommastellen und ohne Nullen am Ende (20, 20.0 und
+ * 20,0 sind gleich). farbe traegt die Saettigung mit - ohne Angabe 100, wie
+ * der Dienst sie dann setzt.
+ */
+function mt_gleichwert_wert($befehl)
+{
+    $aktion = isset($befehl['aktion']) ? (string) $befehl['aktion'] : '';
+    if ($aktion === 'ein' || $aktion === 'aus') {
+        return $aktion;
+    }
+    $zahl = function ($v) {
+        $t = rtrim(rtrim(sprintf('%.3F', (float) $v), '0'), '.');
+        return $t === '-0' ? '0' : $t;
+    };
+    $w = isset($befehl['wert']) ? $zahl($befehl['wert']) : '';
+    if ($aktion === 'farbe') {
+        $w .= '/' . $zahl(isset($befehl['saettigung']) ? $befehl['saettigung'] : 100);
+    }
+    return $w;
+}
+
+function mt_gleichwert_datei()
+{
+    return mt_paths()['datadir'] . '/befehl_gleichwert.json';
+}
+
+/**
+ * Den Merker oeffnen und sperren. Rueckgabe: Dateizeiger oder false.
+ *
+ * Die Sperre bleibt waehrend des ganzen Befehls gehalten (wie EVCC und die
+ * Schlossbremse): fuenf gleichzeitige gleiche Aufrufe senden so einmal.
+ * "e" (close-on-exec): ein Kindprozess, den ein spaeterer Bau auf diesem Weg
+ * startet, erbt die gesperrte Datei nicht (Fehlerklasse 3, "Sperre vererbt
+ * sich an Kinder"). Ohne Datenordner oder Sperre: false.
+ */
+function mt_gleichwert_oeffnen()
+{
+    $datei = mt_gleichwert_datei();
+    if (!is_dir(dirname($datei))) {
+        return false;
+    }
+    $fh = @fopen($datei, 'c+e');
+    if ($fh === false) {
+        return false;
+    }
+    if (!@flock($fh, LOCK_EX)) {
+        fclose($fh);
+        return false;
+    }
+    return $fh;
+}
+
+/** Den gesperrten Merker lesen; Unlesbares gilt als leer (dann geht der
+ * Befehl hinaus - im Zweifel senden, nie still verschlucken). */
+function mt_gleichwert_lesen($fh)
+{
+    rewind($fh);
+    $d = json_decode((string) stream_get_contents($fh), true);
+    return is_array($d) ? $d : array();
+}
+
+/** Sekunden seit DEMSELBEN Wert fuer dieses Geraet ("Knoten|Endpunkt"),
+ * -1, wenn ein anderer Wert gemerkt ist oder der gemerkte das Fenster
+ * verlassen hat. */
+function mt_gleichwert_seit($merker, $geraet, $schluessel, $wert, $fenster = 60)
+{
+    if ($schluessel === '' || !isset($merker[$geraet]) || !is_array($merker[$geraet])
+        || !isset($merker[$geraet][$schluessel]) || !is_array($merker[$geraet][$schluessel])) {
+        return -1;
+    }
+    $e = $merker[$geraet][$schluessel];
+    if (!isset($e['w'], $e['t']) || (string) $e['w'] !== (string) $wert) {
+        return -1;
+    }
+    $seit = time() - (int) $e['t'];
+    return ($seit >= 0 && $seit < $fenster) ? $seit : -1;
+}
+
+/**
+ * Der Merker nach einem ausgefuehrten Befehl.
+ *
+ * - Was der Befehl veraendern kann, verfaellt (mt_gleichwert_verfaellt()),
+ *   gelungen oder nicht - im Zweifel geht der naechste gleiche Wert hinaus.
+ * - Gemerkt wird der eigene Wert nur, wenn der Dienst die Ausfuehrung
+ *   bestaetigt hat (OK=1). OK=0 oder ohne Antwort (OK=2): der eigene
+ *   Eintrag faellt weg, ein Wiederholen geht hinaus.
+ * - Eintraege ab 60 s werden nicht mitgeschleppt.
+ */
+function mt_gleichwert_nachher($merker, $knoten, $geraet, $aktion, $wert, $gelungen)
+{
+    $verfaellt = mt_gleichwert_verfaellt($aktion);
+    $knoten_weg = in_array('*', $verfaellt, true);
+    $jetzt = time();
+    $neu = array();
+    foreach ($merker as $g => $eintraege) {
+        $g = (string) $g;
+        if (!is_array($eintraege) || ($knoten_weg && strpos($g, (int) $knoten . '|') === 0)) {
+            continue;
+        }
+        foreach ($eintraege as $k => $e) {
+            $k = (string) $k;
+            if (!is_array($e) || !isset($e['t'], $e['w'])) {
+                continue;
+            }
+            $alter = $jetzt - (int) $e['t'];
+            if ($alter < 0 || $alter >= 60 || ($g === $geraet && in_array($k, $verfaellt, true))) {
+                continue;
+            }
+            $neu[$g][$k] = $e;
+        }
+    }
+    $schl = mt_gleichwert_schluessel($aktion);
+    if ($schl !== '') {
+        if ($gelungen) {
+            $neu[$geraet][$schl] = array('w' => (string) $wert, 't' => $jetzt);
+        } else {
+            unset($neu[$geraet][$schl]);
+            if (isset($neu[$geraet]) && $neu[$geraet] === array()) {
+                unset($neu[$geraet]);
+            }
+        }
+    }
+    return $neu;
+}
+
+/** Den Merker schreiben (ausser bei null), entsperren und schliessen.
+ * Erfolg nur bei vollstaendig geschriebenem Inhalt (Regeln/03). */
+function mt_gleichwert_schliessen($fh, $merker)
+{
+    $ok = true;
+    if ($merker !== null) {
+        $roh = (string) json_encode((object) $merker);
+        $ok = ftruncate($fh, 0) && rewind($fh) && @fwrite($fh, $roh) === strlen($roh) && fflush($fh);
+        if (!$ok) {
+            mt_log_gebremst('gleichwert_schreiben', 'Die Merkerdatei der Gleichwert-Unterdrueckung ('
+                . mt_gleichwert_datei() . ') liess sich nicht schreiben - ein gleicher Sollwert geht dann '
+                . 'erneut hinaus. Pruefen: Platz und Eigentuemer (loxberry).');
+        }
+    }
+    @flock($fh, LOCK_UN);
+    fclose($fh);
+    return $ok;
+}
+
 /* ---------------- Dienst ---------------- */
 
 /**
@@ -1097,6 +1318,15 @@ function mt_befehl_absetzen($befehl, $wartezeit = null)
                          (string) (isset($a['meldung']) ? $a['meldung'] : ''));
         }
         usleep(100000);
+    }
+    /* Nachtrag B-Nachzug 01.10.2026: Wartezeit 0 heisst "einreihen, nicht
+     * warten". Bis 0.9.34 lief die Warteschleife dann gar nicht, und die
+     * Datei wurde gleich darauf wieder geloescht - der Befehl ging nie
+     * hinaus (gemessen: OK=2, 0 Befehle am Dienst). Liegen bleibt sie nicht:
+     * der Dienst verwirft Stellbefehle nach BEFEHL_VERFALL_S und beim Start
+     * alles, was aelter als 60 s ist. */
+    if ($wartezeit === 0) {
+        return array(2, mt_t('EINST.M_BEFEHL_EINGEREIHT'));
     }
     /* Nichts gehoert zu haben heisst nicht, dass nichts geschieht - aber die
      * unbearbeitete Datei bleibt nicht liegen. */
@@ -3118,6 +3348,20 @@ function mt_haken()
                  'tuer_haus');
 }
 
+/**
+ * Die Geraeteauswahl fuer MQTT (leer = alle): Geraetenummern, getrennt durch
+ * Komma oder Semikolon, Leerzeichen daneben erlaubt. Dieselbe Pruefung im
+ * Formular (Reiter MQTT) und beim Zurueckspielen. Nachtrag B-Nachzug
+ * 01.10.2026: bis 0.9.34 nahmen beide auch reine Leerzeichen als Trenner
+ * ("1 2"). Der Dienst trennt nur an Komma und Semikolon, las daraus keine
+ * Nummer und veroeffentlichte dann ALLE Geraete - eine zurueckgespielte
+ * Sicherung kam so ohne Meldung durch.
+ */
+function mt_mqtt_nur_gueltig($s)
+{
+    return is_string($s) && preg_match('/^([0-9]{1,3}( *[,;][ ,;]*[0-9]{1,3})*)?$/', $s) === 1;
+}
+
 function mt_wert_pruefen($schluessel, $wert)
 {
     /* 1. Am Eingang: taugt der Wert ueberhaupt fuer eine Konfigurationsdatei? */
@@ -3155,7 +3399,7 @@ function mt_wert_pruefen($schluessel, $wert)
          * Zeilenumbruch darin zerlegt das Datagramm - deshalb steht dieselbe
          * enge Positivliste hier wie im Formular. */
         'mqtt_topic'        => '#^[A-Za-z0-9_/\-]{1,64}$#',
-        'mqtt_nur'          => '/^([0-9]{1,3}([ ,;]+[0-9]{1,3})*)?$/',
+        /* mqtt_nur: mt_mqtt_nur_gueltig() weiter unten (Nachtrag). */
         'aktionstoken'      => '/^[A-Za-z0-9_.\-]{0,64}$/',
         'thread_dataset'    => '/^([0-9A-Fa-f]{20,600})?$/',
         /* Rechnername oder IP des Border-Routers, wahlweise mit Port. Leer
@@ -3164,6 +3408,16 @@ function mt_wert_pruefen($schluessel, $wert)
          * Klammergruppen, die den Port herausloesen. */
         'thread_br'         => '#^(\[[0-9A-Fa-f:]{2,45}\]|[A-Za-z0-9][A-Za-z0-9.\-]{0,80})(:[0-9]{1,5})?$|^$#',
     );
+    /* Nr. 19 (B-Nachzug 01.10.2026): ein Praefix nur aus Schraegstrichen
+     * ergaebe nach dem Abschneiden ein leeres Praefix, und Dienst wie
+     * Oberflaeche naehmen still die Vorgabe "matter" - dieselbe Regel wie im
+     * Formular (Reiter MQTT). */
+    if ($schluessel === 'mqtt_topic' && trim($s, '/') === '') {
+        return mt_t('EINST.SICH_W_FORM');
+    }
+    if ($schluessel === 'mqtt_nur') {
+        return mt_mqtt_nur_gueltig($s) ? '' : mt_t('EINST.SICH_W_FORM');
+    }
     if (isset($muster[$schluessel])) {
         return preg_match($muster[$schluessel], $s) === 1 ? '' : mt_t('EINST.SICH_W_FORM');
     }

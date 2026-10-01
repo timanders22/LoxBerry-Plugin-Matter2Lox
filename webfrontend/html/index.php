@@ -57,6 +57,15 @@
  *   attribut      &pfad=E/C/A&wert=...
  *   befehl        &cluster=N&name=<Name>[&nutzlast=<JSON>]
  *
+ *   Gleichwert-Unterdrueckung (X-7, B-Nachzug 01.10.2026): ein Sollwert-
+ *   Befehl (ein, aus, helligkeit, farbtemperatur, farbe, farbton,
+ *   saettigung, rollo, soll_heizen, soll_kuehlen, betriebsart, luefter) mit
+ *   DEMSELBEN Wert fuer dasselbe Geraet innerhalb von 60 s wird nicht erneut
+ *   gesendet: 200 SET;OK=1;AKTION=..;UNVERAENDERT=1. Ein anderer Wert geht
+ *   sofort hinaus. umschalten, rollo_auf/_zu/_stopp, identify, attribut und
+ *   befehl gehen immer hinaus. Laesst sich der Merker nicht oeffnen, antwortet
+ *   ein Sollwert-Befehl 503 GRUND=GLEICHWERT_MERKER und sendet nichts.
+ *
  * Schaltend, mit einem ZWEITEN, eigenen Haken (Reiter Einstellungen):
  *   sperren | entsperren     Tuerschloss. Verlangt BEIDE Freigaben - die
  *                            allgemeine und die fuer Schloesser. Wer Lampen
@@ -495,7 +504,9 @@ if (in_array($mt_aktion, array('helligkeit', 'farbtemperatur', 'rollo',
  * ENTSCHEIDUNGEN Nr. 15: eine Befehlsbremse wie EVCC 0.9.34, aber NUR fuer
  * sperren und entsperren - eine Tuer soll ein flatternder Loxone-Ausgang
  * nicht im Sekundentakt auf- und zusperren. Licht, Dimmen und alle anderen
- * Befehle bleiben ungebremst (Dimmen schickt mehrere Werte je Sekunde).
+ * Befehle bekommen kein 429 (Dimmen schickt mehrere Werte je Sekunde); fuer
+ * ihre Sollwerte gilt seit dem B-Nachzug 01.10.2026 die Gleichwert-
+ * Unterdrueckung darunter (Nr. 19).
  * Je Geraet (Knoten und Endpunkt):
  *   - derselbe Schlossbefehl innerhalb von 60 s geht nicht erneut hinaus
  *     (200, UNVERAENDERT=1);
@@ -538,9 +549,49 @@ if ($mt_aktion === 'sperren' || $mt_aktion === 'entsperren') {
     }
 }
 
+/* ---------------- Gleichwert-Unterdrueckung (X-7, B-Nachzug 01.10.2026) ----------------
+ *
+ * ENTSCHEIDUNGEN Nr. 19; Vorbild die Schlossbremse darueber, EVCC 0.9.37
+ * und Marstek 1.1.19. Derselbe Sollwert fuer dasselbe Geraet (Knoten und
+ * Endpunkt) innerhalb von 60 s geht nicht erneut hinaus: 200 mit
+ * UNVERAENDERT=1, gesendet wird nichts. Ein anderer Wert geht sofort hinaus,
+ * kein 429. Ereignisse und Rohwege werden nie unterdrueckt, fuehren den
+ * Merker aber nach (mt_gleichwert_verfaellt()). Der Merker bleibt waehrend
+ * des Befehls gesperrt; laesst er sich nicht oeffnen, faellt ein
+ * Sollwert-Befehl geschlossen aus (503), ein Ereignis geht trotzdem hinaus -
+ * ohne Merker fallen die Sollwerte ohnehin geschlossen aus. */
+$mt_gw = false;
+$mt_gw_merker = array();
+$mt_gw_geraet = (int) $mt_befehl['knoten'] . '|' . (int) $mt_befehl['endpunkt'];
+$mt_gw_schl = mt_gleichwert_schluessel($mt_aktion);
+$mt_gw_wert = mt_gleichwert_wert($mt_befehl);
+if (mt_gleichwert_betrifft($mt_aktion)) {
+    $mt_gw = mt_gleichwert_oeffnen();
+    if ($mt_gw === false && $mt_gw_schl !== '') {
+        mt_log_gebremst('gleichwert', 'Die Merkerdatei der Gleichwert-Unterdrueckung (' . mt_gleichwert_datei()
+            . ') laesst sich nicht oeffnen oder sperren - Sollwert-Befehle werden mit 503 abgewiesen, bis '
+            . 'das behoben ist.');
+        http_response_code(503);
+        echo "SET;OK=0;AKTION=" . $mt_aktion . ";GRUND=GLEICHWERT_MERKER\n";
+        exit;
+    }
+    if ($mt_gw !== false) {
+        $mt_gw_merker = mt_gleichwert_lesen($mt_gw);
+        if (mt_gleichwert_seit($mt_gw_merker, $mt_gw_geraet, $mt_gw_schl, $mt_gw_wert) >= 0) {
+            mt_gleichwert_schliessen($mt_gw, null);
+            printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1\n", $mt_aktion);
+            exit;
+        }
+    }
+}
+
 list($mt_erg, $mt_meldung) = mt_befehl_absetzen($mt_befehl);
 if ($mt_erg === 0) {
     http_response_code(500);
+}
+if ($mt_gw !== false) {
+    mt_gleichwert_schliessen($mt_gw, mt_gleichwert_nachher($mt_gw_merker, (int) $mt_befehl['knoten'],
+        $mt_gw_geraet, $mt_aktion, $mt_gw_wert, $mt_erg === 1));
 }
 if (is_resource($mt_bfh)) {
     /* Gemerkt wird, was die Warteschlange angenommen hat (OK=1 oder 2).

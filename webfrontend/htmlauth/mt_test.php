@@ -776,11 +776,13 @@ function mt_pruefungen()
  */
 function mt_test_aktion($aktion)
 {
-    $nr = isset($_POST['test_geraet']) ? (string) $_POST['test_geraet'] : '1';
+    /* Nachtrag B-Nachzug 01.10.2026: is_string() statt (string) - eine Liste
+     * ist ungueltig und wird gemeldet, ohne PHP-Warnung vor der Umleitung. */
+    $nr = isset($_POST['test_geraet']) ? (is_string($_POST['test_geraet']) ? $_POST['test_geraet'] : '') : '1';
     if (!preg_match('/^[0-9]{1,3}$/', $nr)) {
         return array(0, mt_t('TEST.M_GERAET_UNGUELTIG'));
     }
-    $ep = isset($_POST['test_endpunkt']) ? (string) $_POST['test_endpunkt'] : '1';
+    $ep = isset($_POST['test_endpunkt']) ? (is_string($_POST['test_endpunkt']) ? $_POST['test_endpunkt'] : '') : '1';
     if (!preg_match('/^[0-9]{1,3}$/', $ep)) {
         return array(0, mt_t('TEST.M_ENDPUNKT_UNGUELTIG'));
     }
@@ -805,7 +807,7 @@ function mt_test_aktion($aktion)
             if ($knoten === 0) {
                 return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
             }
-            $w = isset($_POST['test_wert']) ? (string) $_POST['test_wert'] : '';
+            $w = isset($_POST['test_wert']) && is_string($_POST['test_wert']) ? $_POST['test_wert'] : '';
             if (!preg_match('/^[0-9]{1,3}$/', $w) || (int) $w > 100) {
                 return array(0, mt_t('TEST.M_PROZENT_UNGUELTIG'));
             }
@@ -819,7 +821,7 @@ function mt_test_aktion($aktion)
             // Das Wertfeld des Reiters fuehrt Prozent (0..100); ein Farbton
             // will Grad. Umgerechnet wird hier - und zwar sichtbar, damit
             // niemand 50 eingibt und 50 Grad erwartet.
-            $w = isset($_POST['test_wert']) ? (string) $_POST['test_wert'] : '';
+            $w = isset($_POST['test_wert']) && is_string($_POST['test_wert']) ? $_POST['test_wert'] : '';
             if (!preg_match('/^[0-9]{1,3}$/', $w) || (int) $w > 100) {
                 return array(0, mt_t('TEST.M_PROZENT_UNGUELTIG'));
             }
@@ -843,7 +845,7 @@ function mt_test_aktion($aktion)
                                             'endpunkt' => (int) $ep), 20);
 
         case 'anlernen':
-            $code = isset($_POST['code']) ? trim((string) $_POST['code']) : '';
+            $code = isset($_POST['code']) && is_string($_POST['code']) ? trim($_POST['code']) : '';
             // Nur Steuerzeichen und Leerraum entfernen - der Code selbst wird
             // NICHT gefiltert. Welche Zeichen bedeutungstragend sind, weiss
             // hier niemand sicher.
@@ -896,7 +898,7 @@ function mt_test_aktion($aktion)
             // entscheidet nicht die Oberflaeche - der Dienst prueft Laenge und
             // Form und WEIST AB, statt zurechtzubiegen.
             $bez = trim(preg_replace('/[\x00-\x1F\x7F]/', '',
-                (string) (isset($_POST['geraetename']) ? $_POST['geraetename'] : '')));
+                (isset($_POST['geraetename']) && is_string($_POST['geraetename']) ? $_POST['geraetename'] : '')));
             if ($bez === '') {
                 return array(0, mt_t('ANLERN.M_NAME_LEER'));
             }

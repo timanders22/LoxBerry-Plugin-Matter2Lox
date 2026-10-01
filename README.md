@@ -10,6 +10,27 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.34
+
+Verbesserungen aus dem Durchgang (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 16 und 19).
+Gemessen an einer Matter-Server-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Befehlsbremse:** Derselbe Sollwert (ein/aus, helligkeit, farbtemperatur, farbe,
+  farbton, saettigung, rollo, soll_heizen, soll_kuehlen, betriebsart, luefter) geht
+  höchstens einmal je Minute und Gerät hinaus; sonst `UNVERAENDERT=1`. Ein anderer
+  Wert geht sofort hinaus, ein 429 gibt es nicht. umschalten, rollo_auf/_zu/_stopp,
+  identify, attribut und befehl gehen immer hinaus; die Schlossbremse bleibt.
+* **Nach einer Beanstandung wird nichts gespeichert:** leerer Containername oder
+  leeres Abbild, ein MQTT-Präfix nur aus Schrägstrichen und Felder, die nicht als
+  Text ankommen, werden beanstandet statt still ersetzt.
+* Ein geleerter WLAN-Name wird jetzt gespeichert; bisher blieb der alte.
+* Wartezeit 0 heißt „einreihen, nicht warten“: der Befehl geht hinaus. Bisher wurde
+  er sofort wieder gelöscht.
+* Geräteauswahl für MQTT: „1 2“ wird abgewiesen; bisher veröffentlichte der Dienst
+  dann alle Geräte.
+* Das Thread-Dataset erscheint nicht mehr im Formular (leer lassen = beibehalten).
+
 ## Neu in 0.9.33
 
 Der Matter-Server lässt sich jetzt mit einem Knopf einrichten – so einfach wie
@@ -1101,7 +1122,22 @@ Schlossbefehl innerhalb von 60 s geht nicht erneut hinaus
 (`SET;OK=1;AKTION=…;UNVERAENDERT=1`), ein anderer innerhalb von 10 s wird mit
 HTTP 429 abgewiesen (`GRUND=BREMSE;WARTEN_S=n`). Lässt sich der Merker nicht
 öffnen, antwortet der Endpunkt 503 (`GRUND=BREMSE_MERKER`) und sendet nichts.
-Licht, Dimmen und alle übrigen Befehle sind nicht gebremst.
+Licht, Dimmen und alle übrigen Befehle bekommen kein 429.
+
+**Gleichwert-Unterdrückung:** Derselbe Sollwert für dasselbe Gerät (Knoten und
+Endpunkt) geht innerhalb von 60 s nicht erneut hinaus
+(`SET;OK=1;AKTION=…;UNVERAENDERT=1`). Das gilt für `ein`/`aus`, `helligkeit`,
+`farbtemperatur`, `farbe`, `farbton`, `saettigung`, `rollo`, `soll_heizen`,
+`soll_kuehlen`, `betriebsart` und `luefter`. Ein anderer Wert geht sofort
+hinaus; `20`, `20.0` und `20,0` gelten als gleich. `umschalten`,
+`rollo_auf`/`_zu`/`_stopp`, `identify`, `attribut` und `befehl` gehen immer
+hinaus; sie lassen aber die gemerkten Werte verfallen, die sie verändern
+können (etwa `aus` nach `helligkeit`). Gemerkt wird nur, was der Dienst als
+ausgeführt bestätigt hat, und nur das, was über den Endpunkt hinausging – was
+in derselben Minute am Gerät, in einer App oder im Reiter *Test* geschieht,
+sieht der Merker nicht. Lässt sich der Merker
+(`data/plugins/matter2lox/befehl_gleichwert.json`) nicht öffnen, antwortet ein
+Sollwert-Befehl 503 (`GRUND=GLEICHWERT_MERKER`) und sendet nichts.
 
 Jedes Gerät ist auf zwei Wegen ansprechbar: über `&geraet=N`, die Gerätenummer
 des Plugins, oder über `&knoten=M`, die Knotennummer des Matter-Servers. Die
