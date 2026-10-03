@@ -42,7 +42,7 @@ fi
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
     echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
     echo "<FAIL> Ohne ihn wuerden Ordner im Wurzelverzeichnis des Systems"
-    echo "<FAIL> angelegt. Die Installation wird abgebrochen."
+    echo "<FAIL> angelegt. Es wurde nichts angelegt; das Plugin ist nicht lauffaehig."
     exit 1
 fi
 
@@ -101,7 +101,7 @@ if [ "$UPGRADE" = 0 ]; then
 fi
 
 mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PFABRIC" "$PLOG" "$PCONFIG" || {
-    echo "<FAIL> Ordner konnten nicht angelegt werden."
+    echo "<FAIL> Plugin installiert, aber nicht lauffaehig: Ordner konnten nicht angelegt werden."
     exit 1
 }
 chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
@@ -180,17 +180,38 @@ fi
 chmod 600 "$PCONFIG/matter2lox.json"
 
 # ---------- Architektur ----------
+# 0.9.35 (Nr. 20): massgeblich ist das BENUTZERLAND, nicht der Kern. Raspberry
+# Pi OS 32 Bit startet auf Pi 4/5 einen 64-Bit-Kern; uname -m sagt dann
+# aarch64, Docker und jedes Abbild laufen aber als armhf - und den
+# Matter-Server gibt es dafuer nicht. Bis 0.9.34 hiess das "64 Bit OK", und
+# erst "docker pull" scheiterte.
 ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64|aarch64|arm64)
-        echo "<OK> Architektur $ARCH ist 64 Bit." ;;
-    *)
-        echo "<FAIL> Architektur $ARCH ist nicht 64 Bit."
-        echo "<FAIL> Der Matter-Server laeuft ausdruecklich nur auf 64-Bit-Systemen."
-        echo "<FAIL> Auf einem 32-Bit-Raspberry-Pi-OS gibt es keinen Weg - dort hilft"
-        echo "<FAIL> nur ein Neuaufsetzen mit einem 64-Bit-Abbild."
-        exit 1 ;;
+DPKG_ARCH=$(dpkg --print-architecture 2>/dev/null)
+WORTBREITE=$(getconf LONG_BIT 2>/dev/null)
+case "$DPKG_ARCH" in
+    amd64|arm64) BENUTZERLAND64=1 ;;
+    "") [ "$WORTBREITE" = "64" ] && BENUTZERLAND64=1 || BENUTZERLAND64=0 ;;
+    *) BENUTZERLAND64=0 ;;
 esac
+case "$ARCH" in
+    x86_64|aarch64|arm64) KERN64=1 ;;
+    *) KERN64=0 ;;
+esac
+if [ "$KERN64" = 1 ] && [ "$BENUTZERLAND64" = 1 ]; then
+    echo "<OK> Architektur $ARCH (${DPKG_ARCH:-Wortbreite $WORTBREITE}) ist 64 Bit."
+else
+    # Kein Abbruch mehr: die Bruecke selbst (reines Python) laeuft auch auf
+    # 32 Bit - nur den Matter-Server kann dieser Rechner nicht betreiben. Bis
+    # 0.9.34 endete das Skript hier mit Rueckgabe 1, noch vor der venv; ein
+    # Matter-Server auf einem anderen Rechner liess sich dann gar nicht
+    # anbinden, obwohl Hilfe und README genau diesen Weg nennen.
+    echo "<WARNING> Das System ist nicht durchgehend 64 Bit: Kern $ARCH, Benutzerland ${DPKG_ARCH:-unbekannt} (Wortbreite ${WORTBREITE:-unbekannt})."
+    echo "<WARNING> Den Matter-Server kann dieser LoxBerry NICHT selbst betreiben - er laeuft"
+    echo "<WARNING> ausdruecklich nur auf 64-Bit-Systemen; ein 64-Bit-Kern unter einem"
+    echo "<WARNING> 32-Bit-Raspberry-Pi-OS genuegt nicht. Ein Matter-Server auf einem ANDEREN"
+    echo "<WARNING> Rechner laesst sich anbinden: Reiter Einstellungen, Haken 'vom Plugin"
+    echo "<WARNING> betreiben lassen' abnehmen und dessen Adresse eintragen."
+fi
 
 # ---------- IPv6 ----------
 # Matter beruht auf IPv6-Link-Local-Multicast. Ohne IPv6 laeuft gar nichts.
@@ -209,7 +230,7 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; sys.exit(0 if s
     PY="python3"
 fi
 if [ -z "$PY" ]; then
-    echo "<FAIL> Es wurde kein Python 3.9 oder neuer gefunden ($(python3 -V 2>&1))."
+    echo "<FAIL> Plugin installiert, aber nicht lauffaehig: es wurde kein Python 3.9 oder neuer gefunden ($(python3 -V 2>&1))."
     exit 1
 fi
 echo "<INFO> Verwendetes Python: $($PY -V 2>&1)"
@@ -233,20 +254,45 @@ fi
 if [ "$BRAUCHBAR" -eq 0 ]; then
     rm -rf "$VENV"
     if ! "$PY" -m venv "$VENV"; then
-        echo "<FAIL> Virtuelle Umgebung konnte nicht angelegt werden ($VENV)."
+        echo "<FAIL> Plugin installiert, aber nicht lauffaehig: die virtuelle Umgebung konnte nicht angelegt werden ($VENV)."
         echo "<FAIL> Fehlt das Paket python3-venv? (apt install python3-venv)"
         exit 1
     fi
     echo "<OK> Virtuelle Umgebung angelegt: $VENV"
 fi
-"$VENV/bin/python3" -m pip install --upgrade pip >/dev/null 2>&1 || \
-    echo "<INFO> pip liess sich nicht aktualisieren - weiter mit der vorhandenen Fassung."
 
-echo "<INFO> Installiere websockets (benoetigt eine Internetverbindung) ..."
-if ! "$VENV/bin/python3" -m pip install --no-cache-dir "websockets>=12"; then
-    echo "<FAIL> Das Paket websockets liess sich nicht installieren."
-    echo "<FAIL> Ohne dieses eine Paket kann der Dienst nicht mit dem Matter-Server reden."
-    exit 1
+# 0.9.35 (Nr. 6): websockets kommt aus dem Plugin selbst, nicht aus dem Netz.
+# Der Installer loescht bei JEDEM Upgrade auch bin/plugins/<ordner>/ samt venv
+# (plugininstall.pl, purge_installation Schritt 7 haengt nicht an "all").
+# Bis 0.9.34 holte dieses Skript das Paket danach jedes Mal von PyPI - ein
+# kurzer Netzausfall waehrend einer AUTOMATISCHEN Aktualisierung liess den
+# Dienst ohne Paket zurueck, und er startete nicht wieder. Das Wheel liegt
+# unter bin/vendor/ (reines Python, py3-none-any, Fassung fest); geprueft
+# wird seine Pruefsumme. Nur wenn es fehlt oder nicht passt, wird PyPI
+# gefragt - mit fester Obergrenze der Hauptfassung.
+WS_WHEEL="$PBIN/vendor/websockets-15.0.1-py3-none-any.whl"
+WS_SHA256="f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f"
+WS_OK=0
+if [ -f "$WS_WHEEL" ] && [ "$(sha256sum "$WS_WHEEL" 2>/dev/null | cut -d' ' -f1)" = "$WS_SHA256" ]; then
+    echo "<INFO> Installiere websockets aus dem Plugin (ohne Internet) ..."
+    if "$VENV/bin/python3" -m pip install --no-index --no-cache-dir --disable-pip-version-check \
+            "$WS_WHEEL" </dev/null; then
+        WS_OK=1
+    else
+        echo "<WARNING> Das mitgelieferte websockets liess sich nicht installieren - versuche PyPI."
+    fi
+else
+    echo "<WARNING> Das mitgelieferte websockets fehlt oder seine Pruefsumme passt nicht ($WS_WHEEL) - versuche PyPI."
+fi
+if [ "$WS_OK" = 0 ]; then
+    echo "<INFO> Installiere websockets aus dem Internet ..."
+    if ! "$VENV/bin/python3" -m pip install --no-cache-dir --disable-pip-version-check \
+            "websockets>=13,<16" </dev/null; then
+        echo "<FAIL> Plugin installiert, aber nicht lauffaehig: das Paket websockets liess sich nicht installieren."
+        echo "<FAIL> Ohne dieses eine Paket kann der Dienst nicht mit dem Matter-Server reden."
+        echo "<FAIL> Abhilfe: Plugin erneut installieren, sobald das Netz wieder geht."
+        exit 1
+    fi
 fi
 # Rueckgabewert allein genuegt nicht - es wird nachgesehen, ob es sich laden
 # laesst. Die Fehlermeldung des Ladeversuchs wird MITGEGEBEN: ohne sie steht
@@ -254,7 +300,7 @@ fi
 # fuer die falsche Architektur oder eine fehlende Systembibliothek) bleibt
 # unsichtbar.
 if ! LADEFEHLER=$("$VENV/bin/python3" -c 'import websockets' 2>&1); then
-    echo "<FAIL> websockets ist installiert, laesst sich aber nicht laden."
+    echo "<FAIL> Plugin installiert, aber nicht lauffaehig: websockets ist installiert, laesst sich aber nicht laden."
     echo "<FAIL> Grund: $LADEFEHLER"
     exit 1
 fi
@@ -322,12 +368,23 @@ if [ "$UPGRADE" = 1 ] && [ -f "$LIEF" ]; then
         # Luecke zwischen Abraeumen und Start fallen). Nur hier wird sie
         # uebergangen; sie ist die eigene, und dies ist der letzte Schritt
         # der Installation. Vorbild: Chromecast4lox 1.3.11, postroot.sh.
-        if su -s /bin/bash loxberry -c "MT_START_TROTZ_MARKE=1 $(printf '%q ' "$PBIN/dienst.sh" start)" >/dev/null 2>&1 \
-           || MT_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+        #
+        # 0.9.35 (Nr. 22): su nur als root. Dieses Skript laeuft als loxberry
+        # (plugininstall.pl: sudo -n -u loxberry); dort verlangte su ein
+        # Passwort - jedes Update schrieb einen Fehlversuch ins auth.log, und an
+        # einer Konsole wartete su unsichtbar auf eine Eingabe. </dev/null in
+        # jedem Fall. Rueckgabe 4 von dienst.sh heisst "nichts gestartet".
+        if [ "$(id -u)" = "0" ]; then
+            su -s /bin/bash loxberry -c "MT_START_TROTZ_MARKE=1 $(printf '%q ' "$PBIN/dienst.sh" start)" </dev/null >/dev/null 2>&1
+        else
+            MT_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start </dev/null >/dev/null 2>&1
+        fi
+        MT_START_RC=$?
+        if [ "$MT_START_RC" = 0 ]; then
             echo "<OK> Der Dienst lief vor dem Update und wurde wieder gestartet."
         else
-            echo "<INFO> Der Dienst lief vor dem Update, liess sich aber nicht"
-            echo "<INFO> starten. Reiter Einstellungen, Knopf 'Dienst starten'."
+            echo "<WARNING> Der Dienst lief vor dem Update, liess sich aber nicht"
+            echo "<WARNING> starten (Rueckgabe $MT_START_RC). Reiter Einstellungen, Knopf 'Dienst starten'."
         fi
     fi
 elif [ "$UPGRADE" = 1 ]; then
@@ -375,12 +432,12 @@ if [ -d "$PDATA/matter" ]; then
     echo "<INFO> ACHTUNG: Der Matter-Container zeigt noch auf den alten"
     echo "<INFO> Datenpfad ($PDATA/matter), der beim naechsten Update"
     echo "<INFO> geloescht wird. Bitte im Reiter Einstellungen einmal"
-    echo "<INFO> 'Container entfernen' und dann 'Container anlegen' druecken."
+    echo "<INFO> 'Einstellungen uebernehmen' bzw. 'Matter-Server einrichten' druecken."
     echo "<INFO> Die angelernten Geraete bleiben dabei erhalten."
 fi
 if [ "$MT_EINGERICHTET" -eq 0 ]; then
     echo "<INFO> Weiter in der Plugin-Oberflaeche: Reiter Einstellungen, dort entweder"
-    echo "<INFO> den Container anlegen lassen oder die Adresse eines vorhandenen"
+    echo "<INFO> 'Matter-Server einrichten' druecken oder die Adresse eines vorhandenen"
     echo "<INFO> Matter-Servers eintragen."
 fi
 exit 0

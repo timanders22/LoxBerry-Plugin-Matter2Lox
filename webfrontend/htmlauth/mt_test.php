@@ -491,6 +491,361 @@ function mt_pruef_tuer($cfg)
                  : array(-1, mt_t('TEST.A_TUER_KEINE'));
 }
 
+/**
+ * 0.9.35 (Nr. D2): Konflikte unter haus/tuer/ und die festen Namen.
+ *
+ * Der Dienst sendet unter haus/tuer/<name>/... nicht, wenn dort schon ein
+ * zurueckbehaltener Wert eines ANDEREN Anbieters steht, und traegt solche
+ * Themen in zustand.json als "haus_konflikte" ein. Die festen Namen (Geraet ->
+ * Name) fuehrt er in config/plugins/<ordner>.haus_namen.json - eine
+ * Umbenennung des Geraets verschiebt das Thema nicht. Rueckgabe array(stand,
+ * html): rot bei Konflikten (bei eingeschaltetem Haken, sonst gelb/grau),
+ * gruen mit Namen, grau ohne beides.
+ */
+function mt_pruef_tuer_konflikt($cfg)
+{
+    $z = mt_zustand();
+    $konflikte = array();
+    foreach ((isset($z['haus_konflikte']) && is_array($z['haus_konflikte']) ? $z['haus_konflikte'] : array()) as $t) {
+        if (is_string($t) && preg_match('#^haus/tuer/[A-Za-z0-9_\-]{1,60}/[a-z_]{1,30}$#', $t)) {
+            $konflikte[] = $t;
+        }
+    }
+    $namen = mt_haus_namen();
+    $ntext = array();
+    foreach ($namen as $nr => $name) {
+        $ntext[] = mt_e($nr . ' -> ' . $name);
+    }
+    $nsatz = $ntext ? sprintf(mt_t('TEST.A_TUERNAMEN'), '<span class="sm-mono">' . implode(', ', $ntext) . '</span>')
+                    : mt_t('TEST.A_TUERNAMEN_KEINE');
+    if ($konflikte) {
+        return array(empty($cfg['tuer_haus']) ? -1 : 0,
+                     sprintf(mt_t('TEST.A_TUERKONFLIKT'), '<span class="sm-mono">' . mt_e(implode(', ', $konflikte)) . '</span>')
+                     . ' ' . $nsatz);
+    }
+    return array($namen ? 1 : -1, mt_t('TEST.A_TUERKONFLIKT_KEINER') . ' ' . $nsatz);
+}
+
+/**
+ * 0.9.35 (Nr. E5): Welcher Matter-Server laeuft? SDK- und Schemafassung aus
+ * loxone.json (server), dazu das Abbild der Container. Laufen ein
+ * python-matter-server und ein matterjs-server auf derselben Fabric
+ * gleichzeitig, ist das rot - das darf nie sein. Rueckgabe array(stand, html).
+ */
+function mt_pruef_serverart($cfg)
+{
+    $srv = mt_serverinfo();
+    $teile = array();
+    if ($srv) {
+        $teile[] = sprintf(mt_t('TEST.A_SERVERART_INFO'),
+            mt_e(isset($srv['sdk_version']) && is_scalar($srv['sdk_version']) ? $srv['sdk_version'] : '?'),
+            mt_e(isset($srv['schema_version']) && is_scalar($srv['schema_version']) ? $srv['schema_version'] : '?'));
+    } else {
+        $teile[] = mt_t('TEST.A_SERVERART_KEINE_INFO');
+    }
+    $seite = mt_docker_seite();
+    if (!mt_docker_da() || ($seite['lage'] !== '' && $seite['lage'] !== 'ok')) {
+        $teile[] = mt_t('TEST.A_SERVERART_KEIN_DOCKER');
+        return array($srv ? 1 : -1, implode(' ', $teile));
+    }
+    $liste = mt_container_bauarten();
+    $eigen = array();
+    $laufend = array();
+    foreach ($liste as $c) {
+        $teile[] = sprintf(mt_t('TEST.A_SERVERART_CONTAINER'), mt_e($c['name']), mt_e($c['abbild']),
+            mt_e(mt_t($c['laeuft'] ? 'ALLG.LAEUFT' : 'ALLG.GESTOPPT')),
+            mt_e(mt_t($c['eigene_fabric'] ? 'TEST.A_SERVERART_FABRIC_EIGEN' : 'TEST.A_SERVERART_FABRIC_FREMD')));
+        if ($c['eigene_fabric']) {
+            $eigen[$c['bauart']] = 1;
+            if ($c['laeuft']) {
+                $laufend[$c['bauart']] = 1;
+            }
+        }
+    }
+    if (!$liste) {
+        $teile[] = mt_t('TEST.A_SERVERART_KEIN_CONTAINER');
+    }
+    if (count($laufend) > 1) {
+        return array(0, mt_t('TEST.A_SERVERART_BEIDE_LAUFEN') . ' ' . implode(' ', $teile));
+    }
+    if (count($eigen) > 1) {
+        return array(-1, mt_t('TEST.A_SERVERART_BEIDE_DA') . ' ' . implode(' ', $teile));
+    }
+    return array($srv || $liste ? 1 : -1, implode(' ', $teile));
+}
+
+/** 0.9.35 (Nr. D2): die festen Namen unter haus/tuer/ (Geraetenummer => Name), Datei des Dienstes. */
+function mt_haus_namen()
+{
+    $datei = preg_replace('/\.haus_themen\.json$/', '.haus_namen.json', mt_paths()['haus']);
+    $d = mt_json_lesen($datei);
+    $aus = array();
+    foreach ((isset($d['namen']) && is_array($d['namen']) ? $d['namen'] : array()) as $nr => $name) {
+        if (preg_match('/^[0-9]{1,4}$/', (string) $nr) && is_string($name) && preg_match('/^[a-z0-9_\-]{1,50}$/', $name)) {
+            $aus[(int) $nr] = $name;
+        }
+    }
+    ksort($aus);
+    return $aus;
+}
+
+/* ==================================================================
+ * 0.9.35 (Nr. 11): Netz-Selbsttest - was das Wirtssystem fuer Matter und
+ * Thread mitbringen muss. Gelesen wird aus /proc und /sys (ohne root
+ * lesbar); ss nur fuer die Prozessnamen, und wo es die ohne root nicht
+ * gibt, steht das so da.
+ * ================================================================== */
+
+/** Die Hauptschnittstelle: primary_interface, sonst die der Standardroute.
+ *  Rueckgabe array(name oder '', Quelle 'einstellung'|'route4'|'route6'|''). */
+function mt_hauptschnittstelle($cfg)
+{
+    $pi = isset($cfg['primary_interface']) && is_scalar($cfg['primary_interface'])
+        ? trim((string) $cfg['primary_interface']) : '';
+    if ($pi !== '' && preg_match('/^[A-Za-z0-9_.\-]{1,15}$/', $pi)) {
+        return array($pi, 'einstellung');
+    }
+    foreach ((array) @file('/proc/net/route', FILE_IGNORE_NEW_LINES) as $i => $z) {
+        $t = preg_split('/\s+/', trim((string) $z));
+        if ($i > 0 && count($t) >= 8 && $t[1] === '00000000' && $t[7] === '00000000'
+            && preg_match('/^[A-Za-z0-9_.\-]{1,15}$/', $t[0])) {
+            return array($t[0], 'route4');
+        }
+    }
+    foreach ((array) @file('/proc/net/ipv6_route', FILE_IGNORE_NEW_LINES) as $z) {
+        $t = preg_split('/\s+/', trim((string) $z));
+        if (count($t) >= 10 && $t[0] === str_repeat('0', 32) && $t[1] === '00'
+            && $t[9] !== 'lo' && preg_match('/^[A-Za-z0-9_.\-]{1,15}$/', $t[9])) {
+            return array($t[9], 'route6');
+        }
+    }
+    return array('', '');
+}
+
+/** Ein Wert aus /proc/sys/net/ipv6/conf/<if>/<name>, oder null. */
+function mt_ipv6_conf($if, $name)
+{
+    $f = '/proc/sys/net/ipv6/conf/' . $if . '/' . $name;
+    if (!is_readable($f)) {
+        return null;
+    }
+    $w = trim((string) @file_get_contents($f));
+    return preg_match('/^-?[0-9]+$/', $w) ? (int) $w : null;
+}
+
+/**
+ * Router-Advertisements fuer Thread. Ein Thread-Border-Router kuendigt das
+ * Praefix des Thread-Netzes per Router-Advertisement mit Route-Information
+ * an. Linux nimmt sie nur an, wenn accept_ra 1 ist (2, wenn die Schnittstelle
+ * weiterleitet) und accept_ra_rt_info_max_plen mindestens 64 - ab Werk 0.
+ * Dann kennt der LoxBerry keinen Weg zu Thread-Geraeten, und sie sind nach
+ * dem Anlernen "nicht erreichbar". Rueckgabe: zwei Zeilen array(stand, text).
+ */
+function mt_pruef_ra($cfg)
+{
+    list($if, $quelle) = mt_hauptschnittstelle($cfg);
+    $thread = trim((string) $cfg['thread_dataset']) !== '' || trim((string) $cfg['thread_br']) !== '';
+    $schlecht = $thread ? 0 : -1;
+    if ($if === '') {
+        return array(array(-1, mt_t('TEST.A_IF_KEINE')), array(-1, mt_t('TEST.A_IF_KEINE')));
+    }
+    $ife = mt_e($if);
+    $ra = mt_ipv6_conf($if, 'accept_ra');
+    $fw = mt_ipv6_conf($if, 'forwarding');
+    $plen = mt_ipv6_conf($if, 'accept_ra_rt_info_max_plen');
+    $zusatz = ' ' . sprintf(mt_t('TEST.A_IF_QUELLE'), $ife, mt_t('TEST.A_IF_' . strtoupper($quelle)));
+    if ($ra === null) {
+        $z1 = array(-1, sprintf(mt_t('TEST.A_RA_UNLESBAR'), $ife) . $zusatz);
+    } elseif (($fw === 1 && $ra === 2) || ($fw !== 1 && $ra >= 1)) {
+        $z1 = array(1, sprintf(mt_t('TEST.A_RA_OK'), $ra, (int) $fw) . $zusatz);
+    } else {
+        $soll = $fw === 1 ? 2 : 1;
+        $z1 = array($schlecht, sprintf(mt_t('TEST.A_RA_FEHL'), $ra, (int) $fw, $soll, $ife, $soll, $ife, $soll)
+                               . ($thread ? '' : ' ' . mt_t('TEST.A_NUR_THREAD')) . $zusatz);
+    }
+    if ($plen === null) {
+        $z2 = array(-1, sprintf(mt_t('TEST.A_PLEN_KEIN'), $ife));
+    } elseif ($plen >= 64) {
+        $z2 = array(1, sprintf(mt_t('TEST.A_PLEN_OK'), $plen));
+    } else {
+        $z2 = array($schlecht, sprintf(mt_t('TEST.A_PLEN_FEHL'), $plen, $ife, $ife)
+                               . ($thread ? '' : ' ' . mt_t('TEST.A_NUR_THREAD')));
+    }
+    return array($z1, $z2);
+}
+
+/** Bluetooth-Adapter (/sys/class/bluetooth/hci*) und rfkill. Rueckgabe array(stand, text). */
+function mt_pruef_bt_adapter($cfg)
+{
+    $nr = is_numeric($cfg['bluetooth_adapter']) ? (int) $cfg['bluetooth_adapter'] : 0;
+    $da = array();
+    foreach ((array) @scandir('/sys/class/bluetooth') as $f) {
+        if (preg_match('/^hci[0-9]+$/', (string) $f)) {
+            $da[] = (string) $f;
+        }
+    }
+    $gesperrt = array();
+    foreach ((array) @scandir('/sys/class/rfkill') as $r) {
+        if (!preg_match('/^rfkill[0-9]+$/', (string) $r)) {
+            continue;
+        }
+        $b = '/sys/class/rfkill/' . $r;
+        if (trim((string) @file_get_contents($b . '/type')) !== 'bluetooth') {
+            continue;
+        }
+        $soft = trim((string) @file_get_contents($b . '/soft'));
+        $hard = trim((string) @file_get_contents($b . '/hard'));
+        if ($soft === '1' || $hard === '1') {
+            $gesperrt[] = trim((string) @file_get_contents($b . '/name')) . ($hard === '1' ? ' (hard)' : ' (soft)');
+        }
+    }
+    $eigen = (string) $cfg['eigener_container'] === '1';
+    if (!$da) {
+        return array($eigen ? 0 : -1, mt_t('TEST.A_BTA_KEINER'));
+    }
+    $liste = mt_e(implode(', ', $da));
+    if ($gesperrt) {
+        return array($eigen ? 0 : -1, sprintf(mt_t('TEST.A_BTA_RFKILL'), $liste, mt_e(implode(', ', $gesperrt))));
+    }
+    if (!in_array('hci' . $nr, $da, true)) {
+        return array($eigen ? 0 : -1, sprintf(mt_t('TEST.A_BTA_FALSCH'), $nr, $liste));
+    }
+    if (!is_dir('/run/dbus')) {
+        return array($eigen ? 0 : -1, sprintf(mt_t('TEST.A_BTA_DBUS'), $liste));
+    }
+    return array(1, sprintf(mt_t('TEST.A_BTA_OK'), $liste, $nr));
+}
+
+/**
+ * Wer lauscht auf $port ($proto 'tcp' oder 'udp')? Aus /proc/net/<proto>(6);
+ * Prozessnamen ueber ss, soweit es sie ohne root zeigt.
+ * Rueckgabe: Liste array(adresse, prozess oder '').
+ */
+function mt_lauscher($proto, $port)
+{
+    $aus = array();
+    foreach (array('', '6') as $v) {
+        foreach ((array) @file('/proc/net/' . $proto . $v, FILE_IGNORE_NEW_LINES) as $i => $z) {
+            $t = preg_split('/\s+/', trim((string) $z));
+            if ($i === 0 || count($t) < 4 || strpos($t[1], ':') === false) {
+                continue;
+            }
+            list($hex, $phex) = explode(':', $t[1], 2);
+            // TCP: 0A = LISTEN; UDP: 07 = gebunden, ohne Gegenstelle
+            if (hexdec($phex) !== (int) $port || $t[3] !== ($proto === 'tcp' ? '0A' : '07')) {
+                continue;
+            }
+            $aus[] = array(mt_proc_adresse($hex), '');
+        }
+    }
+    $ss = array();
+    @exec('command -v ss 2>/dev/null', $ss);
+    if ($aus && $ss) {
+        $zeilen = array();
+        @exec('timeout -k 1 5 ss -H -ln' . ($proto === 'tcp' ? 't' : 'u') . 'p '
+              . escapeshellarg('sport = :' . (int) $port) . ' 2>/dev/null', $zeilen);
+        $prozesse = array();
+        foreach ($zeilen as $z) {
+            if (preg_match_all('/\("([^"]+)",pid=([0-9]+)/', (string) $z, $m)) {
+                foreach ($m[1] as $k => $n) {
+                    $prozesse[] = $n . ' (PID ' . $m[2][$k] . ')';
+                }
+            }
+        }
+        $prozesse = array_values(array_unique($prozesse));
+        foreach ($aus as $k => $a) {
+            $aus[$k][1] = $prozesse ? implode(', ', $prozesse) : '';
+        }
+    }
+    return $aus;
+}
+
+/** Adresse aus /proc/net/tcp(6) (Hex, Netzbyte-Reihenfolge je 32 Bit) als Text. */
+function mt_proc_adresse($hex)
+{
+    if (strlen($hex) === 8) {
+        return implode('.', array_reverse(array_map('hexdec', str_split($hex, 2))));
+    }
+    if (strlen($hex) === 32) {
+        $bin = '';
+        foreach (str_split($hex, 8) as $wort) {
+            $bin .= strrev(pack('H*', $wort));
+        }
+        $txt = @inet_ntop($bin);
+        return $txt !== false ? $txt : $hex;
+    }
+    return $hex;
+}
+
+/** Belegung von WebSocket- und Matter-Port. Rueckgabe: zwei Zeilen array(stand, text). */
+function mt_pruef_ports($cfg)
+{
+    $port = is_numeric($cfg['server_port']) ? (int) $cfg['server_port'] : 5580;
+    $eigen = (string) $cfg['eigener_container'] === '1';
+    $host = strtolower(trim((string) $cfg['server_host']));
+    $lokal_host = in_array($host, array('127.0.0.1', 'localhost', '::1'), true);
+    $text = function ($liste) {
+        $t = array();
+        foreach ($liste as $l) {
+            $t[] = mt_e($l[0]) . ' - ' . ($l[1] !== '' ? mt_e($l[1]) : mt_e(mt_t('TEST.A_PORT_PROZESS_UNBEKANNT')));
+        }
+        return implode('; ', $t);
+    };
+    $ws = mt_lauscher('tcp', $port);
+    $alle = false;
+    foreach ($ws as $l) {
+        if (in_array($l[0], array('0.0.0.0', '::'), true)) {
+            $alle = true;
+        }
+    }
+    if (!$ws) {
+        $z1 = array($eigen && $lokal_host ? 0 : -1, sprintf(mt_t('TEST.A_PORT_WS_FREI'), $port));
+    } elseif ($eigen && $alle && (string) $cfg['server_lokal'] !== '1') {
+        $z1 = array(-1, sprintf(mt_t('TEST.A_PORT_WS_ALLE'), $port, $text($ws)));
+    } elseif ($eigen && $alle && $lokal_host) {
+        $z1 = array(0, sprintf(mt_t('TEST.A_PORT_WS_ALT'), $port, $text($ws)));
+    } else {
+        $z1 = array(1, sprintf(mt_t('TEST.A_PORT_WS'), $port, $text($ws)));
+    }
+    $mt = mt_lauscher('udp', 5540);
+    if (!$mt) {
+        $z2 = array(-1, mt_t('TEST.A_PORT_MATTER_FREI'));
+    } else {
+        $z2 = array(1, sprintf(mt_t('TEST.A_PORT_MATTER'), $text($mt)));
+        $prozesse = array();
+        foreach ($mt as $l) {
+            if ($l[1] !== '') {
+                $prozesse[$l[1]] = 1;
+            }
+        }
+        if (count($mt) > 2 || count($prozesse) > 1) {
+            $z2 = array(0, sprintf(mt_t('TEST.A_PORT_MATTER_MEHR'), $text($mt)));
+        }
+    }
+    return array($z1, $z2);
+}
+
+/** Die MQTT-Gateway-Dateien, die der Dienst schreibt (Vertrag). */
+function mt_pruef_mqtt_dateien($cfg)
+{
+    $dir = mt_paths()['configdir'];
+    $teile = array();
+    $da = 0;
+    foreach (array('mqtt_subscriptions.cfg', 'mqtt_resetaftersend.cfg') as $f) {
+        $pfad = $dir . '/' . $f;
+        if (is_file($pfad)) {
+            $da++;
+            $inhalt = trim((string) @file_get_contents($pfad, false, null, 0, 2000));
+            $teile[] = '<span class="sm-mono">' . mt_e($f) . '</span>: '
+                . ($inhalt !== '' ? '<span class="sm-mono">' . nl2br(mt_e($inhalt)) . '</span>' : mt_e(mt_t('TEST.A_MQTTDATEI_LEER')));
+        } else {
+            $teile[] = '<span class="sm-mono">' . mt_e($f) . '</span>: ' . mt_e(mt_t('TEST.A_MQTTDATEI_FEHLT'));
+        }
+    }
+    $stand = $da > 0 ? 1 : -1;
+    return array($stand, implode('<br>', $teile) . ($da === 0 ? ' ' . mt_t('TEST.A_MQTTDATEI_HINWEIS') : ''));
+}
+
 function mt_pruefungen()
 {
     $cfg = mt_config();
@@ -505,9 +860,24 @@ function mt_pruefungen()
     $zeilen[] = mt_pruefzeile($ip['ok'], mt_t('TEST.F_IPV6'),
         $ip['ok'] ? mt_e($ip['text']) : mt_e($ip['text']) . ' ' . mt_t('TEST.A_IPV6_FEHL'));
 
+    /* 0.9.35 (Nr. 11): Netz-Selbsttest - Router-Advertisements fuer Thread,
+     * Bluetooth-Adapter, Belegung der Ports, Gateway-Dateien. */
+    list($ra1, $ra2) = mt_pruef_ra($cfg);
+    $zeilen[] = mt_pruefzeile($ra1[0], mt_t('TEST.F_RA'), $ra1[1]);
+    $zeilen[] = mt_pruefzeile($ra2[0], mt_t('TEST.F_PLEN'), $ra2[1]);
+    $bta = mt_pruef_bt_adapter($cfg);
+    $zeilen[] = mt_pruefzeile($bta[0], mt_t('TEST.F_BTA'), $bta[1]);
+    list($po1, $po2) = mt_pruef_ports($cfg);
+    $zeilen[] = mt_pruefzeile($po1[0], sprintf(mt_t('TEST.F_PORT_WS'), (int) $cfg['server_port']), $po1[1]);
+    $zeilen[] = mt_pruefzeile($po2[0], mt_t('TEST.F_PORT_MATTER'), $po2[1]);
+
     // --- Matter-Server ---
-    $zu = mt_container_zustand();
+    // 0.9.35 (Nr. E5): welche Bauart, und laufen nie beide auf derselben Fabric?
+    $sa = mt_pruef_serverart($cfg);
+    $zeilen[] = mt_pruefzeile($sa[0], mt_t('TEST.F_SERVERART'), $sa[1]);
     if (!empty($cfg['eigener_container'])) {
+        // 0.9.35 (Nr. 9): Docker nur fragen, wenn das Plugin den Server betreibt.
+        $zu = mt_container_zustand();
         $stand = $zu === 'laeuft' ? 1 : 0;
         $text = array(
             'laeuft'      => mt_t('TEST.A_CONT_LAEUFT'),
@@ -631,6 +1001,12 @@ function mt_pruefungen()
         mt_t($mqttEin ? 'TEST.A_MQTT_EIN_JA' : 'TEST.A_MQTT_EIN_NEIN'));
     $tu = mt_pruef_tuer($cfg);
     $zeilen[] = mt_pruefzeile($tu[0], mt_t('TEST.F_TUER'), $tu[1]);
+    // 0.9.35 (Nr. D2): Konflikte mit anderen Anbietern und die festen Namen.
+    $tk = mt_pruef_tuer_konflikt($cfg);
+    $zeilen[] = mt_pruefzeile($tk[0], mt_t('TEST.F_TUERKONFLIKT'), $tk[1]);
+
+    $md = mt_pruef_mqtt_dateien($cfg);
+    $zeilen[] = mt_pruefzeile($md[0], mt_t('TEST.F_MQTTDATEI'), $md[1]);
 
     $m = mt_mqtt_zustand();
     if (!$m['gefunden']) {
@@ -853,8 +1229,27 @@ function mt_test_aktion($aktion)
             if ($code === '') {
                 return array(0, mt_t('ANLERN.M_CODE_LEER'));
             }
-            return mt_befehl_absetzen(array('aktion' => 'anlernen', 'code' => $code,
-                'nur_netz' => isset($_POST['nur_netz']) ? 1 : 0), 190);
+            $befehl = array('aktion' => 'anlernen', 'code' => $code,
+                            'nur_netz' => isset($_POST['nur_netz']) ? 1 : 0);
+            /* 0.9.35 (Nr. 14, Vertrag): mit IP-Adresse ruft der Dienst
+             * commission_on_network(setup_pin_code, ip_addr) - das geht nur
+             * mit dem manuellen Ziffern-Code (11 oder 21 Ziffern; Leerzeichen
+             * und Bindestriche des Aufdrucks werden entfernt), nicht mit dem
+             * MT:-Text eines QR-Codes. */
+            $ip = isset($_POST['anlern_ip']) && is_string($_POST['anlern_ip']) ? trim($_POST['anlern_ip']) : '';
+            if ($ip !== '') {
+                $tm = mt_textmuster();
+                if (!preg_match($tm['anlern_ip'], $ip)) {
+                    return array(0, mt_t('ANLERN.M_IP_FORM'));
+                }
+                $ziffern = preg_replace('/[\s\-]/', '', $code);
+                if (!preg_match('/^([0-9]{11}|[0-9]{21})$/', $ziffern)) {
+                    return array(0, mt_t('ANLERN.M_IP_NUR_ZIFFERN'));
+                }
+                $befehl['code'] = $ziffern;
+                $befehl['ip'] = $ip;
+            }
+            return mt_befehl_absetzen($befehl, 190);
 
         case 'wlan':
             $cfg = mt_config();
@@ -875,6 +1270,10 @@ function mt_test_aktion($aktion)
         case 'entfernen':
             if ($knoten === 0) {
                 return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            // 0.9.35 (Nr. 4): Pflichthaken - Entfernen loest das Geraet aus der Fabric.
+            if (empty($_POST['entfernen_ja'])) {
+                return array(0, sprintf(mt_t('ANLERN.M_ENTFERNEN_HAKEN'), (int) $nr));
             }
             return mt_befehl_absetzen(array('aktion' => 'entfernen', 'knoten' => $knoten), 70);
 

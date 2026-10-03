@@ -215,7 +215,8 @@ except Exception:
     NAME=$(printf '%s\n' "$LESEN" | sed -n 1p)
     EIGEN=$(printf '%s\n' "$LESEN" | sed -n 2p)
 fi
-[ -n "$NAME" ] || NAME="matter-server"
+# 0.9.35 (Nr. 4): Vorgabe matter2lox-server, wie in mt_vorgaben().
+[ -n "$NAME" ] || NAME="matter2lox-server"
 
 case "$NAME" in
     [A-Za-z0-9]*) : ;;
@@ -223,43 +224,81 @@ case "$NAME" in
        NAME="" ;;
 esac
 
-if [ -n "$NAME" ]; then
-    # Matter2Lox-a1 (Verbesserungsbau 30.09.2026): die Pruefung steht in
-    # bin/container_eigen.sh - dieselbe Datei fragen die Container-Knoepfe der
-    # Oberflaeche (mt_container_eigen() in mt_lib.php). Rueckgabe 0 eigen,
-    # 1 fremd, 2 keiner dieses Namens, 3 nicht zu klaeren. Fehlt die Datei
-    # oder ist nichts zu klaeren, wird NICHTS angefasst.
-    if ! command -v docker >/dev/null 2>&1; then
-        echo "<INFO> Docker ist nicht installiert - es gibt keinen Container zu entfernen."
-    elif [ ! -f "$PBIN/container_eigen.sh" ]; then
-        echo "<WARNING> $PBIN/container_eigen.sh fehlt - der Container '$NAME' wird NICHT angefasst. Gehoert er zu diesem Plugin, von Hand: docker rm -f $NAME"
-    else
-        GRUND=$(bash "$PBIN/container_eigen.sh" "$PDIR" "$NAME" "$EIGEN" 2>&1)
-        ERC=$?
-        case "$ERC" in
-            0)
-                timeout 60 docker rm -f -- "$NAME" >/dev/null 2>&1
-                # Die Wirkung nachsehen, nicht dem Rueckgabewert glauben.
-                if timeout 30 docker inspect --type container -- "$NAME" >/dev/null 2>&1; then
-                    echo "<WARNING> Container '$NAME' liess sich nicht entfernen. Von Hand: docker rm -f $NAME"
-                else
-                    echo "<OK> Docker-Container '$NAME' angehalten und entfernt ($GRUND)."
-                fi
-                echo "<INFO> Das Abbild bleibt liegen - es kann von anderen Containern"
-                echo "<INFO> genutzt werden. Zum Aufraeumen: docker image prune"
-                ;;
-            2)
-                echo "<INFO> Kein Container namens '$NAME' vorhanden."
-                ;;
-            1)
-                echo "<INFO> Der Container '$NAME' wird NICHT angefasst: $GRUND."
-                echo "<INFO> Gehoert er doch zu diesem Plugin, von Hand: docker rm -f $NAME"
-                ;;
-            *)
-                echo "<WARNING> Ob der Container '$NAME' zu diesem Plugin gehoert, liess sich nicht klaeren ($GRUND) - er wird NICHT angefasst. Gehoert er dazu, von Hand: docker rm -f $NAME"
-                ;;
+FABRIC="$BASE/data/plugins/$PDIR.matter"
+
+# 0.9.35 (Nr. 10): die Pruefung "ist das unser Container?" steht HIER und
+# nicht mehr im Aufruf von bin/container_eigen.sh. Dieses Skript laeuft als
+# root, bin/ gehoert loxberry - wer als loxberry Code ausfuehren konnte, kam
+# ueber die Deinstallation zu root. Die Regel ist dieselbe wie in
+# bin/container_eigen.sh (Aenderungen an BEIDEN Stellen):
+#   0 eigen  - Label de.loxberry.plugin.folder=<ordner> (immer, auch bei
+#              eigener_container=0), oder Altbestand ohne Label mit
+#              eigener_container=1, Abbild des Matter-Servers UND /data aus der
+#              Fabric dieses Plugins (0.9.35, Nr. 4: bis 0.9.34 genuegte das
+#              Abbild - ein eigener "matter-server" des Anwenders galt als unser)
+#   1 fremd, 2 keiner dieses Namens, 3 nicht zu klaeren
+mt_container_eigen() {
+    N="$1"
+    if ! FEHL=$(timeout -k 5 30 docker inspect --type container -- "$N" 2>&1 >/dev/null); then
+        case "$FEHL" in
+            *"No such container"*|*"no such container"*|*"No such object"*) GRUND="kein Container dieses Namens"; return 2 ;;
+        esac
+        GRUND="Docker antwortet nicht verwertbar: $(printf '%s' "$FEHL" | head -n 1 | cut -c1-160)"
+        return 3
+    fi
+    L=$(timeout -k 5 30 docker inspect --type container -f '{{index .Config.Labels "de.loxberry.plugin.folder"}}' -- "$N" 2>/dev/null)
+    [ "$L" = "<no value>" ] && L=""
+    if [ -n "$L" ] && [ "$L" = "$PDIR" ]; then
+        GRUND="Label de.loxberry.plugin.folder=$PDIR"; return 0
+    fi
+    A=$(timeout -k 5 30 docker inspect --type container -f '{{.Config.Image}}' -- "$N" 2>/dev/null)
+    Q=$(timeout -k 5 30 docker inspect --type container -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' -- "$N" 2>/dev/null)
+    if [ "$EIGEN" = "1" ] && [ -z "$L" ]; then
+        case "$A" in
+            *python-matter-server*|*matterjs-server*)
+                if [ "$Q" = "$FABRIC" ] || [ "$Q" = "$PDATA/matter" ]; then
+                    GRUND="Altbestand ohne Label, Abbild $A, /data aus $Q"; return 0
+                fi ;;
         esac
     fi
+    GRUND="traegt nicht das Label de.loxberry.plugin.folder=$PDIR und ist kein Altbestand dieses Plugins (Label '${L:-keines}', Abbild '${A:-unbekannt}', /data '${Q:-keines}')"
+    return 1
+}
+mt_container_weg() {
+    N="$1"
+    timeout -k 5 60 docker rm -f -- "$N" >/dev/null 2>&1
+    # Die Wirkung nachsehen, nicht dem Rueckgabewert glauben.
+    if timeout -k 5 30 docker inspect --type container -- "$N" >/dev/null 2>&1; then
+        echo "<WARNING> Container '$N' liess sich nicht entfernen. Von Hand: docker rm -f $N"
+    else
+        echo "<OK> Docker-Container '$N' angehalten und entfernt ($GRUND)."
+    fi
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "<INFO> Docker ist nicht installiert - es gibt keinen Container zu entfernen."
+else
+    if [ -n "$NAME" ]; then
+        mt_container_eigen "$NAME"
+        ERC=$?
+        case "$ERC" in
+            0) mt_container_weg "$NAME" ;;
+            2) echo "<INFO> Kein Container namens '$NAME' vorhanden." ;;
+            1) echo "<INFO> Der Container '$NAME' wird NICHT angefasst: $GRUND."
+               echo "<INFO> Gehoert er doch zu diesem Plugin, von Hand: docker rm -f $NAME" ;;
+            *) echo "<WARNING> Ob der Container '$NAME' zu diesem Plugin gehoert, liess sich nicht klaeren ($GRUND) - er wird NICHT angefasst. Gehoert er dazu, von Hand: docker rm -f $NAME" ;;
+        esac
+    fi
+    # 0.9.35 (Nr. 15): auch Container mit UNSEREM Label unter einem anderen
+    # Namen - etwa nach einer Umbenennung in den Einstellungen. Bis 0.9.34
+    # blieben sie mit --restart=unless-stopped fuer immer stehen.
+    for N in $(timeout -k 5 30 docker ps -a --filter "label=de.loxberry.plugin.folder=$PDIR" --format '{{.Names}}' 2>/dev/null); do
+        [ "$N" = "$NAME" ] && continue
+        GRUND="Label de.loxberry.plugin.folder=$PDIR, frueherer Name"
+        mt_container_weg "$N"
+    done
+    echo "<INFO> Das Abbild bleibt liegen - es kann von anderen Containern"
+    echo "<INFO> genutzt werden. Zum Aufraeumen: docker image prune"
 fi
 
 # ------------------------------------------------------------- Sicherung
@@ -297,23 +336,72 @@ fi
 # NICHT mit ab - das muss dieses Skript tun, sonst bleiben sie als Waisen
 # liegen. Bei einer Deinstallation ist das Loeschen richtig; gesagt wird es
 # ausdruecklich, und zwar VORHER.
-FABRIC="$BASE/data/plugins/$PDIR.matter"
 NUMMERN="$BASE/data/plugins/$PDIR.nummern.json"
 LIEFMARKE="$BASE/data/plugins/$PDIR.lief"
 # Die Marke "Aktualisierung laeuft" aus preupgrade.sh. Bleibt sie liegen,
 # wuerde eine Neuinstallation binnen einer Stunde nicht starten.
 UPGRADEMARKE="$BASE/data/plugins/$PDIR.upgrade_laeuft"
 
-echo "<WARNING> Die Matter-Fabric wird jetzt entfernt ($FABRIC)."
-echo "<INFO> Jedes Geraet, das ueber dieses Plugin angelernt wurde, muss"
-echo "<INFO> danach neu angelernt werden. Wer das vermeiden will, bricht hier"
-echo "<INFO> ab und sichert den Ordner - eine Deinstallation ist der einzige"
-echo "<INFO> Vorgang, bei dem er verschwindet; ein Update ueberlebt er."
-if [ -d "$FABRIC" ]; then
-    rm -rf "$FABRIC" && echo "<OK> Matter-Fabric entfernt." \
-        || echo "<WARNING> Die Fabric liess sich nicht entfernen: $FABRIC"
-else
+echo "<WARNING> Die Matter-Fabric wird jetzt entfernt ($FABRIC), sofern kein Container sie mehr einbindet."
+echo "<INFO> Jedes Geraet, das ueber dieses Plugin angelernt wurde, muesste"
+echo "<INFO> danach neu angelernt werden. Deshalb bleibt seit 0.9.35 eine letzte"
+echo "<INFO> Sicherung liegen (siehe unten); ein Update ueberlebt die Fabric ohnehin."
+# 0.9.35 (Nr. 7): nicht loeschen, solange ein Container sie noch einbindet.
+# Bis 0.9.34 hing das rm -rf nicht am Ergebnis des Container-Schritts: blieb
+# der Container stehen (fremd erkannt, Docker antwortete nicht, rm scheiterte),
+# verlor er beim naechsten Neustart sein /data und mit ihm jedes Geraet.
+# Ist Docker nicht zu fragen, wird ebenfalls nichts geloescht.
+FABRIC_BELEGT=""
+FABRIC_UNKLAR=0
+if [ -d "$FABRIC" ] && command -v docker >/dev/null 2>&1; then
+    if IDS=$(timeout -k 5 30 docker ps -aq 2>/dev/null); then
+        for ID in $IDS; do
+            QUELLEN=$(timeout -k 5 30 docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' -- "$ID" 2>/dev/null)
+            if printf '%s\n' "$QUELLEN" | grep -qxF "$FABRIC"; then
+                FABRIC_BELEGT="$FABRIC_BELEGT $(timeout -k 5 30 docker inspect -f '{{.Name}}' -- "$ID" 2>/dev/null | sed 's#^/##')"
+            fi
+        done
+    else
+        FABRIC_UNKLAR=1
+    fi
+fi
+if [ ! -d "$FABRIC" ]; then
     echo "<INFO> Keine Fabric am neuen Ort vorhanden."
+elif [ -n "$FABRIC_BELEGT" ]; then
+    echo "<WARNING> Die Matter-Fabric bleibt liegen ($FABRIC): der Container$FABRIC_BELEGT bindet sie noch ein."
+    echo "<WARNING> Ohne sie verloere er beim naechsten Neustart jedes Geraet. Wird er nicht mehr"
+    echo "<WARNING> gebraucht: docker rm -f <name> und danach rm -rf '$FABRIC'"
+elif [ "$FABRIC_UNKLAR" = 1 ]; then
+    echo "<WARNING> Die Matter-Fabric bleibt liegen ($FABRIC): Docker antwortet nicht, ob ein"
+    echo "<WARNING> Container sie noch einbindet. Von Hand pruefen und danach rm -rf '$FABRIC'"
+else
+    # 0.9.35 (E7): vor dem Loeschen eine letzte Sicherung. Wer zur Reparatur
+    # deinstalliert und neu installiert, spielt sie im Reiter Einstellungen
+    # (Fuer Fortgeschrittene, Fabric wiederherstellen) zurueck und muss kein
+    # Geraet neu anlernen. Sie traegt die Schluessel der Fabric: 0600, dem
+    # Benutzer loxberry, und die Meldung sagt, wie man sie loswird.
+    SICHER_ORDNER="$BASE/data/plugins/$PDIR.fabric_sicherungen"
+    LETZTE="$SICHER_ORDNER/deinstallation-$(date +%Y%m%d-%H%M%S).tar.gz"
+    GESICHERT=0
+    if [ -n "$(ls -A "$FABRIC" 2>/dev/null)" ] && mkdir -p "$SICHER_ORDNER" 2>/dev/null \
+       && (umask 077; tar -czf "$LETZTE" -C "$FABRIC" . 2>/dev/null); then
+        chmod 700 "$SICHER_ORDNER" 2>/dev/null
+        chmod 600 "$LETZTE" 2>/dev/null
+        chown -R loxberry:loxberry "$SICHER_ORDNER" 2>/dev/null
+        GESICHERT=1
+    fi
+    if [ "$GESICHERT" = 1 ] || [ -z "$(ls -A "$FABRIC" 2>/dev/null)" ]; then
+        rm -rf "$FABRIC" && echo "<OK> Matter-Fabric entfernt." \
+            || echo "<WARNING> Die Fabric liess sich nicht entfernen: $FABRIC"
+        if [ "$GESICHERT" = 1 ]; then
+            echo "<INFO> Letzte Sicherung der Fabric: $LETZTE"
+            echo "<INFO> Sie enthaelt die Schluessel der Matter-Fabric. Wird sie nicht mehr gebraucht:"
+            echo "<INFO>   rm -rf '$SICHER_ORDNER'"
+        fi
+    else
+        echo "<WARNING> Die Fabric liess sich nicht sichern - sie bleibt deshalb liegen ($FABRIC)."
+        echo "<WARNING> Wird sie nicht mehr gebraucht: rm -rf '$FABRIC'"
+    fi
 fi
 if [ -f "$NUMMERN" ]; then
     rm -f "$NUMMERN" && echo "<OK> Geraetenummern entfernt: $PDIR.nummern.json"
@@ -325,6 +413,17 @@ rm -f "$BASE/config/plugins/$PDIR.mqtt_praefixe.json" 2>/dev/null
 # Tuer-1 (Verbesserungsbau 30.09.2026): die Liste der je unter haus/tuer/
 # gesendeten Themen. Der Schritt "MQTT" oben hat sie abgeraeumt (--mqtt-leeren).
 rm -f "$BASE/config/plugins/$PDIR.haus_themen.json" 2>/dev/null
+# 0.9.35 (D2): die festen Namen unter haus/tuer/.
+rm -f "$BASE/config/plugins/$PDIR.haus_namen.json" 2>/dev/null
+# 0.9.35 (E7): beim Zurueckspielen einer Sicherung legt die Oberflaeche die
+# bisherige Fabric als <ordner>.matter.vorher-<zeit> beiseite. Sie traegt
+# Schluessel, wird nach der Deinstallation nie mehr gebraucht und geht - die
+# letzte Sicherung oben bleibt.
+for V in "$BASE/data/plugins/$PDIR.matter.vorher-"*; do
+    [ -e "$V" ] || continue
+    rm -rf "$V" && echo "<OK> Beiseitegelegte Fabric entfernt: $(basename "$V")" \
+        || echo "<WARNING> Liess sich nicht entfernen: $V"
+done
 # Der alte Ort bis 0.9.16 - liegt im Datenordner und geht mit ihm.
 [ -d "$PDATA/matter" ] && echo "<INFO> Ein alter Fabric-Ordner ($PDATA/matter) geht mit dem Datenordner."
 exit 0

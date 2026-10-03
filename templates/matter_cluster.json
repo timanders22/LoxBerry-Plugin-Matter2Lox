@@ -19,6 +19,10 @@
   "  mwh            Rohwert durch 1000000 (Matter zaehlt Milliwattstunden) -> kWh",
   "  energie_struct wie mwh, aber der Wert steckt im Feld 'energy' einer",
   "                 EnergyMeasurementStruct statt als blanke Zahl",
+  "  struct0        Feld 0 einer Struktur (der Server liefert Strukturen mit",
+  "                 Feldnummern als Schluessel; seit 0.9.35)",
+  "  xy             Rohwert durch 65536, vier Stellen (CIE-Farbort x bzw. y,",
+  "                 ColorControl.CurrentX/CurrentY; seit 0.9.35)",
   "  gleitkomma     Rohwert als Gleitkommazahl, auf drei Stellen gerundet.",
   "                 Braucht es fuer die Luftguete-Cluster: deren MeasuredValue",
   "                 ist ein 'single', keine Ganzzahl. Und die EINHEIT steht",
@@ -87,6 +91,22 @@
      "max": 100,
      "einheit": "%",
      "_quelle": "ColorControl.CurrentSaturation, int8u max 0xFE -> 0..100 %"
+    },
+    "3": {
+     "thema": "farbe_x",
+     "typ": "xy",
+     "text": "MT_ATTR.FARBE_X",
+     "min": 0,
+     "max": 1,
+     "_quelle": "ColorControl.CurrentX, int16u max 0xFEFF, x = Wert / 65536. Seit 0.9.35: der Geraetetyp Extended Color Light verlangt XY, nicht Farbton/Saettigung"
+    },
+    "4": {
+     "thema": "farbe_y",
+     "typ": "xy",
+     "text": "MT_ATTR.FARBE_Y",
+     "min": 0,
+     "max": 1,
+     "_quelle": "ColorControl.CurrentY, int16u max 0xFEFF, y = Wert / 65536"
     },
     "7": {
      "thema": "farbtemperatur_mired",
@@ -229,6 +249,14 @@
      "min": 0,
      "max": 9,
      "_quelle": "Thermostat.SystemMode, SystemModeEnum max 0x9"
+    },
+    "41": {
+     "thema": "thermostat_betrieb",
+     "typ": "zahl",
+     "text": "MT_ATTR.RUNSTATE",
+     "min": 0,
+     "max": 127,
+     "_quelle": "Thermostat.ThermostatRunningState, bitmap16: Bit 0 heizt, 1 kuehlt, 2 Luefter, 3-6 Stufen (seit 0.9.35)"
     }
    }
   },
@@ -242,6 +270,14 @@
      "min": 0,
      "max": 3,
      "_quelle": "DoorLock.LockState, DlLockState max 3"
+    },
+    "3": {
+     "thema": "tuerzustand",
+     "typ": "zahl",
+     "text": "MT_ATTR.DOORSTATE",
+     "min": 0,
+     "max": 5,
+     "_quelle": "DoorLock.DoorState (nur mit Feature DoorPositionSensor), DoorStateEnum max 5 (seit 0.9.35)"
     }
    }
   },
@@ -256,6 +292,15 @@
      "max": 63,
      "_quelle": "WindowCovering.OperationalStatus, bitmap8 max 63"
     },
+    "11": {
+     "thema": "position_ziel",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.LIFT_ZIEL",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "WindowCovering.TargetPositionLiftPercent100ths, max 10000 -> 0..100 % (seit 0.9.35)"
+    },
     "14": {
      "thema": "position",
      "typ": "hundertstel",
@@ -264,6 +309,15 @@
      "max": 100,
      "einheit": "%",
      "_quelle": "WindowCovering.CurrentPositionLiftPercent100ths, max 10000 -> 0..100 %"
+    },
+    "15": {
+     "thema": "lamelle",
+     "typ": "hundertstel",
+     "text": "MT_ATTR.TILT",
+     "min": 0,
+     "max": 100,
+     "einheit": "%",
+     "_quelle": "WindowCovering.CurrentPositionTiltPercent100ths, max 10000 -> 0..100 %, 0 = ganz offen (seit 0.9.35)"
     }
    }
   },
@@ -442,6 +496,14 @@
      "text": "MT_ATTR.BETRIEB_ZUSTAND",
      "min": 0,
      "max": 3
+    },
+    "5": {
+     "thema": "betrieb_fehler",
+     "typ": "struct0",
+     "text": "MT_ATTR.OPERROR",
+     "min": 0,
+     "max": 255,
+     "_quelle": "OperationalState.OperationalError, ErrorStateStruct Feld 0 ErrorStateID: 0 kein Fehler, 1 kann nicht starten, 2 kann nicht beenden, 3 Befehl im Zustand ungueltig (seit 0.9.35)"
     }
    }
   },
@@ -778,6 +840,14 @@
      "min": 0,
      "max": 255,
      "_quelle": "OperationalState, enum8 OHNE Obergrenze in der Spezifikation; die 255 ist der Typ"
+    },
+    "5": {
+     "thema": "rvc_fehler",
+     "typ": "struct0",
+     "text": "MT_ATTR.RVC_ERROR",
+     "min": 0,
+     "max": 255,
+     "_quelle": "RvcOperationalState.OperationalError, ErrorStateStruct Feld 0; zusaetzlich 0x40 Ladestation nicht gefunden, 0x41 festgefahren, 0x42/0x43 Staubbehaelter fehlt/voll, 0x44-0x46 Wassertank leer/fehlt/offen, 0x47 Wischpad fehlt (seit 0.9.35)"
     }
    }
   },
@@ -950,6 +1020,46 @@
     "min": 0,
     "max": 2147483647,
     "_quelle": "Unix-Zeit, vom Plugin gesetzt"
+   },
+   "taste_anzahl": {
+    "thema": "taste_anzahl",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_ANZAHL",
+    "min": 0,
+    "max": 254,
+    "_quelle": "TotalNumberOfPressesCounted aus MultiPressComplete (6) bzw. CurrentNumberOfPressesCounted aus MultiPressOngoing (5); leer bei anderen Ereignissen (seit 0.9.35)"
+   },
+   "taste_kurz": {
+    "thema": "taste_kurz",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_KURZ",
+    "min": 0,
+    "max": 2147483647,
+    "_quelle": "vom Plugin gezaehlt aus den Switch-Ereignissen (seit 0.9.35); das Gateway setzt den Wert nach dem Senden auf 0 (mqtt_resetaftersend.cfg) - in Loxone ein Impuls je Druck"
+   },
+   "taste_lang": {
+    "thema": "taste_lang",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_LANG",
+    "min": 0,
+    "max": 2147483647,
+    "_quelle": "vom Plugin gezaehlt aus den Switch-Ereignissen (seit 0.9.35); das Gateway setzt den Wert nach dem Senden auf 0 (mqtt_resetaftersend.cfg) - in Loxone ein Impuls je Druck"
+   },
+   "taste_doppelt": {
+    "thema": "taste_doppelt",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_DOPPELT",
+    "min": 0,
+    "max": 2147483647,
+    "_quelle": "vom Plugin gezaehlt aus den Switch-Ereignissen (seit 0.9.35); das Gateway setzt den Wert nach dem Senden auf 0 (mqtt_resetaftersend.cfg) - in Loxone ein Impuls je Druck"
+   },
+   "taste_dreifach": {
+    "thema": "taste_dreifach",
+    "typ": "zahl",
+    "text": "MT_ATTR.TASTE_DREIFACH",
+    "min": 0,
+    "max": 2147483647,
+    "_quelle": "vom Plugin gezaehlt aus den Switch-Ereignissen (seit 0.9.35); das Gateway setzt den Wert nach dem Senden auf 0 (mqtt_resetaftersend.cfg) - in Loxone ein Impuls je Druck"
    }
   }
  },
@@ -981,6 +1091,15 @@
     "max": 360,
     "einheit": "Grad",
     "_quelle": "ausgerechnet aus ColorControl.CurrentHue (0..254) mal 360/254; die Aktion farbton nimmt Grad entgegen, gelesen wurde bis 0.9.16 nur der Rohwert"
+   },
+   "luftdruck_hpa": {
+    "thema": "luftdruck_hpa",
+    "typ": "zahl",
+    "text": "MT_ATTR.PRESS_HPA",
+    "min": -32768,
+    "max": 32767,
+    "einheit": "hPa",
+    "_quelle": "ausgerechnet: luftdruck (kPa) mal 10. Matter zaehlt in 0,1 kPa, also genau hPa (seit 0.9.35)"
    }
   }
  }

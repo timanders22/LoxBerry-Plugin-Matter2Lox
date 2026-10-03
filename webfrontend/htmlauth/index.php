@@ -54,6 +54,29 @@ if ($mt_p['home'] !== '' && is_file($mt_p['home'] . '/libs/phplib/loxberry_syste
     require_once $mt_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
+/* ---------------- Stand des Hintergrundvorgangs als JSON ----------------
+ *
+ * 0.9.35 (Nr. 8): ein leichter Pfad fuer das Nachfragen der Seite, solange
+ * ein Vorgang am Matter-Server laeuft (index.php?vorgang=1). Liest nur
+ * container_vorgang.json und /proc - kein Docker, keine Konfiguration
+ * schreiben, kein HTML. Bis 0.9.34 lud die Seite sich per meta refresh alle
+ * 5 s komplett neu, mit allen Docker-Aufrufen - und verwarf dabei, was gerade
+ * in ein Feld getippt wurde. Nur GET; ein POST geht den normalen Weg. */
+if ((isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'GET'
+        && isset($_GET['vorgang']) && $_GET['vorgang'] === '1') {
+    $mt_vg = mt_ct_vorgang();
+    $mt_vs = isset($mt_vg['schritt']) && is_string($mt_vg['schritt']) && $mt_vg['schritt'] !== ''
+        ? mt_t('EINST.V_S_' . strtoupper($mt_vg['schritt'])) : '-';
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo json_encode(array(
+        'zustand' => (string) $mt_vg['zustand'],
+        'seit'    => isset($mt_vg['start']) ? max(0, time() - (int) $mt_vg['start']) : 0,
+        'schritt' => $mt_vs,
+    ), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 /* Aktiver Reiter. Die Positivliste MUSS jeden Reiter enthalten - fehlt einer,
  * ist er sichtbar und anklickbar, aber nach jedem Absenden springt die Seite
  * zurueck auf Einstellungen. */
@@ -189,6 +212,18 @@ if ($mt_post && isset($_POST['fabric_sichern'])) {
          * absoluten Pfad des Rechners in sich. */
         list($mt_fok, $mt_fwas, $mt_fzahl) = mt_fabric_packen();
         if ($mt_fok) {
+            /* 0.9.35 (Nr. 10): die Temp-Datei (sie traegt die Fabric samt
+             * Schluesseln) wird in JEDEM Fall geloescht - auch wenn der
+             * Browser den Download abbricht. Bis 0.9.34 beendete ein Abbruch
+             * das Skript vor dem unlink(), und die Datei blieb im Datenordner
+             * liegen. */
+            ignore_user_abort(true);
+            $mt_fweg = $mt_fwas;
+            register_shutdown_function(function () use ($mt_fweg) {
+                if (is_file($mt_fweg)) {
+                    @unlink($mt_fweg);
+                }
+            });
             $mt_dname = 'matter-fabric-' . date('Y-m-d_H-i') . '.tar.gz';
             header('Content-Type: application/x-download');
             header('Content-Disposition: attachment; filename="' . $mt_dname . '"');
@@ -227,6 +262,113 @@ if ($mt_post && isset($_POST['container_akt'])) {
     $mt_tab = 'tab-settings';
 }
 
+/* ---------------- Einstellungen uebernehmen (Container neu anlegen) ----------------
+ * 0.9.35 (Nr. 5): weicht der laufende Container von der Aufrufzeile ab (oder
+ * steht der eigene unter einem anderen Namen), legt dieser Knopf ihn im
+ * Hintergrund neu an - mit Rueckweg und Fabric-Sicherung (Nr. 6). */
+if ($mt_post && isset($_POST['container_uebernehmen'])) {
+    list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('uebernehmen');
+    if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+    $mt_tab = 'tab-settings';
+}
+
+/* ---------------- Umstieg auf matterjs-server (Beta) und zurueck ----------------
+ * 0.9.35 (Nr. E5): setzt container_abbild auf das Abbild der anderen Bauart,
+ * speichert und startet den Hintergrundvorgang 'uebernehmen' - der sichert die
+ * Fabric und legt den Container mit Rueckweg neu an (mt_container_neu_anlegen).
+ * Pflichthaken; nur bei eigenem Container und ohne laufenden Vorgang. */
+if ($mt_post && isset($_POST['abbild_umstieg'])) {
+    $mt_ziel = is_string($_POST['abbild_umstieg']) ? $_POST['abbild_umstieg'] : '';
+    $mt_cfg = mt_config();
+    if (!in_array($mt_ziel, array('matterjs', 'python'), true)) {
+        $mt_fehler[] = mt_t('EINST.FEHLER_CONTAINERBEFEHL');
+    } elseif (empty($_POST['umstieg_ja'])) {
+        $mt_fehler[] = mt_t('EINST.UMSTIEG_HAKEN');
+    } elseif ((string) $mt_cfg['eigener_container'] !== '1') {
+        $mt_fehler[] = mt_t('EINST.V_NUR_EIGENER');
+    } elseif (mt_ct_vorgang_aktiv() !== null) {
+        $mt_fehler[] = mt_t('EINST.V_LAEUFT_SCHON');
+    } else {
+        $mt_abbild_vorher = (string) $mt_cfg['container_abbild'];
+        $mt_cfg['container_abbild'] = mt_abbild_vorgabe($mt_ziel);
+        if (!mt_config_speichern($mt_cfg)) {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+        } else {
+            mt_log('Container: Abbild umgestellt von ' . $mt_abbild_vorher . ' auf ' . $mt_cfg['container_abbild'] . '.');
+            $mt_meldungen[] = sprintf(mt_t('EINST.UMSTIEG_GESPEICHERT'), mt_e($mt_cfg['container_abbild']));
+            list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('uebernehmen');
+            if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+        }
+    }
+    $mt_tab = 'tab-settings';
+}
+
+/* ---------------- Ein anderer eigener Container ----------------
+ * 0.9.35 (Nr. 5 und 7): ein Container mit dem Label dieses Plugins unter
+ * einem anderen Namen (container_name geaendert, eigener_container=0, Rest
+ * eines Neuanlegens) - anhalten, starten oder entfernen. Dieselbe
+ * Eigentumspruefung wie die anderen Knoepfe (container_eigen.sh, mit dem
+ * Label gilt er seit Nr. 3 immer als eigen). Nie der Datenordner. */
+if ($mt_post && isset($_POST['container_anderer'])) {
+    $mt_was = is_string($_POST['container_anderer']) ? $_POST['container_anderer'] : '';
+    $mt_aname = isset($_POST['anderer_name']) && is_string($_POST['anderer_name']) ? $_POST['anderer_name'] : '';
+    if (!in_array($mt_was, array('start', 'stop', 'entfernen'), true)
+        || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,90}$/', $mt_aname)) {
+        $mt_fehler[] = mt_t('EINST.FEHLER_CONTAINERBEFEHL');
+    } elseif (mt_ct_vorgang_aktiv() !== null) {
+        $mt_fehler[] = mt_t('EINST.V_LAEUFT_SCHON');
+    } else {
+        list($mt_ok, $mt_ausgabe) = mt_container($mt_was, $mt_aname);
+        if ($mt_ok) {
+            $mt_meldungen[] = sprintf(mt_t('EINST.CONTAINER_OK'), mt_e($mt_was . ' ' . $mt_aname));
+        } else {
+            $mt_fehler[] = sprintf(mt_t('EINST.CONTAINER_FEHL'), mt_e($mt_was . ' ' . $mt_aname))
+                         . ' <span class="sm-mono">' . mt_e(substr($mt_ausgabe, 0, 800)) . '</span>';
+        }
+    }
+    $mt_tab = 'tab-settings';
+}
+
+/* ---------------- Fabric zurueckspielen ----------------
+ * 0.9.35 (Nr. 12): eine automatische Sicherung (Nr. 6) oder ein
+ * hochgeladenes tar.gz. Pflichthaken, Formularmerkmal (Wachposten), Liste vor
+ * dem Auspacken geprueft - die Schritte stehen ueber
+ * mt_fabric_wiederherstellen(). Synchron, jeder Schritt mit Frist. */
+if ($mt_post && isset($_POST['fabric_wh'])) {
+    $mt_quelle = isset($_POST['fabric_wh_quelle']) && is_string($_POST['fabric_wh_quelle'])
+        ? $_POST['fabric_wh_quelle'] : '';
+    $mt_archiv = '';
+    if (empty($_POST['fabric_wh_ja'])) {
+        $mt_fehler[] = mt_t('EINST.FW_HAKEN');
+    } elseif ($mt_quelle === 'upload') {
+        if (!isset($_FILES['fabric_datei']) || !is_array($_FILES['fabric_datei'])
+            || !isset($_FILES['fabric_datei']['tmp_name']) || !is_string($_FILES['fabric_datei']['tmp_name'])
+            || !@is_uploaded_file($_FILES['fabric_datei']['tmp_name'])) {
+            $mt_fehler[] = mt_t('EINST.FW_KEINE_DATEI');
+        } elseif ((int) $_FILES['fabric_datei']['size'] > 64 * 1024 * 1024) {
+            $mt_fehler[] = mt_t('EINST.FW_ZU_GROSS');
+        } else {
+            $mt_archiv = $_FILES['fabric_datei']['tmp_name'];
+        }
+    } else {
+        foreach (mt_fabric_sicherungen() as $mt_fs) {
+            if ($mt_fs['name'] === $mt_quelle) {
+                $mt_archiv = $mt_fs['pfad'];
+            }
+        }
+        if ($mt_archiv === '') {
+            $mt_fehler[] = mt_t('EINST.FW_KEINE_DATEI');
+        }
+    }
+    if ($mt_archiv !== '') {
+        @set_time_limit(600);
+        ignore_user_abort(true);
+        list($mt_ok, $mt_ausgabe) = mt_fabric_wiederherstellen($mt_archiv);
+        if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+    }
+    $mt_tab = 'tab-settings';
+}
+
 /* ---------------- MQTT-Probewert ---------------- */
 if ($mt_post && isset($_POST['mqtt_probe'])) {
     list($mt_ok, $mt_ausgabe) = mt_mqtt_probe();
@@ -238,6 +380,8 @@ if ($mt_post && isset($_POST['mqtt_probe'])) {
 if ($mt_post && isset($_POST['speichern'])) {
     $mt_cfg = mt_config();
     $mt_adr_vorher = $mt_cfg['server_host'] . ':' . (int) $mt_cfg['server_port'];
+    // 0.9.35 (Nr. 5): die Aufrufzeile vorher - aendert sie sich, wird es gesagt.
+    $mt_befehl_vorher = mt_container_befehl($mt_cfg);
     /* O2 (Durchgang 30.09.2026): nur Leerraum am Rand entfernen, sonst
      * nichts. Bis 0.9.30 entfernte diese Funktion still Anfuehrungs- und
      * Steuerzeichen - eine Adresse in Anfuehrungszeichen wurde ohne Meldung
@@ -297,9 +441,25 @@ if ($mt_post && isset($_POST['speichern'])) {
         $mt_cfg['container_abbild'] = $abbild;
     }
 
+    /* 0.9.35 (Nr. 1): Schnittstelle fuer --primary-interface (leer =
+     * weglassen), Muster laut Vertrag (mt_textmuster()). */
+    $mt_pi = $sauber('primary_interface');
+    $mt_tmuster = mt_textmuster();
+    if (isset($_POST['primary_interface']) && !is_string($_POST['primary_interface'])) {
+        $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_KEIN_TEXT'), mt_t('EINST.L_PRIMARY_INTERFACE'));
+        $mt_bean[] = 'primary_interface';
+    } elseif (!preg_match($mt_tmuster['primary_interface'], $mt_pi)) {
+        $mt_fehler[] = mt_t('EINST.FEHLER_PRIMARY_INTERFACE');
+        $mt_bean[] = 'primary_interface';
+    } else {
+        $mt_cfg['primary_interface'] = $mt_pi;
+    }
+
     $mt_cfg['eigener_container'] = isset($_POST['eigener_container']) ? 1 : 0;
     $mt_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $mt_cfg['schloss_ein'] = isset($_POST['schloss_ein']) ? 1 : 0;
+    // 0.9.35 (Nr. 1): nur auf 127.0.0.1 lauschen (eigener Container).
+    $mt_cfg['server_lokal'] = isset($_POST['server_lokal']) ? 1 : 0;
 
     /* X-2: abgewiesen - die Eingaben reisen zurueck ins Formular. */
     if ($mt_fehler) {
@@ -314,6 +474,12 @@ if ($mt_post && isset($_POST['speichern'])) {
             $mt_adr_nachher = $mt_cfg['server_host'] . ':' . (int) $mt_cfg['server_port'];
             if ($mt_adr_nachher !== $mt_adr_vorher && mt_dienst_pid() > 0) {
                 $mt_meldungen[] = mt_e(sprintf(mt_t('EINST.ADRESSE_NEU'), $mt_adr_nachher));
+            }
+            /* 0.9.35 (Nr. 5): Container-Einstellungen wirken erst nach dem
+             * Neuanlegen - bis 0.9.34 sagte das niemand. */
+            if ((string) $mt_cfg['eigener_container'] === '1'
+                && mt_container_befehl($mt_cfg) !== $mt_befehl_vorher) {
+                $mt_meldungen[] = mt_t('EINST.CONTAINER_NEU_NOETIG');
             }
         } else {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
@@ -497,6 +663,32 @@ if ($mt_post && isset($_POST['netz_speichern'])) {
     $mt_tab = 'tab-commission';
 }
 
+/* ---------------- Gespeicherte Netzdaten loeschen ----------------
+ *
+ * 0.9.35 (Nr. 13, Vertrag): ein leeres Passwort- bzw. Dataset-Feld heisst
+ * beim Speichern "beibehalten" - geloescht werden konnten beide bis 0.9.34
+ * gar nicht. Je ein Knopf mit Pflichthaken setzt den Schluessel auf "". Der
+ * Matter-Server behaelt uebergebene Daten bis zu seinem Neustart; das sagt
+ * die Meldung. */
+if ($mt_post && isset($_POST['netz_loeschen'])) {
+    $mt_nw = is_string($_POST['netz_loeschen']) ? $_POST['netz_loeschen'] : '';
+    $mt_nschl = array('wlan' => 'wlan_passwort', 'thread' => 'thread_dataset');
+    if (!isset($mt_nschl[$mt_nw])) {
+        $mt_fehler[] = mt_t('TEST.M_UNBEKANNT');
+    } elseif (empty($_POST['netz_loeschen_ja'])) {
+        $mt_fehler[] = mt_t('ANLERN.LOESCHEN_HAKEN');
+    } else {
+        $mt_cfg = mt_config();
+        $mt_cfg[$mt_nschl[$mt_nw]] = '';
+        if (mt_config_speichern($mt_cfg)) {
+            $mt_meldungen[] = mt_t($mt_nw === 'wlan' ? 'ANLERN.PW_GELOESCHT' : 'ANLERN.DATASET_GELOESCHT');
+        } else {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+        }
+    }
+    $mt_tab = 'tab-commission';
+}
+
 /* ---------------- Thread-Dataset beim Border-Router holen ----------------
  *
  * Ein eigener Handler und ein eigenes Formular, nicht der Speichern-Knopf
@@ -597,12 +789,76 @@ if ($mt_post && isset($_POST['container'])) {
 
 /* ---------------- Neues Token ---------------- */
 if ($mt_post && isset($_POST['token_neu'])) {
-    $mt_cfg = mt_config();
-    $mt_cfg['aktionstoken'] = mt_token_erzeugen();
-    if (mt_config_speichern($mt_cfg)) {
-        $mt_meldungen[] = mt_t('LOX.TOKEN_NEU');
+    /* 0.9.35 (Nr. 4): Pflichthaken (Muster geraet_leeren). Ein neues Token
+     * macht jede Adresse in Loxone ungueltig - bis 0.9.34 genuegte ein
+     * versehentlicher Klick. */
+    if (empty($_POST['token_neu_ja'])) {
+        $mt_fehler[] = mt_t('LOX.TOKEN_HAKEN');
     } else {
-        $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+        $mt_cfg = mt_config();
+        $mt_cfg['aktionstoken'] = mt_token_erzeugen();
+        if (mt_config_speichern($mt_cfg)) {
+            $mt_meldungen[] = mt_t('LOX.TOKEN_NEU');
+        } else {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+        }
+    }
+    $mt_tab = 'tab-loxone';
+}
+
+/* ---------------- Lesetoken ----------------
+ * 0.9.35 (Nr. 1, Vertrag): ein zweites Token NUR fuer lesende Aktionen
+ * (status, statusalle, wert, liste, roh). Erzeugen ersetzt ein vorhandenes,
+ * loeschen schliesst den Lesezugang - beides mit Pflichthaken, sobald es
+ * eines gibt. Leer = keines. */
+if ($mt_post && isset($_POST['lesetoken'])) {
+    $mt_lw = is_string($_POST['lesetoken']) ? $_POST['lesetoken'] : '';
+    $mt_cfg = mt_config();
+    $mt_lalt = is_scalar($mt_cfg['lesetoken']) ? trim((string) $mt_cfg['lesetoken']) : '';
+    if (!in_array($mt_lw, array('neu', 'loeschen'), true)) {
+        $mt_fehler[] = mt_t('TEST.M_UNBEKANNT');
+    } elseif ($mt_lalt !== '' && empty($_POST['lesetoken_ja'])) {
+        $mt_fehler[] = mt_t('LOX.LESETOKEN_HAKEN');
+    } elseif ($mt_lw === 'loeschen' && $mt_lalt === '') {
+        $mt_meldungen[] = mt_t('LOX.LESETOKEN_KEINS');
+    } else {
+        $mt_neu_lt = '';
+        if ($mt_lw === 'neu') {
+            do {
+                $mt_neu_lt = mt_token_erzeugen();
+            } while ($mt_neu_lt === (string) $mt_cfg['aktionstoken']);
+        }
+        $mt_cfg['lesetoken'] = $mt_neu_lt;
+        if (mt_config_speichern($mt_cfg)) {
+            $mt_meldungen[] = mt_t($mt_lw === 'neu' ? 'LOX.LESETOKEN_NEU' : 'LOX.LESETOKEN_GELOESCHT');
+        } else {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+        }
+    }
+    $mt_tab = 'tab-loxone';
+}
+
+/* ---------------- Adresse fuer die Loxone-Vorlagen ----------------
+ * 0.9.35 (Nr. 1, Vertrag): eigenes Formular im Reiter Einbindung in Loxone,
+ * eigener Handler - er ruehrt nur loxone_adresse an. Leer = IP des LoxBerry. */
+if ($mt_post && isset($_POST['save_loxone'])) {
+    $mt_cfg = mt_config();
+    $mt_tmuster = mt_textmuster();
+    $mt_la = isset($_POST['loxone_adresse']) && is_string($_POST['loxone_adresse'])
+        ? trim($_POST['loxone_adresse']) : null;
+    if ($mt_la === null || !preg_match($mt_tmuster['loxone_adresse'], $mt_la)
+        || stripos($mt_la, 'http') === 0) {
+        $mt_fehler[] = mt_t('LOX.FEHLER_ADRESSE');
+        $mt_bean[] = 'loxone_adresse';
+        $mt_eingaben = mt_eingaben_sammeln('save_loxone', $mt_bean);
+    } else {
+        $mt_cfg['loxone_adresse'] = $mt_la;
+        if (mt_config_speichern($mt_cfg)) {
+            $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
+        } else {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), $mt_p['config']);
+            $mt_eingaben = mt_eingaben_sammeln('save_loxone', array());
+        }
     }
     $mt_tab = 'tab-loxone';
 }
@@ -643,6 +899,16 @@ if ($mt_post && isset($_POST['test'])) {
     }
     $mt_tab = in_array($mt_tw, array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster', 'name'), true)
         ? 'tab-commission' : 'tab-test';
+    /* 0.9.35 (Nr. 4): Geraet, Endpunkt, Wert (bzw. Name, IP) bleiben nach der
+     * Umleitung stehen - bis 0.9.34 sprangen sie bei jedem Druck auf 1/1/50
+     * zurueck. Gereist wird mit der Einmalmeldung (mt_eingabe_felder()). */
+    if ($mt_tw === 'anlernen') {
+        $mt_eingaben = mt_eingaben_sammeln('anlernen', array());
+    } elseif (in_array($mt_tw, array('entfernen', 'fenster', 'name'), true)) {
+        $mt_eingaben = mt_eingaben_sammeln('verwalten', array());
+    } elseif (!in_array($mt_tw, array('wlan', 'thread'), true)) {
+        $mt_eingaben = mt_eingaben_sammeln('schalten', array());
+    }
 }
 /* O1: Selbsttest und Containerprotokoll werden nach der Umleitung beim GET
  * gebildet; mit der Einmalmeldung reist nur ihr Name, nicht ihr Inhalt (ein
@@ -789,6 +1055,24 @@ if ($mt_post) {
         $mt_zeige = $mt_einmal['zeige'];
     }
 }
+/* ---------------- Docker zuerst (0.9.35, Nr. 9) ----------------
+ *
+ * EIN "docker info" mit 5 s Frist, bevor irgendein anderer Docker-Aufruf
+ * laeuft - und nur, wenn das Plugin den Server selbst betreibt oder der
+ * Reiter Einstellungen bzw. Test offen ist. Ist Docker nicht "ok", folgt in
+ * diesem Seitenaufruf kein weiterer Docker-Aufruf (mt_docker_seite()); ist er
+ * "ok", bleiben alle zusammen in rund 10 s ab Seitenbeginn. Bis 0.9.34 liefen
+ * je Seitenaufruf bis zu acht Docker-Aufrufe mit je 30 s Frist, in jedem
+ * Reiter, und bei haengendem Docker stand die Seite minutenlang. */
+$mt_cfg = mt_config();
+$mt_eigener = (string) $mt_cfg['eigener_container'] === '1';
+$mt_dlage = array('', '');
+if ($mt_eigener || in_array($mt_tab, array('tab-settings', 'tab-test'), true)) {
+    $mt_dbeginn = time();
+    $mt_dlage = mt_docker_lage(5);
+    mt_docker_seite($mt_dlage[0], max(3, 10 - (time() - $mt_dbeginn)));
+}
+
 if ($mt_zeige === 'selbsttest' && $mt_tab === 'tab-test') {
     $mt_testausgabe = mt_selbsttest_ausgabe();
 } elseif ($mt_zeige === 'containerlog' && $mt_tab === 'tab-test') {
@@ -796,7 +1080,6 @@ if ($mt_zeige === 'selbsttest' && $mt_tab === 'tab-test') {
 }
 
 /* ---------------- Laden ---------------- */
-$mt_cfg = mt_config();
 $mt_token = mt_token();
 $mt_geraete = mt_geraete();
 $mt_srv = mt_serverinfo();
@@ -804,23 +1087,56 @@ $mt_zustand = mt_zustand();
 $mt_alter = mt_alter();
 $mt_pid = mt_dienst_pid();
 $mt_mqtt = mt_mqtt_zustand();
-$mt_contzustand = mt_container_zustand();
+/* 0.9.35 (Nr. 7 und 9): betreibt das Plugin den Server nicht selbst, heisst
+ * die Kachel "fremder Server" (grau) statt "fehlt" (rot), und Docker wird
+ * dafuer nicht gefragt. Sonst nur, wenn Docker "ok" ist. */
+if (!$mt_eigener) {
+    $mt_contzustand = 'fremd';
+} elseif ($mt_dlage[0] === 'ok') {
+    $mt_contzustand = mt_container_zustand();
+} else {
+    $mt_contzustand = $mt_dlage[0] === 'fehlt' ? 'kein_docker' : 'docker_stoerung';
+}
 $mt_tabelle = mt_tabelle();
+$mt_einst = $mt_tab === 'tab-settings';
+$mt_dok = $mt_dlage[0] === 'ok';
 /* Was laeuft im Container wirklich, und wie gross ist die Fabric? Beides
  * stand bis 0.9.9 nirgends - und ohne die Abbildkennung laesst sich die
- * Wirkung des Knopfs 'Abbild neu holen' gar nicht beurteilen. */
-$mt_fassung = mt_container_fassung($mt_cfg);
+ * Wirkung des Knopfs 'Abbild neu holen' gar nicht beurteilen.
+ * 0.9.35 (Nr. 9): nur im Reiter Einstellungen und nur mit Docker "ok". */
+$mt_fassung = ($mt_einst && $mt_dok && $mt_eigener) ? mt_container_fassung($mt_cfg)
+    : array('container' => '', 'abbild' => '', 'marke' => '');
 /* E1/E2 (Welle 2): Stand des Hintergrundvorgangs (nur eine Datei lesen) und
  * die Ampel - gemessen nur, wenn der Reiter Einstellungen serverseitig offen
- * ist (docker info mit 5 s Frist, container_eigen.sh, mt_erreichbar() mit
+ * ist (die Docker-Lage von oben, container_eigen.sh, mt_erreichbar() mit
  * seinem 30-s-Zwischenspeicher). Die anderen Reiter fragen nichts neu. */
 $mt_vorgang = mt_ct_vorgang();
-$mt_ampel = $mt_tab === 'tab-settings' ? mt_ct_ampel($mt_cfg) : null;
+$mt_ampel = $mt_einst ? mt_ct_ampel($mt_cfg, $mt_dlage[0] !== '' ? $mt_dlage : null) : null;
+/* 0.9.35 (Nr. 5): weicht der eigene Container von der Aufrufzeile ab? Und
+ * gibt es eigene Container unter anderem Namen (Nr. 5 und 7)? */
+$mt_abweichung = null;
+$mt_andere = array();
+if ($mt_einst && $mt_dok) {
+    if ($mt_eigener && $mt_ampel !== null && !empty($mt_ampel['eigen'])) {
+        $mt_abweichung = mt_container_abweichung($mt_cfg);
+    }
+    $mt_andere = ($mt_ampel !== null && !empty($mt_ampel['andere'])) ? $mt_ampel['andere']
+        : mt_container_andere($mt_cfg);
+}
+/* 0.9.35 (Nr. 12): die automatischen Fabric-Sicherungen (nur eine Liste). */
+$mt_fsicherungen = $mt_einst ? mt_fabric_sicherungen() : array();
 $mt_fabricgroesse = mt_fabric_groesse();
-$mt_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-    ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-    : (gethostname() ?: 'loxberry');
-$mt_basis = 'http://' . $mt_host . '/plugins/' . $mt_p['plugin'] . '/index.php';
+/* 0.9.35 (Nachtrag Hauptbearbeiter): Adressen fuer Loxone ueber
+ * mt_endpunkt_basis()/mt_endpunkt_host() (loxone_adresse -> IP des LoxBerry
+ * -> Host-Kopf), nicht mehr ueber den Host-Kopf des Browsers. Lesende
+ * Aufrufe (mt_lesende_aktionen()) tragen das Lesetoken, wenn eines gesetzt
+ * ist. Die Knoepfe im Reiter Test, die der BROWSER oeffnet, gehen ueber den
+ * relativen Pfad - der Browser erreicht den LoxBerry ja schon. */
+$mt_host = mt_endpunkt_host($mt_cfg);
+$mt_basis = mt_endpunkt_basis($mt_cfg) . '/index.php';
+$mt_lesetoken = mt_lesetoken($mt_cfg);
+$mt_lese = $mt_lesetoken !== '' ? $mt_lesetoken : $mt_token;
+$mt_browser = '/plugins/' . $mt_p['plugin'] . '/index.php';
 $mt_logzeilen = array();
 if (is_file($mt_p['log'])) {
     $mt_logzeilen = array_slice(
@@ -834,7 +1150,9 @@ $mt_rahmen = class_exists('LBWeb', false);
 
 
 if ($mt_rahmen) {
-    LBWeb::lbheader('Matter to Loxone', 'https://wiki.loxberry.de/', 'help.html');
+    /* 0.9.35 (Nr. 10): der Hilfelink fuehrt auf die Seite dieses Plugins,
+     * nicht auf die Startseite des LoxBerry-Wikis. */
+    LBWeb::lbheader('Matter to Loxone', 'https://github.com/timanders22/LoxBerry-Plugin-Matter2Lox#readme', 'help.html');
 }
 
 ?>
@@ -921,6 +1239,8 @@ if ($mt_rahmen) {
 .sm-ampel-gruen { background: #6dac20; }
 .sm-ampel-rot   { background: #b00000; }
 .sm-ampel-grau  { background: #9e9e9e; }
+/* 0.9.35 (Nr. 7): grau fuer "fremder Server" (Kachel), weder an noch aus. */
+.sm-grau { color: #757575; font-weight: 700; }
 </style>
 <div class="sm-wrap">
 
@@ -939,9 +1259,14 @@ if ($mt_rahmen) {
     <b class="<?= $mt_pid ? 'sm-an' : 'sm-aus' ?>"><?= $mt_pid ? mt_e(mt_t('ALLG.LAEUFT')) : mt_e(mt_t('ALLG.GESTOPPT')) ?></b>
     <span class="sm-hilfe"><?= $mt_pid ? 'PID ' . (int) $mt_pid : mt_e(mt_t('ALLG.KEINE_PID')) ?></span>
   </div>
+  <?php /* 0.9.35 (Nr. 7): bei eigener_container=0 grau "fremder Server" mit
+     der Adresse, nicht rot "fehlt" - das Plugin betreibt dann keinen
+     Container, und es fehlt nichts. */ ?>
   <div class="sm-kachel"><?= mt_e(mt_t('ALLG.CONTAINER')) ?>
-    <b class="<?= $mt_contzustand === 'laeuft' ? 'sm-an' : 'sm-aus' ?>"><?= mt_e(mt_t('ALLG.CONT_' . strtoupper($mt_contzustand))) ?></b>
-    <span class="sm-hilfe"><?= mt_e(mt_container_name($mt_cfg)) ?></span>
+    <b class="<?= $mt_contzustand === 'laeuft' ? 'sm-an' : ($mt_contzustand === 'fremd' ? 'sm-grau' : 'sm-aus') ?>"><?= mt_e(mt_t('ALLG.CONT_' . strtoupper($mt_contzustand))) ?></b>
+    <span class="sm-hilfe"><?= $mt_contzustand === 'fremd'
+        ? mt_e($mt_cfg['server_host'] . ':' . (int) $mt_cfg['server_port'])
+        : mt_e(mt_container_name($mt_cfg)) ?></span>
   </div>
   <div class="sm-kachel"><?= mt_e(mt_t('ALLG.GERAETE')) ?>
     <b><?= count($mt_geraete) ?></b>
@@ -1038,21 +1363,23 @@ foreach (array('start' => 'sm-b-aktion', 'restart' => 'sm-b-aktion', 'stop' => '
  * "Matter-Server einrichten" im Hintergrund, eine Ampel mit drei Zeilen, die
  * Einzelknoepfe unter "Fuer Fortgeschrittene". Bei eigener_container=0 gibt es
  * keinen Knopf, nur die Adresse. Die Ampelfarben sind feste Klassen. */
-$mt_eigener = (string) $mt_cfg['eigener_container'] === '1';
 $mt_vakt = in_array($mt_vorgang['zustand'], array('gestartet', 'laeuft'), true);
 $mt_vanz = mt_ct_vorgang_anzeige($mt_vorgang);
 $mt_dhinweis = ($mt_ampel !== null && $mt_eigener) ? mt_docker_hinweis($mt_ampel['docker']) : '';
 $mt_afarbe = array('gruen' => 'sm-ampel sm-ampel-gruen', 'rot' => 'sm-ampel sm-ampel-rot',
                    'grau' => 'sm-ampel sm-ampel-grau');
+/* 0.9.35 (Nr. 8): kein meta refresh mehr. Laeuft ein Vorgang, fragt das
+ * Skript am Seitenende index.php?vorgang=1 und laedt erst bei dessen Ende neu
+ * - und nur, wenn dieser Reiter sichtbar ist und kein Feld geaendert oder
+ * gerade bedient wird. */
 ?>
-<?php if ($mt_vakt && $mt_tab === 'tab-settings') { ?>
-<meta http-equiv="refresh" content="5;url=index.php?form=settings">
-<?php } ?>
+<div id="mt-vorgang" data-aktiv="<?= $mt_vakt ? '1' : '0' ?>">
 <?php if ($mt_vanz !== null && $mt_vanz[0] === 'sm-hinweis') { ?>
-<div class="sm-hinweis"><?= $mt_vanz[1] ?></div>
+<div class="sm-hinweis"><?= $mt_vanz[1] ?> <span id="mt-vorgang-stand"></span></div>
 <?php } elseif ($mt_vanz !== null) { ?>
 <div class="sm-warnung"><?= $mt_vanz[1] ?></div>
 <?php } ?>
+</div>
 <?php if (!$mt_eigener) { ?>
 <div class="sm-hinweis"><?= sprintf(mt_t('EINST.EIGENER_SERVER'), mt_e($mt_cfg['server_host'] . ':' . (int) $mt_cfg['server_port'])) ?></div>
 <?php } elseif ($mt_dhinweis !== '') { ?>
@@ -1070,6 +1397,64 @@ $mt_afarbe = array('gruen' => 'sm-ampel sm-ampel-gruen', 'rot' => 'sm-ampel sm-a
     <td><?= $mt_ampel[$mt_ak][1] ?></td></tr>
 <?php } ?>
 </table>
+<?php } ?>
+<?php /* 0.9.35 (Nr. 5): der eigene Container laeuft mit einer anderen
+   Aufrufzeile als der eingestellten - gespeicherte Container-Einstellungen
+   wirken erst nach dem Neuanlegen. */
+if ($mt_eigener && !$mt_vakt && is_array($mt_abweichung) && $mt_abweichung) { ?>
+<div class="sm-warnung"><?= sprintf(mt_t('EINST.AB_TITEL'), mt_e(mt_container_name($mt_cfg))) ?>
+<ul style="margin:6px 0 6px 18px;padding:0;">
+<?php foreach ($mt_abweichung as $mt_abz) { ?><li><span class="sm-mono"><?= mt_e($mt_abz) ?></span></li><?php } ?>
+</ul>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="container_uebernehmen" value="1"><?= mt_e(mt_t('EINST.K_UEBERNEHMEN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('EINST.H_UEBERNEHMEN') ?></div>
+</div>
+<?php } ?>
+<?php /* 0.9.35 (Nr. 5 und 7): eigene Container unter einem anderen Namen
+   (Label dieses Plugins, oder der Altbestand "matter-server"). */
+if ($mt_andere && !$mt_vakt) {
+    $mt_ohne_eigenen = $mt_eigener && ($mt_ampel === null || empty($mt_ampel['eigen'])); ?>
+<div class="sm-warnung"><?= $mt_eigener
+    ? sprintf(mt_t('EINST.ANDERE_EIGEN'), mt_e(mt_container_name($mt_cfg)))
+    : mt_t('EINST.ANDERE_FREMD') ?>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('EINST.T_NAME')) ?></th><th><?= mt_e(mt_t('EINST.T_CONTZUSTAND')) ?></th><th><?= mt_e(mt_t('EINST.L_CONTAINER_ABBILD')) ?></th><th></th></tr>
+<?php foreach ($mt_andere as $mt_an) { ?>
+<tr><td><span class="sm-mono"><?= mt_e($mt_an['name']) ?></span></td>
+    <td><?= mt_e($mt_an['zustand']) ?></td>
+    <td><span class="sm-mono"><?= mt_e($mt_an['abbild'] !== '' ? $mt_an['abbild'] : '-') ?></span></td>
+    <td><div class="sm-knopfreihe" style="margin:0;">
+<?php foreach (array('stop', 'start', 'entfernen') as $mt_aw) {
+        if (($mt_aw === 'stop' && $mt_an['zustand'] !== 'running') || ($mt_aw === 'start' && $mt_an['zustand'] === 'running')) {
+            continue;
+        } ?>
+      <form action="index.php" method="post">
+        <?php echo mt_fmt(); ?>
+        <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+        <input data-role="none" type="hidden" name="anderer_name" value="<?= mt_e($mt_an['name']) ?>">
+        <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="container_anderer" value="<?= $mt_aw ?>"><?= mt_e(mt_t('EINST.KC_' . strtoupper($mt_aw))) ?></button>
+      </form>
+<?php } ?>
+    </div></td></tr>
+<?php } ?>
+</table>
+<?php if ($mt_ohne_eigenen) { ?>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="container_uebernehmen" value="1"><?= mt_e(mt_t('EINST.K_UEBERNEHMEN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= sprintf(mt_t('EINST.H_UEBERNEHMEN_ANDERE'), mt_e(mt_container_name($mt_cfg))) ?></div>
+<?php } ?>
+</div>
 <?php } ?>
 <?php if ($mt_eigener && !$mt_vakt && $mt_dhinweis === '') { ?>
 <div class="sm-legende">
@@ -1093,17 +1478,19 @@ $mt_afarbe = array('gruen' => 'sm-ampel sm-ampel-gruen', 'rot' => 'sm-ampel sm-a
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('ALLG.EIGENSCHAFT')) ?></th><th><?= mt_e(mt_t('ALLG.WERT')) ?></th></tr>
 <tr><td><?= mt_e(mt_t('EINST.T_CONTZUSTAND')) ?></td>
-    <td class="<?= $mt_contzustand === 'laeuft' ? 'sm-an' : 'sm-aus' ?>"><?= mt_e(mt_t('ALLG.CONT_' . strtoupper($mt_contzustand))) ?></td></tr>
+    <td class="<?= $mt_contzustand === 'laeuft' ? 'sm-an' : ($mt_contzustand === 'fremd' ? 'sm-grau' : 'sm-aus') ?>"><?= mt_e(mt_t('ALLG.CONT_' . strtoupper($mt_contzustand))) ?></td></tr>
 <tr><td><?= mt_e(mt_t('EINST.T_DATENORDNER')) ?></td>
     <td><span class="sm-mono"><?= mt_e($mt_p['fabric']) ?></span>
         <?php if ($mt_fabricgroesse >= 0) { ?>(<?= (int) round($mt_fabricgroesse / 1024) ?> kB)<?php } ?></td></tr>
+<?php if ($mt_eigener) { ?>
 <tr><td><?= mt_e(mt_t('EINST.T_ABBILDSTAND')) ?></td>
-    <td><?php if ($mt_fassung['container'] === '') { ?><?= mt_e(mt_t('EINST.T_ABBILD_UNBEKANNT')) ?><?php } else { ?>
+    <td><?php if ($mt_fassung['container'] === '') { ?><?= mt_e(mt_t($mt_dok ? 'EINST.T_ABBILD_UNBEKANNT' : 'EINST.T_ABBILD_UNGEMESSEN')) ?><?php } else { ?>
         <span class="sm-mono"><?= mt_e(substr($mt_fassung['container'], 0, 19)) ?></span>
         <?php if ($mt_fassung['marke'] !== '') { ?>&mdash; <?= mt_e($mt_fassung['marke']) ?><?php } ?>
         <?php if ($mt_fassung['abbild'] !== '' && $mt_fassung['abbild'] !== $mt_fassung['container']) { ?>
         <br><span class="sm-aus"><?= mt_t('EINST.T_ABBILD_NEUER') ?></span><?php } ?>
     <?php } ?></td></tr>
+<?php } ?>
 </table>
 <div class="sm-warnung"><?= mt_t('EINST.FABRIC_WARNUNG') ?></div>
 
@@ -1132,6 +1519,21 @@ foreach (array('start' => 'sm-b-aktion', 'holen' => 'sm-b-aktion',
   </form>
 <?php } ?>
 </div>
+<?php /* 0.9.35 (Nr. E5): Umstieg auf matterjs-server (Beta) bzw. zurueck. */
+if ($mt_eigener) {
+    $mt_ist_js = mt_abbild_bauart(mt_container_abbild($mt_cfg)) === 'matterjs'; ?>
+<h3 class="sm-h3"><?= mt_e(mt_t($mt_ist_js ? 'EINST.H_UMSTIEG_ZURUECK' : 'EINST.H_UMSTIEG')) ?></h3>
+<div class="sm-warnung"><?= mt_t($mt_ist_js ? 'EINST.UMSTIEG_ZURUECK_ERKLAERUNG' : 'EINST.UMSTIEG_ERKLAERUNG') ?></div>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+  <label style="display:flex;align-items:center;gap:6px;margin:8px 0 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="umstieg_ja" value="1"> <?= mt_e(mt_t('EINST.L_UMSTIEG_JA')) ?></label>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="abbild_umstieg" value="<?= $mt_ist_js ? 'python' : 'matterjs' ?>"<?= $mt_vakt ? ' disabled' : '' ?>><?= mt_e(mt_t($mt_ist_js ? 'EINST.K_UMSTIEG_ZURUECK' : 'EINST.K_UMSTIEG')) ?></button>
+  </div>
+</form>
+<?php } ?>
 </details>
 
 <h2><?= mt_e(mt_t('EINST.H_FABRIC')) ?></h2>
@@ -1146,9 +1548,39 @@ foreach (array('start' => 'sm-b-aktion', 'holen' => 'sm-b-aktion',
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="fabric_sichern" value="1"><?= mt_e(mt_t('EINST.K_FABRIC_SICHERN')) ?></button>
   </form>
 </div>
-<div class="sm-step"><?= mt_t('EINST.FABRIC_ZURUECK') ?>
-<p><span class="sm-mono">docker stop <?= mt_e(mt_container_name($mt_cfg)) ?> &amp;&amp; tar -xzf matter-fabric-....tar.gz -C <?= mt_e($mt_p['fabric']) ?> &amp;&amp; docker start <?= mt_e(mt_container_name($mt_cfg)) ?></span></p>
-</div>
+<?php /* 0.9.35 (Nr. 6 und 12): die automatischen Sicherungen vor jedem
+   Neuanlegen und das Zurueckspielen ueber die Oberflaeche. */ ?>
+<details class="sm-step"><summary><b><?= mt_e(mt_t('EINST.H_FABRIC_WH')) ?></b></summary>
+<div class="sm-hilfe"><?= sprintf(mt_t('EINST.FS_ERKLAERUNG'), mt_e(mt_fabric_sicherungsordner())) ?></div>
+<div class="sm-warnung"><?= mt_t('EINST.FW_ERKLAERUNG') ?></div>
+<form action="index.php" method="post" enctype="multipart/form-data">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+  <table class="sm-tbl">
+  <tr><th style="width:2.5em;"></th><th><?= mt_e(mt_t('EINST.FS_T_QUELLE')) ?></th><th><?= mt_e(mt_t('EINST.FS_T_GROESSE')) ?></th></tr>
+<?php foreach ($mt_fsicherungen as $mt_fi => $mt_fs) { ?>
+  <tr><td style="text-align:center;"><input data-role="none" type="radio" name="fabric_wh_quelle" id="fwq<?= (int) $mt_fi ?>" value="<?= mt_e($mt_fs['name']) ?>"<?= $mt_fi === 0 ? ' checked' : '' ?>></td>
+      <td><label for="fwq<?= (int) $mt_fi ?>"><span class="sm-mono"><?= mt_e($mt_fs['name']) ?></span> (<?= mt_e(date('d.m.Y H:i', $mt_fs['zeit'])) ?>)</label></td>
+      <td><?= (int) round($mt_fs['groesse'] / 1024) ?> kB</td></tr>
+<?php } ?>
+  <tr><td style="text-align:center;"><input data-role="none" type="radio" name="fabric_wh_quelle" id="fwqup" value="upload"<?= $mt_fsicherungen ? '' : ' checked' ?>></td>
+      <td><label for="fwqup"><?= mt_e(mt_t('EINST.FS_UPLOAD')) ?></label>
+          <input data-role="none" type="file" name="fabric_datei" accept=".gz,.tgz,application/gzip"></td>
+      <td>&mdash;</td></tr>
+  </table>
+<?php if (!$mt_fsicherungen) { ?>
+  <div class="sm-hilfe"><?= mt_e(mt_t('EINST.FS_KEINE')) ?></div>
+<?php } ?>
+  <label style="display:flex;align-items:center;gap:6px;margin:8px 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="fabric_wh_ja" value="1"> <?= mt_e(mt_t('EINST.L_FW_JA')) ?></label>
+  <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="fabric_wh" value="1"><?= mt_e(mt_t('EINST.K_FW')) ?></button>
+  </div>
+</form>
+<div class="sm-hilfe"><?= mt_t('EINST.FABRIC_ZURUECK') ?>
+<span class="sm-mono">docker stop <?= mt_e(mt_container_name($mt_cfg)) ?> &amp;&amp; tar -xzf matter-fabric-....tar.gz -C <?= mt_e($mt_p['fabric']) ?> &amp;&amp; docker start <?= mt_e(mt_container_name($mt_cfg)) ?></span></div>
+</details>
 
 <form action="index.php" method="post" autocomplete="off">
   <?php echo mt_fmt(); ?>
@@ -1175,13 +1607,29 @@ foreach (array('start' => 'sm-b-aktion', 'holen' => 'sm-b-aktion',
   <input data-role="none" type="number" id="server_port" name="server_port" value="<?= mt_e(mt_eingabe('speichern', 'server_port', (int) $mt_cfg['server_port'])) ?>"<?= mt_markierung('speichern', 'server_port') ?> min="1" max="65535">
   <div class="sm-hilfe"><?= mt_t('EINST.H_SERVER_PORT') ?></div>
 </div>
+<?php /* 0.9.35 (Nr. 1 und 2): nur lokal lauschen; Hauptschnittstelle. */ ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="server_lokal" value="1" <?= !empty(mt_eingabe('speichern', 'server_lokal', $mt_cfg['server_lokal'])) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('EINST.L_SERVER_LOKAL')) ?>
+  </label>
+  <div class="sm-hilfe"><?= mt_t('EINST.H_SERVER_LOKAL') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="primary_interface"><?= mt_e(mt_t('EINST.L_PRIMARY_INTERFACE')) ?></label>
+  <input data-role="none" type="text" id="primary_interface" name="primary_interface" value="<?= mt_e(mt_eingabe('speichern', 'primary_interface', $mt_cfg['primary_interface'])) ?>"<?= mt_markierung('speichern', 'primary_interface') ?> placeholder="eth0" maxlength="15">
+  <div class="sm-hilfe"><?= mt_t('EINST.H_PRIMARY_INTERFACE') ?></div>
+</div>
 <div class="sm-feld">
   <label for="container_name"><?= mt_e(mt_t('EINST.L_CONTAINER_NAME')) ?></label>
   <input data-role="none" type="text" id="container_name" name="container_name" value="<?= mt_e(mt_eingabe('speichern', 'container_name', $mt_cfg['container_name'])) ?>"<?= mt_markierung('speichern', 'container_name') ?>>
+  <div class="sm-hilfe"><?= mt_t('EINST.H_CONTAINER_NAME') ?></div>
 </div>
 <div class="sm-feld">
   <label for="container_abbild"><?= mt_e(mt_t('EINST.L_CONTAINER_ABBILD')) ?></label>
   <input data-role="none" type="text" id="container_abbild" name="container_abbild" value="<?= mt_e(mt_eingabe('speichern', 'container_abbild', $mt_cfg['container_abbild'])) ?>"<?= mt_markierung('speichern', 'container_abbild') ?>>
+  <?php /* 0.9.35 (Nr. 16): Hinweis auf den Nachfolger, mit Vorbehalt. */ ?>
+  <div class="sm-hilfe"><?= mt_t('EINST.H_CONTAINER_ABBILD') ?></div>
 </div>
 <div class="sm-feld">
   <label for="bluetooth_adapter"><?= mt_e(mt_t('EINST.L_BLUETOOTH_ADAPTER')) ?></label>
@@ -1344,6 +1792,25 @@ if ($mt_sich_alt) { ?>
 </div>
 </div>
 
+<?php
+/* 0.9.35 (Nr. 4): das Feld "Geraet" als Auswahlliste mit Nummer und Name aus
+ * mt_geraete(); ohne bekannte Geraete ein Zahlenfeld wie bisher. Der Wert
+ * bleibt nach der Umleitung stehen (mt_eingabe()). */
+$mt_geraet_feld = function ($id, $formular) use ($mt_geraete) {
+    $wahl = (string) mt_eingabe($formular, 'test_geraet', '');
+    if (!$mt_geraete) {
+        return '<input data-role="none" type="number" id="' . mt_e($id) . '" name="test_geraet" value="'
+             . mt_e($wahl !== '' ? $wahl : '1') . '" min="1" max="999">';
+    }
+    $h = '<select data-role="none" id="' . mt_e($id) . '" name="test_geraet">';
+    foreach ($mt_geraete as $nr => $g) {
+        $name = isset($g['name']) && is_scalar($g['name']) && (string) $g['name'] !== '' ? (string) $g['name'] : '?';
+        $h .= '<option value="' . mt_e($nr) . '"' . ((string) $nr === $wahl ? ' selected' : '') . '>'
+            . mt_e($nr . ' - ' . $name) . '</option>';
+    }
+    return $h . '</select>';
+};
+?>
 <!-- ================= Reiter: Geraete anlernen ================= -->
 <div class="sm-seite<?= $mt_tab === 'tab-commission' ? ' sm-active' : '' ?>" id="tab-commission">
 <h2><?= mt_e(mt_t('ANLERN.H_TITEL')) ?></h2>
@@ -1384,7 +1851,10 @@ if ($mt_sich_alt) { ?>
 </div>
 <div class="sm-feld">
   <label for="wlan_passwort"><?= mt_e(mt_t('ANLERN.L_WLANPW')) ?></label>
-  <input data-role="none" type="password" id="wlan_passwort" name="wlan_passwort" value=""<?= mt_markierung('netz_speichern', 'wlan_passwort') ?>
+  <?php /* 0.9.35 (Nr. 10): autocomplete="new-password" - sonst setzt der
+     Browser hier sein gespeichertes LoxBerry-Kennwort ein, und Speichern
+     ueberschreibt still das WLAN-Passwort. */ ?>
+  <input data-role="none" type="password" autocomplete="new-password" id="wlan_passwort" name="wlan_passwort" value=""<?= mt_markierung('netz_speichern', 'wlan_passwort') ?>
          placeholder="<?= $mt_cfg['wlan_passwort'] !== '' ? mt_e(mt_t('ANLERN.PW_GESETZT')) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
 </div>
 <div class="sm-feld">
@@ -1393,7 +1863,7 @@ if ($mt_sich_alt) { ?>
          Netzschluessel): gefuehrt wie das WLAN-Passwort - nie im HTML, leer
          lassen behaelt den gespeicherten Wert. Bis 0.9.34 stand es im Klartext
          im Feld. */ ?>
-  <input data-role="none" type="password" autocomplete="off" id="thread_dataset" name="thread_dataset" value=""<?= mt_markierung('netz_speichern', 'thread_dataset') ?>
+  <input data-role="none" type="password" autocomplete="new-password" id="thread_dataset" name="thread_dataset" value=""<?= mt_markierung('netz_speichern', 'thread_dataset') ?>
          placeholder="<?= (string) $mt_cfg['thread_dataset'] !== '' ? mt_e(mt_t('ANLERN.PW_GESETZT')) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_THREAD') ?></div>
 </div>
@@ -1401,6 +1871,25 @@ if ($mt_sich_alt) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<?php /* 0.9.35 (Nr. 13): gespeicherte Netzdaten loeschen - leer lassen heisst
+   beim Speichern "beibehalten", deshalb ein eigener Knopf mit Pflichthaken. */
+if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset'] !== '') { ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-commission">
+  <label style="display:flex;align-items:center;gap:6px;margin:8px 0 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="netz_loeschen_ja" value="1"> <?= mt_e(mt_t('ANLERN.L_LOESCHEN_JA')) ?></label>
+  <div class="sm-knopfreihe">
+<?php if ((string) $mt_cfg['wlan_passwort'] !== '') { ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="netz_loeschen" value="wlan"><?= mt_e(mt_t('ANLERN.K_PW_LOESCHEN')) ?></button>
+<?php } ?>
+<?php if ((string) $mt_cfg['thread_dataset'] !== '') { ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="netz_loeschen" value="thread"><?= mt_e(mt_t('ANLERN.K_DATASET_LOESCHEN')) ?></button>
+<?php } ?>
+  </div>
+  <div class="sm-hilfe"><?= mt_t('ANLERN.H_LOESCHEN') ?></div>
+</form>
+<?php } ?>
 <form action="index.php" method="post" autocomplete="off">
   <?php echo mt_fmt(); ?>
 <input data-role="none" type="hidden" name="br_holen" value="1">
@@ -1446,10 +1935,17 @@ if ($mt_sich_alt) { ?>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="nur_netz" value="1">
+    <input data-role="none" type="checkbox" name="nur_netz" value="1" <?= !empty(mt_eingabe('anlernen', 'nur_netz', 0)) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('ANLERN.L_NUR_NETZ')) ?>
   </label>
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_NUR_NETZ') ?></div>
+</div>
+<?php /* 0.9.35 (Nr. 14, Vertrag): Anlernen ueber eine bekannte IP-Adresse -
+   nur mit dem manuellen Ziffern-Code. */ ?>
+<div class="sm-feld">
+  <label for="anlern_ip"><?= mt_e(mt_t('ANLERN.L_IP')) ?></label>
+  <input data-role="none" type="text" id="anlern_ip" name="anlern_ip" maxlength="45" value="<?= mt_e(mt_eingabe('anlernen', 'anlern_ip', '')) ?>" placeholder="192.168.1.50">
+  <div class="sm-hilfe"><?= mt_t('ANLERN.H_IP') ?></div>
 </div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION_ANLERNEN') ?></span>
@@ -1466,19 +1962,24 @@ if ($mt_sich_alt) { ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
 <div class="sm-feld">
   <label for="test_geraet2"><?= mt_e(mt_t('TEST.L_GERAET')) ?></label>
-  <input data-role="none" type="number" id="test_geraet2" name="test_geraet" value="1" min="1" max="999">
+  <?= $mt_geraet_feld('test_geraet2', 'verwalten') ?>
 </div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-feld">
   <label for="geraetename"><?= mt_e(mt_t('ANLERN.L_NAME')) ?></label>
-  <input data-role="none" type="text" id="geraetename" name="geraetename" value="" maxlength="32">
+  <input data-role="none" type="text" id="geraetename" name="geraetename" value="<?= mt_e(mt_eingabe('verwalten', 'geraetename', '')) ?>" maxlength="32">
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_NAME') ?></div>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="name"><?= mt_e(mt_t('ANLERN.K_NAME')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="fenster"><?= mt_e(mt_t('ANLERN.K_FENSTER')) ?></button>
+</div>
+<?php /* 0.9.35 (Nr. 4): Pflichthaken fuer das Entfernen (Muster geraet_leeren). */ ?>
+<label style="display:flex;align-items:center;gap:6px;margin:8px 0 0;font-size:0.9em;">
+  <input data-role="none" type="checkbox" name="entfernen_ja" value="1"> <?= mt_e(mt_t('ANLERN.L_ENTFERNEN_JA')) ?></label>
+<div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="entfernen"><?= mt_e(mt_t('ANLERN.K_ENTFERNEN')) ?></button>
 </div>
 </form>
@@ -1665,7 +2166,7 @@ foreach ((array) (isset($mt_tabelle['abgeleitete_themen']['themen'])
 <p><b><?= mt_e($mt_feld($mt_g, 'name', '?')) ?></b> (<?= mt_e(mt_t('EINST.T_KNOTEN')) ?> <?= (int) $mt_feld($mt_g, 'node_id', 0) ?>)</p>
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('LOX.T_ADRESSE')) ?></th>
-    <td colspan="3"><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=status&amp;geraet=<?= mt_e($mt_nr) ?></span></td></tr>
+    <td colspan="3"><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_lese) ?>&amp;aktion=status&amp;geraet=<?= mt_e($mt_nr) ?></span></td></tr>
 <tr><th><?= mt_e(mt_t('LOX.T_TITEL')) ?></th><th><?= mt_e(mt_t('LOX.T_BEFEHL')) ?></th>
     <th><?= mt_e(mt_t('LOX.T_EINZELN')) ?></th><th><?= mt_e(mt_t('LOX.T_BEDEUTUNG')) ?></th></tr>
 <?php /* Die Schleifenvariable heisst NICHT $mt_feld: so hiess der
@@ -1727,6 +2228,10 @@ $mt_beispiele = array(
     'LOX.T_VA_CT'     => 'aktion=farbtemperatur&amp;geraet=1&amp;endpunkt=1&amp;wert=&lt;v&gt;',
     'LOX.T_VA_ROLLO'  => 'aktion=rollo&amp;geraet=1&amp;endpunkt=1&amp;wert=&lt;v&gt;',
     'LOX.T_VA_SOLL'   => 'aktion=soll_heizen&amp;geraet=1&amp;endpunkt=1&amp;wert=&lt;v&gt;',
+    /* 0.9.35 (Nachtrag Hauptbearbeiter, Vertrag): neue Aktionen. */
+    'LOX.T_VA_LOXFARBE' => 'aktion=loxfarbe&amp;geraet=1&amp;endpunkt=1&amp;wert=&lt;v&gt;',
+    'LOX.T_VA_XY'       => 'aktion=farbe_xy&amp;geraet=1&amp;endpunkt=1&amp;x=&lt;x&gt;&amp;y=&lt;y&gt;',
+    'LOX.T_VA_LAMELLE'  => 'aktion=lamelle&amp;geraet=1&amp;endpunkt=1&amp;wert=&lt;v&gt;',
 );
 foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
 <tr><td><?= mt_e(mt_t($mt_k)) ?></td>
@@ -1736,6 +2241,7 @@ foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
 <?= mt_t('LOX.S4_ROH') ?>
 <div class="sm-warnung"><?= mt_t('LOX.S4_WARNUNG') ?></div>
 <p><?= mt_t('LOX.S4_GLEICHWERT') ?></p>
+<p><?= mt_t('LOX.S4_IST') ?></p>
 </div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S5_TITEL')) ?></b>
@@ -1744,16 +2250,59 @@ foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
 <tr><td><?= mt_e(mt_t('LOX.T_TOKEN')) ?></td><td><span class="sm-mono"><?= mt_e($mt_token) ?></span></td></tr>
 </table>
 <?= mt_t('LOX.S5_TEXT') ?>
-<div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <?php echo mt_fmt(); ?>
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<?php /* 0.9.35 (Nr. 4): Pflichthaken vor dem neuen Token (Muster geraet_leeren). */ ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <label style="display:flex;align-items:center;gap:6px;margin:8px 0 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="token_neu_ja" value="1"> <?= mt_e(mt_t('LOX.L_TOKEN_JA')) ?></label>
+  <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= mt_e(mt_t('LOX.K_TOKEN_NEU')) ?></button>
-  </form>
-</div>
+  </div>
+</form>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION_TOKEN') ?></span>
 </div>
+
+<?php /* 0.9.35 (Nr. 1, Vertrag): das Lesetoken - nur fuer lesende Aktionen. */ ?>
+<h3 class="sm-h3"><?= mt_e(mt_t('LOX.H_LESETOKEN')) ?></h3>
+<div class="sm-hinweis"><?= sprintf(mt_t('LOX.LESETOKEN_ERKLAERUNG'), mt_e(implode(', ', mt_lesende_aktionen()))) ?></div>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('ALLG.EIGENSCHAFT')) ?></th><th><?= mt_e(mt_t('ALLG.WERT')) ?></th></tr>
+<tr><td><?= mt_e(mt_t('LOX.T_LESETOKEN')) ?></td><td><?= $mt_lesetoken !== ''
+    ? '<span class="sm-mono">' . mt_e($mt_lesetoken) . '</span>' : mt_e(mt_t('LOX.LESETOKEN_LEER')) ?></td></tr>
+</table>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<?php if ($mt_lesetoken !== '') { ?>
+  <label style="display:flex;align-items:center;gap:6px;margin:8px 0 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="lesetoken_ja" value="1"> <?= mt_e(mt_t('LOX.L_LESETOKEN_JA')) ?></label>
+<?php } ?>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="lesetoken" value="neu"><?= mt_e(mt_t('LOX.K_LESETOKEN_NEU')) ?></button>
+<?php if ($mt_lesetoken !== '') { ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="lesetoken" value="loeschen"><?= mt_e(mt_t('LOX.K_LESETOKEN_LOESCHEN')) ?></button>
+<?php } ?>
+  </div>
+</form>
+
+<?php /* 0.9.35 (Nr. 1, Vertrag): die Adresse, die in den Vorlagen steht. */ ?>
+<h3 class="sm-h3"><?= mt_e(mt_t('LOX.H_ADRESSE')) ?></h3>
+<form action="index.php" method="post" autocomplete="off">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="save_loxone" value="1">
+  <div class="sm-feld">
+    <label for="loxone_adresse"><?= mt_e(mt_t('LOX.L_ADRESSE')) ?></label>
+    <input data-role="none" type="text" id="loxone_adresse" name="loxone_adresse" maxlength="80"
+           value="<?= mt_e(mt_eingabe('save_loxone', 'loxone_adresse', $mt_cfg['loxone_adresse'])) ?>"<?= mt_markierung('save_loxone', 'loxone_adresse') ?> placeholder="<?= mt_e(mt_t('LOX.P_ADRESSE')) ?>">
+    <div class="sm-hilfe"><?= sprintf(mt_t('LOX.H_ADRESSE_FELD'), mt_e($mt_host)) ?></div>
+  </div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+  </div>
+</form>
 </div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S6_TITEL')) ?></b><br><?= mt_t('LOX.S6_TEXT') ?></div>
@@ -1816,7 +2365,7 @@ function mt_bausteine()
 <?= mt_t('LOX.S8_TEXT') ?>
 <table class="sm-tbl">
 <tr><th><?= mt_e(mt_t('LOX.T_PRUEFUNG')) ?></th><th><?= mt_e(mt_t('LOX.T_ERWARTUNG')) ?></th></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=liste</span></td>
+<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_lese) ?>&amp;aktion=liste</span></td>
     <td><span class="sm-mono">LISTE;OK=1;N=...</span></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?aktion=liste</span></td>
     <td><span class="sm-mono">FEHLER;OK=0;GRUND=TOKEN</span> (HTTP 403)</td></tr>
@@ -1859,8 +2408,8 @@ foreach (mt_pruefungen() as $mt_z) { ?>
 
 <h3><?= mt_e(mt_t('TEST.H_LESEN')) ?></h3>
 <div class="sm-knopfreihe">
-  <a class="sm-btn sm-b-lesen" href="<?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=liste" target="_blank"><?= mt_e(mt_t('TEST.K_LISTE')) ?></a>
-  <a class="sm-btn sm-b-lesen" href="<?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=status&amp;geraet=1" target="_blank"><?= mt_e(mt_t('TEST.K_STATUS')) ?></a>
+  <a class="sm-btn sm-b-lesen" href="<?= mt_e($mt_browser) ?>?token=<?= mt_e($mt_lese) ?>&amp;aktion=liste" target="_blank"><?= mt_e(mt_t('TEST.K_LISTE')) ?></a>
+  <a class="sm-btn sm-b-lesen" href="<?= mt_e($mt_browser) ?>?token=<?= mt_e($mt_lese) ?>&amp;aktion=status&amp;geraet=1" target="_blank"><?= mt_e(mt_t('TEST.K_STATUS')) ?></a>
 </div>
 
 <h3><?= mt_e(mt_t('TEST.H_TECHNIK')) ?></h3>
@@ -1875,7 +2424,7 @@ foreach (mt_pruefungen() as $mt_z) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="containerlog" value="1"><?= mt_e(mt_t('TEST.K_CONTAINERLOG')) ?></button>
   </form>
-  <a class="sm-btn sm-b-technik" href="<?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=roh" target="_blank"><?= mt_e(mt_t('TEST.K_ROH')) ?></a>
+  <a class="sm-btn sm-b-technik" href="<?= mt_e($mt_browser) ?>?token=<?= mt_e($mt_lese) ?>&amp;aktion=roh" target="_blank"><?= mt_e(mt_t('TEST.K_ROH')) ?></a>
 </div>
 <?php if ($mt_testausgabe !== '') { ?>
 <div class="sm-pre"><?= mt_e($mt_testausgabe) ?></div>
@@ -1891,16 +2440,16 @@ foreach (mt_pruefungen() as $mt_z) { ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
 <div class="sm-feld">
   <label for="test_geraet"><?= mt_e(mt_t('TEST.L_GERAET')) ?></label>
-  <input data-role="none" type="number" id="test_geraet" name="test_geraet" value="1" min="1" max="999">
+  <?= $mt_geraet_feld('test_geraet', 'schalten') ?>
 </div>
 <div class="sm-feld">
   <label for="test_endpunkt"><?= mt_e(mt_t('TEST.L_ENDPUNKT')) ?></label>
-  <input data-role="none" type="number" id="test_endpunkt" name="test_endpunkt" value="1" min="0" max="255">
+  <input data-role="none" type="number" id="test_endpunkt" name="test_endpunkt" value="<?= mt_e(mt_eingabe('schalten', 'test_endpunkt', '1')) ?>" min="0" max="255">
   <div class="sm-hilfe"><?= mt_t('TEST.H_ENDPUNKT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="test_wert"><?= mt_e(mt_t('TEST.L_WERT')) ?></label>
-  <input data-role="none" type="number" id="test_wert" name="test_wert" value="50" min="0" max="100">
+  <input data-role="none" type="number" id="test_wert" name="test_wert" value="<?= mt_e(mt_eingabe('schalten', 'test_wert', '50')) ?>" min="0" max="100">
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="abruf"><?= mt_e(mt_t('TEST.K_ABRUF')) ?></button>
@@ -1977,6 +2526,53 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
 	});
 	zeige(<?= json_encode($mt_tab) ?>);
+
+	/* 0.9.35 (Nr. 8): statt meta refresh. Laeuft ein Vorgang am Matter-Server,
+	 * fragt die Seite alle 3 s index.php?vorgang=1 (nur eine Datei, kein
+	 * Docker) und zeigt Dauer und Schritt. Neu geladen wird erst, wenn der
+	 * Vorgang zu Ende ist - und nur, wenn der Reiter Einstellungen sichtbar
+	 * ist und kein Formularfeld geaendert wurde oder gerade bedient wird.
+	 * Sonst steht ein Hinweis mit Verweis da. */
+	var vg = document.getElementById('mt-vorgang');
+	if (!vg || vg.getAttribute('data-aktiv') !== '1' || !window.fetch) { return; }
+	var geaendert = false;
+	document.addEventListener('input', function () { geaendert = true; }, true);
+	document.addEventListener('change', function () { geaendert = true; }, true);
+	function bedient() {
+		var a = document.activeElement;
+		return !!(a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName));
+	}
+	function sichtbar() {
+		var t = document.getElementById('tab-settings');
+		return !!(t && t.classList.contains('sm-active')) && !document.hidden;
+	}
+	var stand = document.getElementById('mt-vorgang-stand');
+	var fertigText = <?= json_encode(mt_t('EINST.V_FERTIG_NEU_LADEN'), JSON_UNESCAPED_UNICODE) ?>;
+	var fertig = false;
+	function frage() {
+		if (fertig) { return; }
+		fetch('index.php?vorgang=1', { credentials: 'same-origin', cache: 'no-store' })
+			.then(function (r) { return r.json(); })
+			.then(function (d) {
+				if (d.zustand === 'gestartet' || d.zustand === 'laeuft') {
+					if (stand) { stand.textContent = '(' + d.seit + ' s, ' + d.schritt + ')'; }
+					setTimeout(frage, 3000);
+					return;
+				}
+				fertig = true;
+				if (sichtbar() && !geaendert && !bedient()) {
+					location.href = 'index.php?form=settings';
+				} else if (stand) {
+					stand.innerHTML = '';
+					var a = document.createElement('a');
+					a.href = 'index.php?form=settings';
+					a.textContent = fertigText;
+					stand.appendChild(a);
+				}
+			})
+			.catch(function () { setTimeout(frage, 6000); });
+	}
+	setTimeout(frage, 3000);
 })();
 </script>
 <?php

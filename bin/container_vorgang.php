@@ -14,9 +14,17 @@
  *
  * Kein Takt und kein Hakenskript ruft diese Datei.
  *
- * Aufruf: php container_vorgang.php einrichten|holen|aktualisieren
+ * Aufruf: php container_vorgang.php einrichten|holen|aktualisieren|uebernehmen
  * Rueckgabewert: 0 erledigt, 1 nicht gelungen, 2 falscher Aufruf,
  * 3 es laeuft schon ein Vorgang.
+ *
+ * 0.9.35 (Nr. 5): "uebernehmen" = Einstellungen uebernehmen (Container mit
+ * Rueckweg neu anlegen, mt_ct_uebernehmen()).
+ * 0.9.35 (Nr. 15): eine eigene Sperre fuer die ganze Laufzeit (flock auf
+ * data/plugins/<ordner>/container_vorgang.lock - dieselbe Datei, unter der
+ * mt_ct_vorgang_starten() prueft und eintraegt). Bis 0.9.34 pruefte diese
+ * Datei nur den Stand in container_vorgang.json; zwei Handstarts kurz
+ * nacheinander sahen beide "kein Vorgang" und liefen beide.
  */
 if (basename(dirname(__DIR__)) === 'plugins') {
     $mt_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/'
@@ -49,9 +57,30 @@ ini_set('display_errors', '0');
 ini_set('error_log', $mt_p['logdir'] . '/container_vorgang.err');
 
 $mt_auftrag = isset($argv[1]) ? (string) $argv[1] : '';
-if (!in_array($mt_auftrag, array('einrichten', 'holen', 'aktualisieren'), true) || count($argv) !== 2) {
-    fwrite(STDERR, "Unbekannter Auftrag - erlaubt sind nur: einrichten, holen, aktualisieren\n");
+if (!in_array($mt_auftrag, array('einrichten', 'holen', 'aktualisieren', 'uebernehmen'), true) || count($argv) !== 2) {
+    fwrite(STDERR, "Unbekannter Auftrag - erlaubt sind nur: einrichten, holen, aktualisieren, uebernehmen\n");
     exit(2);
+}
+
+/* 0.9.35 (Nr. 15): die Sperre fuer die ganze Laufzeit. Ist sie belegt,
+ * laeuft schon ein Vorgang (oder ein Zurueckspielen der Fabric) - dann endet
+ * dieser, ohne etwas anzufassen. Freigegeben wird sie mit dem Prozessende.
+ * Gehoert die Datei einem anderen Benutzer (Handstart als root), genuegt
+ * Lesen: flock braucht kein Schreibrecht. */
+if (!is_dir($mt_p['datadir'])) {
+    @mkdir($mt_p['datadir'], 0775, true);
+}
+$mt_sperre = @fopen($mt_p['datadir'] . '/container_vorgang.lock', 'c');
+if ($mt_sperre === false) {
+    $mt_sperre = @fopen($mt_p['datadir'] . '/container_vorgang.lock', 'r');
+}
+if ($mt_sperre === false) {
+    fwrite(STDERR, "Die Sperrdatei container_vorgang.lock laesst sich nicht oeffnen - nichts angefasst.\n");
+    exit(1);
+}
+if (!flock($mt_sperre, LOCK_EX | LOCK_NB)) {
+    fwrite(STDERR, "Es laeuft bereits ein Vorgang (Sperre belegt).\n");
+    exit(3);
 }
 
 /* Zweimal laufen geht nicht: lebt schon ein anderer Vorgang, endet dieser. */
@@ -60,4 +89,7 @@ if ($mt_v['zustand'] === 'laeuft' && (int) $mt_v['pid'] !== getmypid()) {
     fwrite(STDERR, 'Es laeuft bereits ein Vorgang (PID ' . (int) $mt_v['pid'] . ").\n");
     exit(3);
 }
-exit(mt_ct_vorgang_ausfuehren($mt_auftrag) ? 0 : 1);
+$mt_rc = mt_ct_vorgang_ausfuehren($mt_auftrag) ? 0 : 1;
+flock($mt_sperre, LOCK_UN);
+fclose($mt_sperre);
+exit($mt_rc);

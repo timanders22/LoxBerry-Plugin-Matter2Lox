@@ -85,8 +85,15 @@ date +%s > "$MARKE" 2>/dev/null
 if grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - waehrend der"
-    echo "<WARNING> Installation kann der Dienst ueber die Oberflaeche starten."
+    # 0.9.35 (Nr. C): die Marke ist seit 0.9.30 TRAGEND - an ihr erkennen
+    # preinstall.sh und postinstall.sh die Aktualisierung. Fehlt sie, haelt
+    # postinstall.sh das Update fuer eine Neuinstallation: die Konfiguration
+    # (Token, WLAN, Thread) wird beiseitegelegt statt zurueckgespielt, und
+    # der Dienst startet nicht. Bis 0.9.34 war das nur eine Warnung.
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen. Ohne sie wuerde die"
+    echo "<FAIL> Aktualisierung als Neuinstallation behandelt und die Einstellungen"
+    echo "<FAIL> nicht uebernommen. Ist data/plugins voll oder schreibgeschuetzt?"
+    FEHLER=1
 fi
 
 # Ist die Nummer $1 ein Dienst dieses Plugins? Argumentweise: argv[0] ist
@@ -114,6 +121,10 @@ mt_ist_dienst() {
 # Merker - zurueck blieb ein Dienst ohne PID-Datei, fuer die Oberflaeche
 # unsichtbar und ueber 'dienst.sh stop' nicht mehr erreichbar.
 LIEF=0
+# 0.9.35 (Nr. C): auch der Sollmerker zaehlt. Ist der Dienst gerade
+# abgestuerzt (Waechterluecke bis eine Minute, oder ein Absturzkreislauf, den
+# genau dieses Update beheben soll), blieb er bis 0.9.34 nach dem Update aus.
+[ -f "$PDATA/soll_laufen" ] && LIEF=1
 if [ -x "$PBIN/dienst.sh" ]; then
     if "$PBIN/dienst.sh" status >/dev/null 2>&1; then
         LIEF=1
@@ -240,12 +251,19 @@ if [ -d "$FABALT" ]; then
         echo "<INFO> wurde bei jedem Update geloescht."
         echo "<INFO> WICHTIG: Der Container zeigt noch auf den alten Pfad."
         echo "<INFO> Nach dem Update im Reiter Einstellungen einmal"
-        echo "<INFO> 'Container entfernen' und dann 'Container anlegen'"
-        echo "<INFO> druecken. Die Geraete bleiben dabei angelernt."
+        echo "<INFO> 'Einstellungen uebernehmen' druecken (der Container wird mit"
+        echo "<INFO> dem neuen Pfad neu angelegt). Die Geraete bleiben dabei angelernt."
     else
         echo "<FAIL> Die Matter-Fabric liess sich NICHT umziehen."
         echo "<FAIL> Sie liegt in $FABALT. Das Update wird deshalb abgebrochen,"
         echo "<FAIL> bevor der Installer den Ordner loescht (siehe Schluss)."
+        # 0.9.35 (Nr. C): der haeufigste Grund ist ein Ordner, den Docker als
+        # root angelegt hat; ein Verzeichnis-mv in einen anderen Elternordner
+        # braucht Schreibrecht auf das Verzeichnis selbst. Der Befehl steht da.
+        if [ -n "$(find "$FABALT" -maxdepth 0 ! -user "$(id -un)" 2>/dev/null)" ]; then
+            echo "<FAIL> Der Ordner gehoert nicht dem Benutzer $(id -un) (Besitzer: $(stat -c %U "$FABALT" 2>/dev/null))."
+            echo "<FAIL> Abhilfe auf der Konsole: sudo chown -R loxberry:loxberry '$FABALT'"
+        fi
         echo "<FAIL> Bitte den Ordner von Hand sichern und das Update danach wiederholen."
         FEHLER=1
     fi
@@ -295,6 +313,12 @@ fi
 echo "<FAIL> preupgrade mit Beanstandungen beendet - siehe oben."
 echo "<FAIL> Das Update wird ABGEBROCHEN (Rueckgabe 2): der Installer bricht vor dem"
 echo "<FAIL> Abraeumen ab, es wurde nichts geloescht. Die bisherige Fassung bleibt."
+# 0.9.35 (Nr. C): die Plugin-Datenbank des LoxBerry traegt die NEUE Fassung
+# schon vor diesem Skript (plugininstall.pl). Die Oberflaeche zeigt sie also,
+# und die automatische Aktualisierung versucht es nicht noch einmal.
+echo "<FAIL> ACHTUNG: Die Plugin-Verwaltung zeigt danach trotzdem die neue Fassungsnummer."
+echo "<FAIL> Nach dem Beheben das Update von Hand erneut einspielen (Plugin-Verwaltung,"
+echo "<FAIL> ZIP-Datei oder Adresse) - von selbst wird es nicht wiederholt."
 rm -f "$MARKE" 2>/dev/null
 rm -f "$BASE/data/plugins/$PFOLDER.lief" 2>/dev/null
 if [ "$LIEF" -eq 1 ] && [ -x "$PBIN/dienst.sh" ]; then

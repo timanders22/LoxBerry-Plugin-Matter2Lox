@@ -10,6 +10,137 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.35
+
+Umsetzung der Prüfung vom 03.10.2026: Fehler, Sicherheit, Zusammenspiel mit
+anderen Plugins und neue Funktionen. Gemessen an einer Matter-Server-Attrappe,
+die das Rohformat des echten Servers nachbildet (Strukturen mit Feldnummern,
+Statusliste bei `write_attribute`), an Attrappen für Docker und LoxBerry und
+unter PHP 8.3 sowie Python 3.11; **nicht am Gerät** und nicht unter PHP 7.4
+gelaufen (dort nur auf Syntax geprüft).
+
+> **Nach dem Update einmal Hand anlegen:** Wer den Matter-Server vom Plugin
+> betreiben lässt, drückt im Reiter *Einstellungen* auf **„Einstellungen
+> übernehmen“**. Erst dann lauscht der Container nur noch auf 127.0.0.1 (siehe
+> unten). Vorher wird automatisch eine Sicherung der Fabric angelegt; die
+> Geräte bleiben angelernt.
+
+**Fehler, die auf echten Anlagen gewirkt hätten**
+
+* **Gerätetypen wurden nie erkannt.** Der Matter-Server liefert Strukturen
+  mit Feldnummern (`{"0": 21, "1": 1}`), das Plugin suchte `deviceType`. Folge
+  bis 0.9.34: leere Typanzeige, und `haus/tuer/<name>/offen` ging **nie**
+  hinaus.
+* **Größere Anlagen verbanden sich endlos neu.** Die WebSocket-Bibliothek
+  nimmt ab Werk höchstens 1 MiB je Nachricht; der Knotenbestand einer Bridge
+  ist größer. Jetzt ohne Grenze, wie im Client des Matter-Servers selbst.
+* **Abgelehnte Schreibvorgänge galten als Erfolg** (Sollwert außerhalb der
+  Grenzen: `OK=1`). Jetzt wird der Status des Geräts ausgewertet
+  (`CONSTRAINT_ERROR` & Co.).
+* **Die Warteschlange blockierte den Dienst.** Ein Gerät, das nicht antwortet,
+  hielt alle anderen bis zu 60 s auf, und ein Anlernen konnte den Wächter
+  einen „hängenden“ Dienst mitten im Vorgang neu starten lassen. Befehle
+  laufen jetzt nebeneinander (je Gerät der Reihe nach), der Herzschlag läuft
+  weiter.
+* **Die Reihenfolge der Befehle war Zufall** (zufällige Dateinamen). Jetzt
+  zeitlich; von mehreren Stellbefehlen derselben Art für ein beschäftigtes
+  Gerät geht nur der jüngste hinaus (die älteren: `OK=2`, überholt).
+* **Wartezeit abgelaufen:** Der Endpunkt sagt jetzt verlässlich, ob ein Befehl
+  sicher nicht ausgeführt wurde (`OK=0`) oder noch läuft (`OK=2`).
+
+**Sicherheit**
+
+* Der eigene Matter-Server-Container lauscht nur noch auf **127.0.0.1**
+  (Haken *nur lokal*, ab Werk an). Bis 0.9.34 war er im ganzen LAN ohne
+  Anmeldung bedienbar – Token und Schlossfreigabe liefen dort ins Leere.
+* **Schlossbremse neu:** `sperren` wird nie mehr unterdrückt oder gebremst;
+  ein verworfener Befehl wird nicht mehr als gesendet gemerkt;
+  `entsperren` gilt nur als unverändert, wenn das Schloss wirklich entriegelt
+  meldet.
+* **Rohweg:** Schlösser auch dort nur mit Schlossfreigabe; Zugriffsrechte,
+  Fabrics und Netzzugang (Cluster 31, 48, 49, 60, 62, 63) gesperrt; die
+  Nutzlast muss ein JSON-Objekt sein.
+* **Lesetoken:** ein zweites Token nur für lesende Aufrufe.
+* Fremde Container werden nicht mehr angefasst: Ein Container ohne Label gilt
+  nur noch als Altbestand dieses Plugins, wenn sein `/data` die Fabric des
+  Plugins ist. Die Vorgabe für den Containernamen heißt jetzt
+  `matter2lox-server` (bisher `matter-server`, wie in der offiziellen
+  Anleitung – und damit wie der Server mancher Home-Assistant-Anlage).
+* Die Deinstallation führt kein Skript mehr als root aus, das dem Benutzer
+  loxberry gehört.
+
+**Zusammenspiel mit anderen Plugins**
+
+* Das Plugin legt `mqtt_subscriptions.cfg` und `mqtt_resetaftersend.cfg` an.
+  Das MQTT-Gateway von LoxBerry abonniert die Themen damit **selbst** (auch
+  Fassung 1), und Tastendrücke kommen als Impuls an.
+* `haus/tuer/`: Namen bleiben fest, fremde Werte werden nicht überschrieben
+  (siehe Abschnitt *Türen und Schlösser*).
+* Container mit dem Label des Plugins unter einem anderen Namen werden
+  gefunden und lassen sich entfernen; die Deinstallation räumt sie mit ab.
+* Reiter *Test*: Belegung der Ports 5580/5540 (wer lauscht?), IPv6-Router-
+  Advertisements für Thread (`accept_ra`, `accept_ra_rt_info_max_plen`),
+  Bluetooth-Adapter, Gateway-Dateien.
+* Die Loxone-Vorlagen tragen die LoxBerry-IP (oder eine eingetragene Adresse)
+  statt der Adresse, unter der der Browser die Seite aufgerufen hat.
+
+**Neue Funktionen**
+
+* `loxfarbe`: der Ausgang des Loxone-Lichtbausteins direkt (RGB `BBBGGGRRR`
+  und Lumitech `20bbbtttt`); XY oder Farbton/Sättigung je nach Lampe. Dazu
+  `farbe_xy` und die Themen `farbe_x`/`farbe_y` – XY ist bei Farblampen
+  Pflicht, Farbton/Sättigung nicht.
+* Jalousie: `lamelle` (Lesen und Stellen) und `position_ziel`.
+* Taster: `taste_anzahl` sowie fertige Impulsthemen `taste_kurz`,
+  `taste_lang`, `taste_doppelt` und `taste_dreifach` – je Druckart ein
+  Eingang in Loxone. Das Gateway setzt sie nach dem Senden auf 0
+  (`mqtt_resetaftersend.cfg`), und das Vollbild wiederholt sie nie.
+* Neue Themen `betrieb_fehler` und `rvc_fehler` (Fehler von Waschmaschine,
+  Spülmaschine, Saugroboter usw.).
+* Neue Themen `tuerzustand` (Schloss mit Türsensor), `thermostat_betrieb`,
+  `luftdruck_hpa`. Die Antwort trägt nach Schalt- und Schlossbefehlen `IST=`.
+* Ausgangsvorlage je Endpunkt (Bridges, Mehrfachschalter), Sollwerte mit
+  einer Nachkommastelle, neue Ausgänge für Farbe, Lamelle, Schloss und
+  Betriebsart.
+* Anlernen über die IP-Adresse des Geräts; Gerätenummer im Reiter als Auswahl
+  mit Namen; Eingaben bleiben nach jedem Knopf stehen; „Entfernen“ und
+  „Neues Token“ nur mit Bestätigungshaken.
+* Container: Abweichung zwischen eingestellter und laufender Aufrufzeile wird
+  erkannt („Einstellungen übernehmen“); Neuanlegen mit Rückweg (der alte
+  Container bleibt, bis der neue läuft) und automatischer Fabric-Sicherung;
+  **Fabric wiederherstellen** aus einer Sicherung oder einem hochgeladenen
+  Archiv. Option `--primary-interface`.
+* **Umstieg auf den Nachfolger `matterjs-server` (Beta, ungeprüft):** ein
+  Knopf unter *Für Fortgeschrittene* stellt das Abbild um und legt den
+  Container mit Sicherung und Rückweg neu an – ohne `--paa-root-cert-dir`, mit
+  `--fabricid 1` und `--user` des Fabric-Ordners (der Nachfolger läuft nicht
+  als root). Er übernimmt die Fabric beim ersten Start und schreibt die Dateien
+  des Python-Servers weiter mit; „Zurück zu python-matter-server“ geht deshalb
+  mit demselben Ordner. Beide dürfen nie gleichzeitig laufen – die neue Zeile
+  *Welcher Matter-Server läuft?* im Reiter *Test* sagt es. Hat Docker den
+  Fabric-Ordner einst als root angelegt, läuft auch der Nachfolger als root;
+  `sudo chown -R loxberry:loxberry data/plugins/matter2lox.matter` behebt das.
+* Reiter *Test*: Konflikte unter `haus/tuer/` und die festen Türnamen.
+* Gespeichertes WLAN-Passwort und Thread-Dataset lassen sich löschen.
+* Die Seite fragt den Stand eines Container-Vorgangs leise ab, statt alle 5 s
+  neu zu laden; bei hängendem Docker braucht sie höchstens etwa 5 s.
+
+**Installation**
+
+* `websockets` kommt aus dem Plugin (`bin/vendor/`, Prüfsumme geprüft) – eine
+  automatische Aktualisierung scheitert nicht mehr an einem Netzausfall.
+* 64 Bit wird am Benutzerland geprüft, nicht am Kern. Auf 32 Bit bricht die
+  Installation nicht mehr ab: ein Matter-Server auf einem anderen Rechner
+  lässt sich anbinden.
+* Kein `su` mehr als loxberry; ehrliche Meldungen, wenn der Dienst nach dem
+  Update nicht startet; ein abgestürzter Dienst, der laufen sollte, startet
+  nach dem Update wieder; scheitert die Upgrade-Marke, bricht das Update ab,
+  statt die Einstellungen beiseitezulegen.
+* Die Deinstallation löscht die Fabric nicht, solange ein Container sie
+  einbindet, und lässt eine letzte Sicherung liegen.
+* „Stop“ und Wächter laufen unter derselben Sperre – ein angehaltener Dienst
+  bleibt angehalten.
+
 ## Neu in 0.9.34
 
 Verbesserungen aus dem Durchgang (Verbesserungsliste
@@ -1047,7 +1178,9 @@ das Dataset auch danach erst auf Knopfdruck; der Abruf schaltet nichts ein.
     webfrontend/html/         Endpunkt für den Miniserver + Bibliothek
 
 Im venv liegt genau **ein** Paket: `websockets` (reines Python, keine
-Übersetzung nötig, ab Python 3.9).
+Übersetzung nötig, ab Python 3.9). Seit 0.9.35 bringt das Plugin es selbst mit
+(`bin/vendor/websockets-15.0.1-py3-none-any.whl`, Prüfsumme in
+`postinstall.sh`); eine Aktualisierung braucht kein Internet mehr.
 
 ## Was übersetzt wird
 
@@ -1058,17 +1191,20 @@ Matter-Spezifikation:
 |---|---|---|
 | OnOff | `schalter` | 0/1 |
 | LevelControl | `helligkeit` | 0–254 → 0–100 % |
-| ColorControl | `farbtemperatur_mired`, `farbtemperatur_kelvin`, `farbton_roh`, `saettigung` | Kelvin = 1000000 ÷ Mired |
+| ColorControl | `farbtemperatur_mired`, `farbtemperatur_kelvin`, `farbton_roh`, `saettigung`, `farbe_x`, `farbe_y` | Kelvin = 1000000 ÷ Mired; x/y ÷65536 |
 | TemperatureMeasurement | `temperatur` | ÷100 |
 | RelativeHumidityMeasurement | `feuchte` | ÷100 |
 | IlluminanceMeasurement | `helligkeit_lux` | 10^((v−1)/10000) |
 | OccupancySensing | `bewegung` | unterstes Bit |
 | BooleanState | `kontakt` | 0/1 |
-| Thermostat | `ist_temperatur`, `soll_heizen`, `soll_kuehlen`, `betriebsart` | ÷100 |
-| WindowCovering | `position` | ÷100, 0 = ganz offen |
+| Thermostat | `ist_temperatur`, `soll_heizen`, `soll_kuehlen`, `betriebsart`, `thermostat_betrieb` | ÷100 |
+| DoorLock | `schloss`, `tuerzustand` | — |
+| PressureMeasurement | `luftdruck` (kPa), `luftdruck_hpa` | ÷10 bzw. unverändert |
+| WindowCovering | `position`, `position_ziel`, `lamelle` | ÷100, 0 = ganz offen |
 | PowerSource | `batterie` | ÷2 (halbe Prozent) |
 | ElectricalPowerMeasurement | `leistung`, `spannung`, `strom` | ÷1000 |
-| Switch *(Ereignis)* | `taste`, `taste_zaehler`, `taste_position`, `taste_zeit` | — |
+| Switch *(Ereignis)* | `taste`, `taste_zaehler`, `taste_position`, `taste_zeit`, `taste_anzahl` (Doppelklick = 2), Impulse `taste_kurz`, `taste_lang`, `taste_doppelt`, `taste_dreifach` | — |
+| OperationalState · RvcOperationalState | `betrieb_fehler`, `rvc_fehler` | Feld 0 der Fehlerstruktur |
 | SmokeCoAlarm | `rauch_alarm`, `co_alarm`, `rauch_batterie`, `rauch_lebensende` … | — |
 | CO₂ · PM2,5 · VOC | `co2`, `pm25`, `voc` samt `…_einheit` | Gleitkomma, Einheit aus Attribut 8 |
 | RvcRunMode · RvcOperationalState | `rvc_modus`, `rvc_zustand`, `rvc_restzeit` | — |
@@ -1102,6 +1238,12 @@ lesen Türen in dieser Form, gleich von welchem Plugin.
 * Trägt ein Gerät mehrere Kontakte oder Schlösser, heißt jedes
   `<name>_<endpunkt>`. Tragen zwei Geräte denselben Namen, bekommt das mit
   der höheren Gerätenummer `_<gerätenummer>` angehängt.
+* **Seit 0.9.35 bleibt `<name>` fest**, auch wenn das Gerät umbenannt wird
+  (`config/plugins/matter2lox.haus_namen.json`). Neu vergeben wird er nach
+  „Themen dieses Geräts abräumen“.
+* **Seit 0.9.35 überschreibt das Plugin keinen fremden Wert:** steht unter
+  einem Thema, das es noch nie gesendet hat, schon ein zurückbehaltener Wert
+  eines anderen Anbieters, sendet es dort nicht und meldet das im Protokoll.
 * Wasser- und Regenmelder (ebenfalls BooleanState) gehen nicht unter
   `haus/tuer/`.
 * Fällt ein Wert weg oder wird ein Gerät entfernt, geht einmal `-` hinaus
@@ -1117,18 +1259,27 @@ lesen Türen in dieser Form, gleich von welchem Plugin.
 
 Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
 
-**Schlossbremse:** `sperren` und `entsperren` sind je Gerät gebremst. Derselbe
-Schlossbefehl innerhalb von 60 s geht nicht erneut hinaus
-(`SET;OK=1;AKTION=…;UNVERAENDERT=1`), ein anderer innerhalb von 10 s wird mit
-HTTP 429 abgewiesen (`GRUND=BREMSE;WARTEN_S=n`). Lässt sich der Merker nicht
-öffnen, antwortet der Endpunkt 503 (`GRUND=BREMSE_MERKER`) und sendet nichts.
-Licht, Dimmen und alle übrigen Befehle bekommen kein 429.
+Ein zweites, **nur lesendes Token** (Reiter *Einbindung in Loxone*, seit
+0.9.35) öffnet `status`, `statusalle`, `wert`, `liste`, `roh` und den
+Selbsttest – schaltende Aufrufe damit bekommen 403 (`GRUND=NUR_LESETOKEN`). Die
+Eingangsvorlagen benutzen es, wenn eines gesetzt ist.
+
+**Schlossbremse (seit 0.9.35):** `sperren` geht **immer** hinaus – nie
+`UNVERAENDERT`, nie 429; Sperren ist die sichere Richtung. `entsperren`
+antwortet `SET;OK=1;AKTION=entsperren;UNVERAENDERT=1` nur, wenn derselbe Befehl
+vor weniger als 60 s gelang **und** das Abbild das Schloss als entriegelt
+meldet; innerhalb von 10 s nach einem `sperren` wird es mit HTTP 429
+abgewiesen (`GRUND=BREMSE;WARTEN_S=n`). Lässt sich der Merker nicht öffnen,
+antwortet `entsperren` 503 (`GRUND=BREMSE_MERKER`). Dieselbe Bremse gilt für den
+Rohweg `befehl` auf Cluster 257. Schlösser – auch über den Rohweg – verlangen
+den Haken *Schlösser schalten zulassen* (sonst 403 `GRUND=SCHLOSS_AUS`). Licht,
+Dimmen und alle übrigen Befehle bekommen kein 429.
 
 **Gleichwert-Unterdrückung:** Derselbe Sollwert für dasselbe Gerät (Knoten und
 Endpunkt) geht innerhalb von 60 s nicht erneut hinaus
 (`SET;OK=1;AKTION=…;UNVERAENDERT=1`). Das gilt für `ein`/`aus`, `helligkeit`,
-`farbtemperatur`, `farbe`, `farbton`, `saettigung`, `rollo`, `soll_heizen`,
-`soll_kuehlen`, `betriebsart` und `luefter`. Ein anderer Wert geht sofort
+`farbtemperatur`, `farbe`, `farbton`, `saettigung`, `loxfarbe`, `farbe_xy`,
+`rollo`, `lamelle`, `soll_heizen`, `soll_kuehlen`, `betriebsart` und `luefter`. Ein anderer Wert geht sofort
 hinaus; `20`, `20.0` und `20,0` gelten als gleich. `umschalten`,
 `rollo_auf`/`_zu`/`_stopp`, `identify`, `attribut` und `befehl` gehen immer
 hinaus; sie lassen aber die gemerkten Werte verfallen, die sie verändern
@@ -1137,7 +1288,16 @@ ausgeführt bestätigt hat, und nur das, was über den Endpunkt hinausging – w
 in derselben Minute am Gerät, in einer App oder im Reiter *Test* geschieht,
 sieht der Merker nicht. Lässt sich der Merker
 (`data/plugins/matter2lox/befehl_gleichwert.json`) nicht öffnen, antwortet ein
-Sollwert-Befehl 503 (`GRUND=GLEICHWERT_MERKER`) und sendet nichts.
+Sollwert-Befehl 503 (`GRUND=GLEICHWERT_MERKER`) und sendet nichts. Gesperrt
+wird je Gerät; hält ein anderer Aufruf dasselbe Gerät länger als etwa 2 s,
+antwortet er 503 (`GRUND=BESCHAEFTIGT`).
+
+**Antwort:** `SET;OK=<0|1|2>;AKTION=…[;IST=<wert>];MELDUNG=…`. `OK=0` heißt
+sicher nicht ausgeführt (auch: der Dienst hat den Befehl innerhalb der
+Wartezeit gar nicht angenommen), `OK=2` ohne Ergebnis – eingereiht, noch in
+Arbeit oder von einem neueren Befehl desselben Geräts überholt. `IST` steht
+nach `ein`/`aus`/`umschalten`/`sperren`/`entsperren` da und ist der Wert, den
+das Gerät spätestens 3 s nach dem Befehl meldet.
 
 Jedes Gerät ist auf zwei Wegen ansprechbar: über `&geraet=N`, die Gerätenummer
 des Plugins, oder über `&knoten=M`, die Knotennummer des Matter-Servers. Die
@@ -1155,12 +1315,19 @@ Plugins. Ist beides angegeben, gewinnt `&knoten=`.
 | `?token=T&aktion=ein\|aus\|umschalten&geraet=N&endpunkt=E` | schalten |
 | `?token=T&aktion=helligkeit&wert=0..100` | dimmen |
 | `?token=T&aktion=farbtemperatur&wert=<Kelvin>` | Farbtemperatur |
+| `?token=T&aktion=loxfarbe&wert=<Zahl>` | Ausgang des Loxone-Lichtbausteins: RGB `BBBGGGRRR` (je 0–100) oder Lumitech `20bbbtttt` (Helligkeit, Kelvin); wählt XY oder Farbton/Sättigung nach den Fähigkeiten der Lampe |
+| `?token=T&aktion=farbe_xy&x=0..1&y=0..1` | Farbort (CIE xy) |
 | `?token=T&aktion=rollo&wert=0..100` | Behang (0 = ganz offen) |
+| `?token=T&aktion=lamelle&wert=0..100` | Lamellenstellung (0 = ganz offen) |
 | `?token=T&aktion=rollo_auf\|rollo_zu\|rollo_stopp` | Behang fahren und anhalten |
 | `?token=T&aktion=soll_heizen\|soll_kuehlen&wert=<Grad>` | Thermostat-Sollwerte |
 | `?token=T&aktion=betriebsart&wert=0..9` | Thermostat-Betriebsart |
 | `?token=T&aktion=attribut&pfad=E/C/A&wert=…` | **Rohzugriff**: beliebiges Attribut schreiben |
-| `?token=T&aktion=befehl&cluster=N&name=X&nutzlast=<JSON>` | **Rohzugriff**: beliebiger Cluster-Befehl |
+| `?token=T&aktion=befehl&cluster=N&name=X&nutzlast=<JSON-Objekt>` | **Rohzugriff**: beliebiger Cluster-Befehl |
+
+Im Rohzugriff gesperrt sind die Cluster 31, 48, 49, 60, 62 und 63
+(Zugriffsrechte, Inbetriebnahme, Netzzugang, Anlernfenster, Fabrics,
+Gruppenschlüssel): 403 `GRUND=CLUSTER_GESPERRT`.
 
 **Ein Strich als Wert** heißt: dieses Feld gibt es bei diesem Gerät nicht. Es
 wird bewusst keine 0 gesendet — eine 0 wäre eine stille Falschaussage.
@@ -1169,7 +1336,9 @@ wird bewusst keine 0 gesendet — eine 0 wäre eine stille Falschaussage.
 
 Im Reiter *Geräte anlernen*: WLAN-Zugangsdaten hinterlegen und an den Server
 übergeben, dann den Code vom Gerät eintippen (QR-Text `MT:…` oder elfstelliger
-Kopplungscode). Das dauert bis zu zwei Minuten.
+Kopplungscode, Striche und Leerzeichen dürfen mit). Das dauert bis zu drei
+Minuten. Ist das Gerät schon im Netz und findet die Suche es nicht, lässt sich
+seit 0.9.35 seine **IP-Adresse** dazu angeben – dann nur mit dem Ziffern-Code.
 
 Ein Gerät kann **in mehreren Fabrics gleichzeitig** sein: wer es schon in Apple
 Home oder Google Home hat, lässt dort ein Kopplungsfenster öffnen und benutzt
@@ -1177,9 +1346,14 @@ den angezeigten Code hier. Umgekehrt geht es genauso.
 
 ## Der Datenordner ist heilig
 
-In `data/plugins/matter2lox/matter` liegen Fabric und Zertifikate. *Container
-entfernen* löscht nur den Container; die angelernten Geräte überleben. Wer den
-Datenordner löscht, muss jedes Gerät zurücksetzen und neu anlernen.
+In `data/plugins/matter2lox.matter` (neben dem Datenordner, seit 0.9.17)
+liegen Fabric und Zertifikate. *Container entfernen* löscht nur den Container;
+die angelernten Geräte überleben. Wer die Fabric löscht, muss jedes Gerät
+zurücksetzen und neu anlernen. Seit 0.9.35 legt das Plugin vor jedem
+Neuanlegen des Containers eine Sicherung nach
+`data/plugins/matter2lox.fabric_sicherungen/` (höchstens drei), und die
+Deinstallation lässt dort eine letzte liegen. Zurückspielen: Reiter
+*Einstellungen*, *Fabric wiederherstellen*.
 
 ## Fassung 0.9.15 — der Stat-Zwischenspeicher
 Die Protokollkappung (512 000 Byte) stand in

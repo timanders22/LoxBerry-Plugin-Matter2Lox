@@ -184,7 +184,10 @@ VORGABEN = {
     "server_host": "127.0.0.1",
     "server_port": 5580,
     "eigener_container": 1,
-    "container_name": "matter-server",
+    # 0.9.35 (Nr. 4): nicht mehr "matter-server" - so heisst der Container in
+    # der offiziellen Anleitung des Matter-Servers, und ein eigener Server des
+    # Anwenders (etwa fuer Home Assistant) trug denselben Namen.
+    "container_name": "matter2lox-server",
     "container_abbild": "ghcr.io/matter-js/python-matter-server:stable",
     "bluetooth_adapter": 0,
     "mqtt_ein": 1,
@@ -220,6 +223,16 @@ VORGABEN = {
     # die Hausvereinbarung fuer Funkwacht und Beschattungswaechter. Ab Werk
     # aus: eine eingerichtete Anlage sendet nach dem Update nichts Neues.
     "tuer_haus": 0,
+    # 0.9.35 (Nr. 3): der eigene Container lauscht nur auf 127.0.0.1. Bis
+    # 0.9.34 war der Matter-Server im ganzen Netz ohne Anmeldung bedienbar -
+    # Token, steuerung_ein und schloss_ein liefen dort ins Leere.
+    "server_lokal": 1,
+    # 0.9.35: Netzschnittstelle fuer --primary-interface des Containers.
+    "primary_interface": "",
+    # 0.9.35 (D5): zweites Token NUR fuer lesende Aufrufe des Endpunkts.
+    "lesetoken": "",
+    # 0.9.35 (Nr. 19): Adresse fuer die Loxone-Vorlagen; leer = LoxBerry-IP.
+    "loxone_adresse": "",
 }
 
 # Wie lange ein Stellbefehl in der Warteschlange gueltig bleibt. Was laenger
@@ -382,7 +395,7 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
 # Zeichenketten "1", "true", "ja", "on" als ein; alles andere als aus - ein
 # Schutz faellt geschlossen aus.
 HAKEN = ("eigener_container", "mqtt_ein", "roh_ein", "steuerung_ein", "schloss_ein",
-         "tuer_haus")
+         "tuer_haus", "server_lokal")
 
 
 def haken(cfg: dict, feld: str) -> bool:
@@ -522,6 +535,19 @@ def umrechnen(typ: str, wert):
             if roh is None:
                 return None
             return round(float(roh) / 1000000, 3)
+        if typ == "struct0":
+            # 0.9.35 (E4): Feld 0 einer Struktur, roh mit Feldnummer als
+            # Schluessel (ErrorStateStruct.ErrorStateID); der Feldname als
+            # zweite Form wie bei energie_struct.
+            if not isinstance(wert, dict):
+                return None
+            for schluessel in ("0", "errorStateID", "ErrorStateID"):
+                if schluessel in wert:
+                    try:
+                        return int(wert[schluessel])
+                    except (TypeError, ValueError):
+                        return None
+            return None
         zahl = float(wert)
         if typ == "zahl":
             return int(zahl) if float(zahl).is_integer() else round(zahl, 3)
@@ -539,6 +565,10 @@ def umrechnen(typ: str, wert):
             return round(zahl / 2, 1)
         if typ == "prozent254":
             return round(zahl * 100 / 254, 1)
+        if typ == "xy":
+            # 0.9.35 (E1): ColorControl.CurrentX/CurrentY zaehlen in 1/65536
+            # der CIE-Normfarbtafel (Spezifikation: x = CurrentX / 65536).
+            return round(zahl / 65536, 4)
         if typ == "lux":
             # Spezifikation: MeasuredValue = 10000 * log10(lux) + 1
             if zahl <= 0:
@@ -634,12 +664,17 @@ ZUSTANDSTHEMEN = (
     # Helligkeit und die Farbe gehoeren dazu.
     "schalter", "helligkeit", "farbton_roh", "farbton_grad", "saettigung",
     "farbtemperatur_mired", "farbtemperatur_kelvin", "farbmodus",
+    # 0.9.35 (E1): der Farbort der XY-Lampen
+    "farbe_x", "farbe_y",
     # Melder und Kontakte
     "kontakt", "bewegung",
     # Heizung: Betriebsart und die zuletzt gueltigen Sollwerte
     "betriebsart", "soll_heizen", "soll_kuehlen",
     # Schloss und Behang
     "schloss", "position", "betriebszustand",
+    # 0.9.35 (E2/E4): Lamelle, Zielposition, Tuerzustand am Schloss und was
+    # das Thermostat gerade tut
+    "lamelle", "position_ziel", "tuerzustand", "thermostat_betrieb",
     # Stromversorgung: der Ladestand bleibt, die Leistung nicht
     "batterie", "batterie_stufe",
     # Luefter: Stufe und Sollwert
@@ -653,6 +688,8 @@ ZUSTANDSTHEMEN = (
     # Programmablauf: Zustand und Phase ja, die Restzeit nicht
     "betrieb_zustand", "betrieb_phase",
     "rvc_zustand", "rvc_phase", "rvc_modus", "waschen_modus",
+    # 0.9.35 (E4): der Fehlerzustand des Programmablaufs
+    "betrieb_fehler", "rvc_fehler",
     # Wallbox: Zustand, Freigabe, Fehler, Belastbarkeit, Ladestand;
     # Dauer und geladene Energie der laufenden Sitzung nicht.
     "evse_zustand", "evse_versorgung", "evse_fehler", "evse_kapazitaet",
@@ -1161,14 +1198,27 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         endpunkte.setdefault(ep, {})[str(feld["thema"])] = neu
 
     # Geraetetypen je Endpunkt - nur fuer die Anzeige
+    #
+    # 0.9.35 (Nr. 1): der Matter-Server reicht Strukturen ROH weiter, mit der
+    # Feldnummer als Schluessel: DeviceTypeStruct = {"0": 21, "1": 1}
+    # (matter_server/server/helpers/attributes.py; erst der Client des
+    # Projekts setzt die Feldnamen ein, _get_descriptor_key() in
+    # common/helpers/util.py). Bis 0.9.34 wurde nur "deviceType" gelesen -
+    # typen blieb auf jeder echten Anlage leer, die Typanzeige auch, und
+    # haus/tuer/<name>/offen ging nie hinaus, weil kein Kontakt den Typ 21
+    # trug. Der Feldname bleibt als zweite Form stehen (Attrappe, Nachfolger).
     typen: dict[str, list] = {}
     for pfad, wert in attribute.items():
         teile = str(pfad).split("/")
         if len(teile) == 3 and teile[1] == "29" and teile[2] == "0" and isinstance(wert, list):
-            typen[teile[0]] = [
-                str(e.get("deviceType")) for e in wert
-                if isinstance(e, dict) and e.get("deviceType") is not None
-            ]
+            liste = []
+            for e in wert:
+                if not isinstance(e, dict):
+                    continue
+                t = e.get("0", e.get(0, e.get("deviceType")))
+                if t is not None:
+                    liste.append(str(t))
+            typen[teile[0]] = liste
 
     # Abgeleitetes: Loxone rechnet in Kelvin, Matter in Mired. Wer den Wert
     # liest und den Ausgang bedient, haette sonst zwei Einheiten fuer dieselbe
@@ -1190,6 +1240,11 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         farbton = felder.get("farbton_roh")
         if isinstance(farbton, (int, float)) and 0 <= farbton <= 254:
             felder["farbton_grad"] = int(round(farbton * 360 / 254))
+        # 0.9.35 (Nr. C): Matter zaehlt den Luftdruck in 0,1 kPa - das ist
+        # genau hPa. luftdruck (kPa) bleibt fuer bestehende Anlagen stehen.
+        druck = felder.get("luftdruck")
+        if isinstance(druck, (int, float)):
+            felder["luftdruck_hpa"] = round(druck * 10, 1)
 
     bezeichnung = info.get("bezeichnung") or info.get("produkt") or f"Knoten {node_id}"
     return {
@@ -1214,6 +1269,15 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Verbindung zum Matter-Server
 # ---------------------------------------------------------------------------
+# 0.9.35 (E3): die Druckarten der Tastenthemen (_taste()).
+TASTE_ARTEN = ("kurz", "lang", "doppelt", "dreifach")
+# Ereignisthemen, die als IMPULS gemeint sind (Gateway setzt sie nach dem
+# Senden auf 0): sie gehen nur bei einem neuen Ereignis hinaus, nie mit dem
+# Vollbild. Sonst saehe Loxone nach jedem Verbindungsaufbau und alle 30
+# Minuten einen Tastendruck, den es nie gab.
+EREIGNIS_IMPULSE = ("taste", "taste_anzahl") + tuple(f"taste_{a}" for a in TASTE_ARTEN)
+
+
 class MatterVerbindung:
     """Duenne Schicht ueber der WebSocket-Schnittstelle.
 
@@ -1233,13 +1297,28 @@ class MatterVerbindung:
         # Wird gesetzt, sobald start_listening den vollstaendigen Bestand
         # geliefert hat. Vorher ist jedes Abbild leer und damit irrefuehrend.
         self.bestand_da = asyncio.Event()
+        # 0.9.35 (Nr. 10): laufende Befehle, Sperren je Knoten, Grenze fuer
+        # gleichzeitige Befehle und die noch nicht begonnenen Stellbefehle je
+        # Gruppe (warteschlange()).
+        self.auftraege: set = set()
+        self.sperren: dict = {}
+        self.gleichzeitig = asyncio.Semaphore(GLEICHZEITIG_MAX)
+        self.offen_gruppen: dict = {}
 
     async def verbinden(self):
         import websockets
         self._schleife = asyncio.get_running_loop()
         # open_timeout begrenzt das Warten auf den Handshake; ohne das haengt
         # ein Fehlversuch bis zum Betriebssystem-Zeitueberlauf.
-        self.ws = await websockets.connect(self.url, open_timeout=10, ping_interval=30)
+        #
+        # 0.9.35 (Nr. 2): max_size=None. Die Vorgabe der Bibliothek ist 1 MiB
+        # je Nachricht; die Antwort auf start_listening traegt den GANZEN
+        # Knotenbestand und wird mit einer Bridge oder einigen Dutzend Geraeten
+        # groesser. Dann brach die Verbindung mit 1009 ab, und der Dienst
+        # verband sich endlos neu. Der Client des Projekts selbst liest ohne
+        # Grenze (matter_server/client/connection.py, max_msg_size=0).
+        self.ws = await websockets.connect(self.url, open_timeout=10, ping_interval=30,
+                                           max_size=None)
         # Der Server sendet unaufgefordert seine ServerInfoMessage.
         roh = await asyncio.wait_for(self.ws.recv(), timeout=10)
         nachricht = json.loads(roh)
@@ -1401,6 +1480,7 @@ class MatterVerbindung:
                 f"(zuletzt Knoten {node_id}, Endpunkt {ep}, Ereignis {event_id}).", 3600)
             return False
         stellung = None
+        anzahl = None
         nutz = daten.get("data")
         if isinstance(nutz, dict):
             for schluessel in ("NewPosition", "PreviousPosition",
@@ -1411,19 +1491,80 @@ class MatterVerbindung:
                     except (TypeError, ValueError):
                         stellung = None
                     break
+            # 0.9.35 (E3): MultiPressOngoing (5) und MultiPressComplete (6)
+            # tragen die Zahl der Druecke. Bis 0.9.34 war ein Doppelklick
+            # von einem einfachen Druck nicht zu unterscheiden. Der Server
+            # serialisiert die SDK-Datenklasse mit ihren Feldnamen
+            # (camelCase); die anderen Schreibweisen wie oben.
+            for schluessel in ("totalNumberOfPressesCounted", "currentNumberOfPressesCounted",
+                               "TotalNumberOfPressesCounted", "CurrentNumberOfPressesCounted"):
+                if schluessel in nutz:
+                    try:
+                        anzahl = int(nutz[schluessel])
+                    except (TypeError, ValueError):
+                        anzahl = None
+                    break
         je_knoten = self.ereignisse.setdefault(node_id, {})
         vorher = je_knoten.get(ep) or {}
-        je_knoten[ep] = {
+        neu = {
             "taste": event_id,
             "taste_zaehler": int(vorher.get("taste_zaehler") or 0) + 1,
             "taste_position": stellung,
             "taste_zeit": int(time.time()),
+            # Nur bei Mehrfachdruck-Ereignissen; sonst ohne Aussage (None).
+            "taste_anzahl": anzahl,
         }
+        # 0.9.35 (E3): fertige Themen je Druckart - ein Eingang in Loxone je
+        # Art, statt die Ereigniscodes selbst auszuwerten. Der Wert zaehlt die
+        # Druecke dieser Art (er aendert sich bei jedem Druck); das Gateway
+        # setzt ihn nach dem Senden auf 0 zurueck (mqtt_resetaftersend.cfg),
+        # so kommt in Loxone je Druck ein Impuls an.
+        #   lang      LongPress (2)
+        #   kurz      MultiPressComplete (6) mit 1 Druck - oder, wenn der
+        #             Taster keinen Mehrfachdruck kann, ShortRelease (3). Ein
+        #             Taster mit Mehrfachdruck meldet beides; gezaehlt wird
+        #             dann nur das Ende der Folge, sonst kaeme ein Doppelklick
+        #             auch als kurz an.
+        #   doppelt   MultiPressComplete mit 2 Druecken
+        #   dreifach  MultiPressComplete mit 3 und mehr Druecken
+        # Ob der Taster Mehrfachdruck kann, steht in der FeatureMap des
+        # Switch-Clusters (Attribut 65532, Bit 4 MSM).
+        fm = ((self.knoten.get(node_id) or {}).get("attributes") or {}).get(f"{ep}/59/65532")
+        try:
+            mehrfach = bool(int(fm) & 0x10)
+        except (TypeError, ValueError):
+            mehrfach = False
+        art = None
+        if event_id == 2:
+            art = "lang"
+        elif event_id == 6:
+            n = anzahl if isinstance(anzahl, int) and anzahl > 0 else 1
+            art = "kurz" if n == 1 else ("doppelt" if n == 2 else "dreifach")
+        elif event_id == 3 and not mehrfach:
+            art = "kurz"
+        for a in TASTE_ARTEN:
+            neu[f"taste_{a}"] = vorher.get(f"taste_{a}")
+        if art is not None:
+            neu[f"taste_{art}"] = int(vorher.get(f"taste_{art}") or 0) + 1
+        je_knoten[ep] = neu
         _LOG.info("Taste an Knoten %s, Endpunkt %s: Ereignis %s, Stellung %s.",
                   node_id, ep, event_id, stellung)
         return True
 
+    async def auftraege_abwarten(self, frist: float = 200.0) -> None:
+        if self.auftraege:
+            await asyncio.wait(list(self.auftraege), timeout=frist)
+
+    async def auftraege_beenden(self) -> None:
+        """Laufende Befehle abbrechen; jeder schreibt seine Antwort selbst."""
+        offen = [a for a in self.auftraege if not a.done()]
+        for a in offen:
+            a.cancel()
+        if offen:
+            await asyncio.gather(*offen, return_exceptions=True)
+
     async def schliessen(self) -> None:
+        await self.auftraege_beenden()
         if self.ws is not None:
             try:
                 await self.ws.close()
@@ -1431,6 +1572,160 @@ class MatterVerbindung:
                 pass
             self.ws = None
 
+
+
+# ---------------------------------------------------------------------------
+# Hilfen fuer die Befehle (0.9.35)
+# ---------------------------------------------------------------------------
+# Matter-Statuscodes (Interaction Model, Abschnitt 8.10), die beim Schreiben
+# vorkommen. Unbekannte werden mit ihrer Nummer gemeldet.
+MATTER_STATUS = {
+    0x01: "FAILURE", 0x7D: "INVALID_SUBSCRIPTION", 0x7E: "UNSUPPORTED_ACCESS",
+    0x7F: "UNSUPPORTED_ENDPOINT", 0x80: "INVALID_ACTION", 0x81: "UNSUPPORTED_COMMAND",
+    0x85: "INVALID_COMMAND", 0x86: "UNSUPPORTED_ATTRIBUTE", 0x87: "CONSTRAINT_ERROR",
+    0x88: "UNSUPPORTED_WRITE", 0x89: "RESOURCE_EXHAUSTED", 0x8B: "NOT_FOUND",
+    0x8C: "UNREPORTABLE_ATTRIBUTE", 0x8D: "INVALID_DATA_TYPE", 0x8F: "UNSUPPORTED_READ",
+    0x92: "DATA_VERSION_MISMATCH", 0x94: "TIMEOUT", 0x9B: "BUSY", 0xC3: "UNSUPPORTED_CLUSTER",
+    0xC6: "NEEDS_TIMED_INTERACTION", 0xCB: "INVALID_IN_STATE",
+}
+
+
+def schreibstatus_fehler(erg) -> str:
+    """Leer, wenn jedes geschriebene Attribut mit Status 0 bestaetigt wurde;
+    sonst eine Beschreibung der Ablehnung. Ein Ergebnis ohne Statusangabe
+    (None, Testknoten, andere Serverfassung) gilt als Erfolg - so verhielt es
+    sich bis 0.9.34 immer."""
+    if not isinstance(erg, list):
+        return ""
+    teile = []
+    for e in erg:
+        if not isinstance(e, dict):
+            continue
+        st = e.get("Status", e.get("status"))
+        if isinstance(st, dict):
+            st = st.get("Status", st.get("status"))
+        try:
+            st = int(st)
+        except (TypeError, ValueError):
+            continue
+        if st != 0:
+            teile.append(f"{MATTER_STATUS.get(st, 'Status')} (0x{st:02X})")
+    return ", ".join(teile)
+
+
+def setup_pin_aus_code(code: str):
+    """Den Setup-Code (Passcode) aus dem manuellen Kopplungscode lesen.
+
+    Matter-Spezifikation Kapitel 5.1.4, Unterpunkt 1: Ziffer 1 traegt die oberen Bits des
+    Diskriminators, Ziffern 2-6 (Block 2) die unteren 14 Bit des Passcodes,
+    Ziffern 7-10 (Block 3) die oberen 13 Bit. Die letzte Ziffer ist die
+    Pruefziffer (Verhoeff) - sie wird hier geprueft, damit ein Tippfehler
+    nicht als falscher Code beim Geraet ankommt. QR-Text (MT:) -> None.
+    """
+    code = re.sub(r"[\s\-]", "", str(code or ""))
+    if not re.match(r"^[0-9]{11}([0-9]{10})?$", code):
+        return None
+    if not verhoeff_gueltig(code):
+        return None
+    block2 = int(code[1:6])
+    block3 = int(code[6:10])
+    pin = (block2 & 0x3FFF) | (block3 << 14)
+    return pin if 0 < pin < 100000000 else None
+
+
+_VERHOEFF_D = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9), (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
+    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6), (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
+    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8), (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2), (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
+    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4), (9, 8, 7, 6, 5, 4, 3, 2, 1, 0))
+_VERHOEFF_P = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9), (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
+    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2), (8, 9, 1, 6, 0, 4, 3, 5, 2, 7),
+    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0), (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5), (7, 0, 4, 6, 9, 1, 3, 2, 5, 8))
+
+
+def verhoeff_gueltig(ziffern: str) -> bool:
+    c = 0
+    for i, z in enumerate(reversed(ziffern)):
+        c = _VERHOEFF_D[c][_VERHOEFF_P[i % 8][int(z)]]
+    return c == 0
+
+
+def rgb_zu_xy(r: float, g: float, b: float):
+    """sRGB (0..1) -> CIE xy. Gammakorrektur und Matrix nach IEC 61966-2-1
+    (D65). Schwarz hat keinen Farbort -> None."""
+    def lin(c):
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = lin(r), lin(g), lin(b)
+    x = r * 0.4124 + g * 0.3576 + b * 0.1805
+    y = r * 0.2126 + g * 0.7152 + b * 0.0722
+    z = r * 0.0193 + g * 0.1192 + b * 0.9505
+    summe = x + y + z
+    if summe <= 0:
+        return None
+    return (x / summe, y / summe)
+
+
+def rgb_zu_hs(r: float, g: float, b: float):
+    """RGB (0..1) -> Farbton in Grad und Saettigung 0..1."""
+    import colorsys
+    h, s_, _v = colorsys.rgb_to_hsv(r, g, b)
+    return (h * 360.0, s_)
+
+
+def loxone_farbe_lesen(wert):
+    """Den Wert eines Loxone-Lichtbausteins zerlegen.
+
+    Lumitech: 20bbbtttt  - bbb Helligkeit 0..100 %, tttt Farbtemperatur in
+              Kelvin (2700..6500); Rueckgabe ("ct", helligkeit, kelvin)
+    RGB:      BBBGGGRRR  - je 0..100 %; Rueckgabe ("rgb", r, g, b)
+    So beschreibt Loxone die Ausgaenge des Lichtbausteins fuer Smart Actuator
+    RGBW und Lumitech. Ein Wert ausserhalb -> None.
+    """
+    try:
+        n = int(float(str(wert).replace(",", ".")))
+    except (TypeError, ValueError):
+        return None
+    if n < 0:
+        return None
+    if n >= 200000000:
+        rest = n - 200000000
+        hell = rest // 10000
+        kelvin = rest % 10000
+        if hell > 100 or not (kelvin == 0 or 1000 <= kelvin <= 10000):
+            return None
+        return ("ct", hell, kelvin)
+    r = n % 1000
+    g = (n // 1000) % 1000
+    b = (n // 1000000) % 1000
+    if r > 100 or g > 100 or b > 100:
+        return None
+    return ("rgb", r, g, b)
+
+
+def farbfaehigkeit(knoten: dict, ep: int) -> dict:
+    """Welche Farbwege kann der Endpunkt? Aus der FeatureMap des
+    ColorControl-Clusters (Attribut 65532): Bit 0 Farbton/Saettigung, Bit 3
+    XY, Bit 4 Farbtemperatur. Ohne FeatureMap: nichts bekannt -> XY, weil der
+    Geraetetyp Extended Color Light (269) XY verlangt, Farbton/Saettigung nicht."""
+    attr = (knoten or {}).get("attributes") or {}
+    fm = attr.get(f"{ep}/768/65532")
+    try:
+        fm = int(fm)
+    except (TypeError, ValueError):
+        return {"hs": False, "xy": True, "ct": True, "bekannt": False}
+    return {"hs": bool(fm & 1), "xy": bool(fm & 8), "ct": bool(fm & 16), "bekannt": True}
+
+
+# Im Rohweg nie: Zugriffsrechte, Fabrics und Netzzugang des Geraets. Wer das
+# Token und die Steuerungsfreigabe hat, soll damit kein Geraet aus fremden
+# Fabrics werfen oder ihm Netz und Rechte nehmen koennen (0.9.35, Nr. 13).
+# 31 AccessControl, 48 GeneralCommissioning, 49 NetworkCommissioning,
+# 60 AdministratorCommissioning, 62 OperationalCredentials, 63 GroupKeyManagement.
+ROHWEG_GESPERRT = (31, 48, 49, 60, 62, 63)
+SCHLOSS_CLUSTER = 257
 
 # ---------------------------------------------------------------------------
 # Befehle
@@ -1440,6 +1735,19 @@ class MatterVerbindung:
 # Matter-Server bildet die Nutzlast auf die SDK-Datenklasse ab, und ein
 # fehlendes Feld ist dort kein Vorgabewert, sondern ein Fehler.
 # ---------------------------------------------------------------------------
+def rohweg_pruefen(cluster_id: int, cfg: dict) -> str:
+    """0.9.35 (Nr. 13): der Rohweg umging bis 0.9.34 die Schlossfreigabe -
+    befehl mit cluster=257 und attribut 1/257/... prueften schloss_ein
+    nicht. Leer = erlaubt."""
+    if cluster_id in ROHWEG_GESPERRT:
+        return (f"Cluster {cluster_id} ist im Rohweg gesperrt: er verwaltet Zugriffsrechte, "
+                "Fabrics oder den Netzzugang des Geraets.")
+    if cluster_id == SCHLOSS_CLUSTER and not cfg.get("schloss_ein"):
+        return ("Schloesser zu schalten ist gesperrt - das gilt auch fuer den Rohweg. "
+                "Reiter Einstellungen, Haken Schloesser schalten zulassen.")
+    return ""
+
+
 async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
     """Rueckgabe: (ok, Meldung)."""
     aktion = str(b.get("aktion") or "")
@@ -1494,10 +1802,14 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
     # ---- Verwaltung: Inbetriebnahme und Entfernen -------------------------
     if aktion == "anlernen":
         code = str(b.get("code") or "").strip()
+        if not code.upper().startswith("MT:"):
+            # Der manuelle Code steht auf Geraeten meist gegliedert
+            # (1234-567-8901); Leerzeichen und Striche gehoeren nicht dazu.
+            code = re.sub(r"[\s\-]", "", code)
         if not re.match(r"^(MT:[A-Z0-9.\-]{5,60}|[0-9]{11,21})$", code):
             return (0, "Das ist weder ein Matter-QR-Code (beginnt mit MT:) noch ein "
                        "manueller Kopplungscode (11 oder 21 Ziffern).")
-        nur_netz = bool(b.get("nur_netz"))
+        nur_netz = bool(b.get("nur_netz")) or bool(str(b.get("ip") or "").strip())
         if not nur_netz and not v.server_info.get("bluetooth_enabled"):
             return (0, "Der Matter-Server meldet, dass er kein Bluetooth hat. Ein fabrikneues "
                        "Funkgeraet laesst sich damit nicht anlernen. Abhilfe: dem Container "
@@ -1509,9 +1821,25 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
             return (0, "Es sind weder WLAN- noch Thread-Zugangsdaten hinterlegt. Ohne die kann "
                        "ein fabrikneues Geraet nicht ins Netz gebracht werden - im Reiter "
                        "Geraete anlernen eintragen.")
+        ip = str(b.get("ip") or "").strip()
         try:
-            erg = await v.senden("commission_with_code",
-                                 {"code": code, "network_only": nur_netz}, zeit=180)
+            if ip:
+                # 0.9.35 (E5): Anlernen ueber die IP-Adresse - fuer ein Geraet,
+                # das schon im Netz ist (Mehrfach-Fabric), wenn die Suche per
+                # mDNS nicht durchkommt. commission_on_network braucht den
+                # Setup-Code als Zahl; er steckt im manuellen Kopplungscode.
+                if not re.match(r"^[0-9A-Fa-f:.]{2,45}$", ip):
+                    return (0, "Die IP-Adresse des Geraets sieht nicht wie eine IPv4- oder "
+                               "IPv6-Adresse aus.")
+                pin = setup_pin_aus_code(code)
+                if pin is None:
+                    return (0, "Anlernen ueber die IP-Adresse geht nur mit dem manuellen "
+                               "Kopplungscode (11 oder 21 Ziffern), nicht mit dem QR-Text.")
+                erg = await v.senden("commission_on_network",
+                                     {"setup_pin_code": pin, "ip_addr": ip}, zeit=180)
+            else:
+                erg = await v.senden("commission_with_code",
+                                     {"code": code, "network_only": nur_netz}, zeit=180)
         except Exception as err:  # noqa: BLE001
             return (0, "Anlernen fehlgeschlagen: " + fehlertext(err))
         node_id = (erg or {}).get("node_id")
@@ -1581,9 +1909,12 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
             return (0, f"Der Name ist zu lang: NodeLabel laesst 32 Zeichen zu, dieser hat "
                        f"{laenge}. (Umlaute zaehlen doppelt, weil Matter in UTF-8 zaehlt.)")
         try:
-            await v.senden("write_attribute",
-                           {"node_id": node_id, "attribute_path": "0/40/5", "value": neuer},
-                           zeit=60)
+            erg = await v.senden("write_attribute",
+                                 {"node_id": node_id, "attribute_path": "0/40/5", "value": neuer},
+                                 zeit=60)
+            fehl = schreibstatus_fehler(erg)       # 0.9.35 (Nr. 9)
+            if fehl:
+                raise RuntimeError(f"das Geraet hat abgelehnt: {fehl}")
         except Exception as err:  # noqa: BLE001
             return (0, f"Schritt write_attribute 0/40/5 fuer Knoten {node_id}: "
                        + fehlertext(err))
@@ -1611,8 +1942,18 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
         return await v.senden("device_command", args, zeit=60)
 
     async def attribut_schreiben(pfad: str, wert):
-        return await v.senden("write_attribute",
-                              {"node_id": node_id, "attribute_path": pfad, "value": wert}, zeit=60)
+        erg = await v.senden("write_attribute",
+                             {"node_id": node_id, "attribute_path": pfad, "value": wert}, zeit=60)
+        # 0.9.35 (Nr. 9): write_attribute wirft bei einer Ablehnung durch das
+        # Geraet NICHT, es liefert je Attribut einen Status (Liste von
+        # AttributeWriteResult, matter_server/server/sdk.py). Bis 0.9.34 galt
+        # jede Antwort als Erfolg - ein Sollwert ausserhalb der Grenzen
+        # (CONSTRAINT_ERROR) wurde mit OK=1 beantwortet und von der
+        # Gleichwert-Bremse als ausgefuehrt gemerkt.
+        fehl = schreibstatus_fehler(erg)
+        if fehl:
+            raise RuntimeError(f"Das Geraet hat das Schreiben von {pfad} abgelehnt: {fehl}")
+        return erg
 
     def zahl(feld: str, klein: float, gross: float):
         w = b.get(feld)
@@ -1632,9 +1973,15 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
             p = zahl("wert", 0, 100)
             if p is None:
                 return (0, "Die Helligkeit muss zwischen 0 und 100 Prozent liegen.")
+            zeit10 = int(zahl("uebergang", 0, 600) or 0)
             # Matter zaehlt 0..254, nicht 0..100.
             stufe = int(round(p * 254 / 100))
-            zeit10 = int(zahl("uebergang", 0, 600) or 0)
+            if stufe <= 0:
+                # 0.9.35 (Nr. C): 0 % heisst aus. Bis 0.9.34 ging Level 0
+                # hinaus - das liegt unter MinLevel (Leuchten: 1), und je nach
+                # Geraet blieb die Lampe auf kleinster Stufe an.
+                await cluster_befehl(6, "Off", {})
+                return (1, "Helligkeit 0 %: Cluster OnOff, Befehl Off gesendet.")
             await cluster_befehl(8, "MoveToLevelWithOnOff", {
                 "level": stufe, "transitionTime": zeit10,
                 "optionsMask": 0, "optionsOverride": 0})
@@ -1659,6 +2006,16 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
             await cluster_befehl(258, "GoToLiftPercentage",
                                  {"liftPercent100ths": int(round(p * 100))})
             return (1, f"Rollo-Position {p:.0f} % gesendet (0 = ganz offen).")
+
+        if aktion == "lamelle":
+            # 0.9.35 (E2): Lamellenwinkel. Matter zaehlt Hundertstel Prozent,
+            # 0 = ganz offen - wie bei der Hoehe.
+            p = zahl("wert", 0, 100)
+            if p is None:
+                return (0, "Die Lamellenstellung muss zwischen 0 und 100 Prozent liegen.")
+            await cluster_befehl(258, "GoToTiltPercentage",
+                                 {"tiltPercent100ths": int(round(p * 100))})
+            return (1, f"Lamellenstellung {p:.0f} % gesendet (0 = ganz offen).")
 
         if aktion in ("rollo_auf", "rollo_zu", "rollo_stopp"):
             name = {"rollo_auf": "UpOrOpen", "rollo_zu": "DownOrClose",
@@ -1705,6 +2062,68 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
                 "saturation": int(round(saet * 254 / 100)),
                 "transitionTime": zeit10, "optionsMask": 0, "optionsOverride": 0})
             return (1, f"Farbe gesendet: Farbton {grad:.0f} Grad, Saettigung {saet:.0f} %.")
+
+        # ---- Farbe ueber XY und im Format des Loxone-Lichtbausteins -------
+        # 0.9.35 (E1): Der Geraetetyp Extended Color Light verlangt XY, nicht
+        # Farbton/Saettigung - viele Farblampen lehnten MoveToHue und
+        # MoveToHueAndSaturation deshalb ab. Gewaehlt wird nach der FeatureMap.
+        if aktion == "farbe_xy":
+            x = zahl("x", 0, 1)
+            y = zahl("y", 0, 1)
+            if x is None or y is None:
+                return (0, "x und y muessen zwischen 0 und 1 liegen (CIE-Normfarbtafel).")
+            zeit10 = int(zahl("uebergang", 0, 600) or 0)
+            await cluster_befehl(768, "MoveToColor", {
+                "colorX": min(65279, int(round(x * 65536))),
+                "colorY": min(65279, int(round(y * 65536))),
+                "transitionTime": zeit10, "optionsMask": 0, "optionsOverride": 0})
+            return (1, f"Farbort x={x:.4f} y={y:.4f} gesendet.")
+
+        if aktion == "loxfarbe":
+            lf = loxone_farbe_lesen(b.get("wert"))
+            if lf is None:
+                return (0, "Der Wert ist weder ein Loxone-RGB-Wert (BBBGGGRRR, je 0..100) "
+                           "noch ein Lumitech-Wert (20bbbtttt).")
+            zeit10 = int(zahl("uebergang", 0, 600) or 0)
+            if lf[0] == "ct":
+                _art, hell, kelvin = lf
+                if hell <= 0:
+                    await cluster_befehl(6, "Off", {})
+                    return (1, "Lumitech-Wert mit Helligkeit 0: Off gesendet.")
+                await cluster_befehl(8, "MoveToLevelWithOnOff", {
+                    "level": max(1, int(round(hell * 254 / 100))), "transitionTime": zeit10,
+                    "optionsMask": 0, "optionsOverride": 0})
+                if kelvin:
+                    await cluster_befehl(768, "MoveToColorTemperature", {
+                        "colorTemperatureMireds": int(round(1000000 / kelvin)),
+                        "transitionTime": zeit10, "optionsMask": 0, "optionsOverride": 0})
+                return (1, f"Lumitech: Helligkeit {hell} %, Farbtemperatur {kelvin} K gesendet.")
+            _art, r, g, bl = lf
+            hell = max(r, g, bl)
+            if hell <= 0:
+                await cluster_befehl(6, "Off", {})
+                return (1, "RGB-Wert 0: Off gesendet.")
+            await cluster_befehl(8, "MoveToLevelWithOnOff", {
+                "level": max(1, int(round(hell * 254 / 100))), "transitionTime": zeit10,
+                "optionsMask": 0, "optionsOverride": 0})
+            # Die Farbe ohne Helligkeit: auf den hellsten Kanal normiert.
+            rn, gn, bn = r / hell, g / hell, bl / hell
+            kann = farbfaehigkeit(v.knoten.get(node_id), ep)
+            if kann["xy"] or not kann["hs"]:
+                xy = rgb_zu_xy(rn, gn, bn)
+                await cluster_befehl(768, "MoveToColor", {
+                    "colorX": min(65279, int(round(xy[0] * 65536))),
+                    "colorY": min(65279, int(round(xy[1] * 65536))),
+                    "transitionTime": zeit10, "optionsMask": 0, "optionsOverride": 0})
+                return (1, f"RGB {r}/{g}/{bl} %: Helligkeit {hell} %, Farbort "
+                           f"x={xy[0]:.4f} y={xy[1]:.4f} gesendet.")
+            grad, saet = rgb_zu_hs(rn, gn, bn)
+            await cluster_befehl(768, "MoveToHueAndSaturation", {
+                "hue": int(round(grad * 254 / 360)) % 255,
+                "saturation": int(round(saet * 254)),
+                "transitionTime": zeit10, "optionsMask": 0, "optionsOverride": 0})
+            return (1, f"RGB {r}/{g}/{bl} %: Helligkeit {hell} %, Farbton {grad:.0f} Grad, "
+                       f"Saettigung {saet * 100:.0f} % gesendet.")
 
         # ---- Schloss -----------------------------------------------------
         if aktion in ("sperren", "entsperren"):
@@ -1756,6 +2175,9 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
             if not re.match(r"^[0-9]{1,3}/[0-9]{1,5}/[0-9]{1,5}$", pfad):
                 return (0, "Der Attributpfad muss die Form ENDPUNKT/CLUSTER/ATTRIBUT haben, "
                            "zum Beispiel 1/6/0.")
+            rohweg_fehler = rohweg_pruefen(int(pfad.split("/")[1]), cfg)
+            if rohweg_fehler:
+                return (0, rohweg_fehler)
             await attribut_schreiben(pfad, b.get("wert"))
             return (1, f"Attribut {pfad} geschrieben.")
 
@@ -1768,15 +2190,24 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
             if not re.match(r"^[A-Za-z][A-Za-z0-9]{0,48}$", name):
                 return (0, "Der Befehlsname muss so geschrieben sein wie im Matter-SDK, "
                            "zum Beispiel MoveToLevelWithOnOff.")
+            rohweg_fehler = rohweg_pruefen(cluster_id, cfg)
+            if rohweg_fehler:
+                return (0, rohweg_fehler)
             nutzlast = b.get("nutzlast")
-            if isinstance(nutzlast, str):
+            if nutzlast is None or (isinstance(nutzlast, str) and not nutzlast.strip()):
+                nutzlast = {}
+            elif isinstance(nutzlast, str):
                 try:
-                    nutzlast = json.loads(nutzlast) if nutzlast.strip() else {}
+                    nutzlast = json.loads(nutzlast)
                 except ValueError:
                     return (0, "Die Nutzlast ist kein gueltiges JSON.")
             if not isinstance(nutzlast, dict):
-                nutzlast = {}
-            erg = await cluster_befehl(cluster_id, name, nutzlast)
+                # 0.9.35 (Nr. C): bis 0.9.34 wurde [1,2] oder 5 still zu {} -
+                # der Befehl ging ohne Argumente hinaus und meldete OK=1.
+                return (0, "Die Nutzlast muss ein JSON-Objekt sein, zum Beispiel {\"level\": 100}.")
+            # LockDoor/UnlockDoor verlangen auch im Rohweg einen timed invoke.
+            timed = 7000 if cluster_id == SCHLOSS_CLUSTER else None
+            erg = await cluster_befehl(cluster_id, name, nutzlast, timed_ms=timed)
             return (1, f"Befehl {name} an Cluster {cluster_id} gesendet. "
                        f"Antwort: {json.dumps(erg)[:120]}")
 
@@ -1964,7 +2395,10 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
         # Verbindungsaufbau, nach einem Praefixwechsel und seit 0.9.30 (M4)
         # alle 30 Minuten (vollversand_faellig()).
         if voll:
-            senden = dict(paare)
+            # 0.9.35 (E3): Impulsthemen nicht wiederholen (EREIGNIS_IMPULSE).
+            senden = {k: w for k, w in paare.items()
+                      if k.rsplit("/", 1)[-1] not in EREIGNIS_IMPULSE
+                      or _LETZTE_PAARE.get(k) != str(w)}
         else:
             senden = {k: w for k, w in paare.items() if _LETZTE_PAARE.get(k) != str(w)}
         # M2/M3 (Durchgang 30.09.2026): ein zurueckbehaltener Zustand, der im
@@ -2014,10 +2448,81 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
                     _LETZTE_PAARE.pop(k, None)     # einmal "-", dann vergessen
         else:
             _LETZTE_PAARE.update({k: str(w) for k, w in paare.items()})
+        gateway_dateien_pflegen(cfg, paare)
+    else:
+        gateway_dateien_pflegen(cfg)
     # Tuer-1: unter haus/tuer/ (eigene Merker, eigener Baum) - oder, ist die
     # Einstellung aus, das Abraeumen frueher gesendeter Themen.
     haus_senden(geraete, cfg, voll)
     return geraete
+
+
+# ---------------------------------------------------------------------------
+# 0.9.35 (D1): die Dateien, die das MQTT-Gateway von LoxBerry in JEDEM
+# Plugin-Konfigordner liest (sbin/mqttgateway.pl, read_extplugin_config()):
+#
+#   mqtt_subscriptions.cfg   je Zeile ein Abonnement - das Gateway abonniert
+#                            die Themengruppe damit selbst. Bis 0.9.34 musste
+#                            sie unter Gateway V1 von Hand eingetragen werden;
+#                            das war die haeufigste Fehlerursache.
+#   mqtt_resetaftersend.cfg  je Zeile ein Name in Gateway-Schreibweise (/ und
+#                            % werden _); das Gateway schickt nach dem Wert
+#                            eine 0 hinterher. Fuer die Tastenthemen: sonst
+#                            saehe ein Eingang in Loxone den zweiten gleichen
+#                            Tastendruck nicht.
+#
+# Geschrieben nur, wenn sich der Inhalt aendert; mit mqtt_ein=0 entfernt. Der
+# Konfigordner wird bei jedem Upgrade geloescht - der Dienst legt beide beim
+# naechsten Abbild wieder an.
+# ---------------------------------------------------------------------------
+DATEI_GW_ABOS = PCONFIG / "mqtt_subscriptions.cfg"
+DATEI_GW_RESET = PCONFIG / "mqtt_resetaftersend.cfg"
+GW_RESET_THEMEN = EREIGNIS_IMPULSE
+
+
+def gateway_name(thema: str) -> str:
+    return re.sub(r"[/%]", "_", thema)
+
+
+def gateway_dateien_pflegen(cfg: dict, paare=None) -> None:
+    if not cfg.get("mqtt_ein"):
+        for d in (DATEI_GW_ABOS, DATEI_GW_RESET):
+            if d.is_file():
+                _datei_weg(d)
+        return
+    praefix = mqtt_praefix(cfg)
+    abos = [f"{praefix}/#"]
+    if cfg.get("tuer_haus"):
+        abos.append(f"{HAUS_WURZEL}/#")
+    # Je Endpunkt mit einem Taster (Switch-Cluster: taster_* aus den
+    # Attributen, taste* aus den Ereignissen) ALLE Impulsthemen - nicht nur
+    # die schon einmal gesendeten: die Ereignisse leben nur im Speicher und
+    # sind nach einem Wiederverbinden fort; die Datei darf dann nicht fehlen.
+    taster = {k.rsplit("/", 1)[0] for k in (paare or {})
+              if k.count("/") == 2 and k.rsplit("/", 1)[-1].startswith(("taster_", "taste"))}
+    reset = sorted({gateway_name(f"{praefix}/{basis}/{t}") for basis in taster
+                    for t in GW_RESET_THEMEN})
+    for datei, zeilen in ((DATEI_GW_ABOS, abos), (DATEI_GW_RESET, reset)):
+        inhalt = "".join(z + "\n" for z in zeilen)
+        try:
+            alt = datei.read_text(encoding="utf-8") if datei.is_file() else None
+        except OSError:
+            alt = None
+        if not zeilen:
+            if alt is not None:
+                _datei_weg(datei)
+            continue
+        if alt == inhalt:
+            continue
+        try:
+            datei.parent.mkdir(parents=True, exist_ok=True)
+            tmp = datei.with_name(datei.name + ".tmp.%d" % os.getpid())
+            tmp.write_text(inhalt, encoding="utf-8")
+            os.replace(tmp, datei)
+            _LOG.info("MQTT-Gateway: %s geschrieben (%d Zeilen).", datei.name, len(zeilen))
+        except OSError as err:
+            melde_gebremst("gw_datei_" + datei.name,
+                           f"MQTT-Gateway: {datei} liess sich nicht schreiben ({err}).")
 
 
 def abbild_stoerung(cfg: dict, fehler: str) -> None:
@@ -2101,10 +2606,13 @@ def zustand_schreiben(**felder) -> None:
 # ---------------------------------------------------------------------------
 # Warteschlange
 # ---------------------------------------------------------------------------
-def antwort_schreiben(kennung: str, ok: int, meldung: str) -> None:
+def antwort_schreiben(kennung: str, ok: int, meldung: str, ist=None) -> None:
     ORDNER_ANTWORTEN.mkdir(parents=True, exist_ok=True)
-    json_schreiben(ORDNER_ANTWORTEN / f"{kennung}.json",
-                   {"ok": int(ok), "meldung": str(meldung), "ts": int(time.time())})
+    daten = {"ok": int(ok), "meldung": str(meldung), "ts": int(time.time())}
+    if ist is not None:
+        # 0.9.35 (E4): Ist-Wert nach dem Befehl, sofern er sich bestimmen laesst.
+        daten["ist"] = ist
+    json_schreiben(ORDNER_ANTWORTEN / f"{kennung}.json", daten)
     grenze = time.time() - 900
     for alt in ORDNER_ANTWORTEN.glob("*.json"):
         try:
@@ -2114,19 +2622,161 @@ def antwort_schreiben(kennung: str, ok: int, meldung: str) -> None:
             pass
 
 
-async def warteschlange(v: MatterVerbindung, cfg: dict, tab: dict) -> bool:
-    """Alle vorliegenden Befehle abarbeiten. Rueckgabe: Abbild neu schreiben?"""
+# ---------------------------------------------------------------------------
+# 0.9.35 (Nr. 10 und 11): die Warteschlange blockiert die Hauptschleife nicht
+# mehr, und die Reihenfolge stimmt.
+#
+# Bis 0.9.34 lief jeder Befehl INNERHALB der Hauptschleife (await), einer
+# nach dem anderen: ein Geraet, das nicht antwortet, hielt alle anderen bis zu
+# 60 s auf, ein Anlernen bis zu 180 s - und in der Zeit schrieb der Dienst
+# keinen Herzschlag. Ab 3 x Takt (Vorgabe 180 s) startete der Waechter ihn
+# dann als "haengend" neu, im schlimmsten Fall mitten im Anlernen. Dazu kam
+# die Reihenfolge: die Dateinamen waren Zufall, sortiert wurde nach Namen -
+# aus "helligkeit 30" und gleich danach "80" konnte 30 werden.
+#
+# Jetzt:
+#   - der Endpunkt benennt die Datei nach der Zeit (mt_befehl_absetzen());
+#   - der Dienst BEANSPRUCHT sie atomar (X.json -> X.inarbeit). Gelingt dem
+#     Endpunkt nach Ablauf seiner Wartezeit das Loeschen von X.json, hatte der
+#     Dienst sie sicher nicht - dann ist sie sicher NICHT ausgefuehrt;
+#   - jeder Befehl laeuft als eigene Aufgabe; je Knoten eine Sperre (in
+#     Eingangsreihenfolge, asyncio.Lock ist fair), Verwaltung (anlernen,
+#     wlan, thread, Bestand holen) hat eine eigene; hoechstens GLEICHZEITIG_MAX
+#     Befehle zugleich beim Matter-Server;
+#   - von mehreren Stellbefehlen derselben Gruppe fuer dasselbe Geraet, die
+#     noch nicht begonnen haben, wird nur der juengste ausgefuehrt; die
+#     aelteren bekommen ok=2 ("ueberholt"). umschalten, rollo_auf/_zu/_stopp,
+#     identify und die Rohwege werden nie zusammengefasst.
+# ---------------------------------------------------------------------------
+STELL_GRUPPEN = {
+    "ein": "schalten", "aus": "schalten",
+    "helligkeit": "helligkeit", "farbtemperatur": "farbtemperatur",
+    "farbe": "farbe", "farbe_xy": "farbe_xy", "loxfarbe": "loxfarbe",
+    "farbton": "farbton", "saettigung": "saettigung",
+    "rollo": "rollo", "lamelle": "lamelle",
+    "soll_heizen": "soll_heizen", "soll_kuehlen": "soll_kuehlen",
+    "betriebsart": "betriebsart", "luefter": "luefter",
+}
+GLEICHZEITIG_MAX = 4
+VERWALTUNG = ("anlernen", "wlan", "thread")
+
+
+def befehl_gruppe(b: dict):
+    g = STELL_GRUPPEN.get(str(b.get("aktion") or ""))
+    if g is None:
+        return None
+    return (str(b.get("knoten")), str(b.get("endpunkt", 1)), g)
+
+
+def befehl_sperrschluessel(b: dict) -> str:
+    k = b.get("knoten")
+    if b.get("aktion") in VERWALTUNG or k in (None, "", 0, "0"):
+        return "verwaltung"
+    return f"knoten:{k}"
+
+
+# E4: welcher Ist-Wert gehoert zu welchem Befehl, und welcher Wert wird
+# erwartet (None: keiner bestimmt, etwa beim Umschalten).
+IST_QUELLE = {
+    "ein": ("6/0", (1,)), "aus": ("6/0", (0,)), "umschalten": ("6/0", None),
+    "sperren": ("257/0", (1,)), "entsperren": ("257/0", (2, 3)),
+}
+IST_WARTEN_S = 3.0
+
+
+async def ist_ermitteln(v: "MatterVerbindung", b: dict):
+    """Den Ist-Wert nach einem bestaetigten Befehl aus dem Knotenbestand.
+    Gewartet wird hoechstens IST_WARTEN_S auf den erwarteten Wert; danach
+    gilt, was dasteht - auch wenn sich ein Schloss noch bewegt."""
+    q = IST_QUELLE.get(str(b.get("aktion") or ""))
+    if q is None:
+        return None
+    try:
+        node_id = int(b.get("knoten"))
+        ep = int(b.get("endpunkt", 1))
+    except (TypeError, ValueError):
+        return None
+    pfad = f"{ep}/{q[0]}"
+
+    def lesen():
+        w = ((v.knoten.get(node_id) or {}).get("attributes") or {}).get(pfad)
+        if isinstance(w, bool):
+            return int(w)
+        try:
+            return int(w)
+        except (TypeError, ValueError):
+            return None
+
+    ende = time.monotonic() + (1.0 if q[1] is None else IST_WARTEN_S)
+    while time.monotonic() < ende:
+        w = lesen()
+        if q[1] is not None and w in q[1]:
+            return w
+        await asyncio.sleep(0.2)
+    return lesen()
+
+
+def _datei_weg(pfad: Path) -> None:
+    try:
+        pfad.unlink()
+    except OSError:
+        pass
+
+
+async def _auftrag(v: "MatterVerbindung", kennung: str, arbeit: Path, b: dict, cfg: dict,
+                   tab: dict, eintrag, fertig) -> None:
+    sperre = v.sperren.setdefault(befehl_sperrschluessel(b), asyncio.Lock())
+    ok, meldung, ist = 0, "", None
+    abgebrochen = False
+    try:
+        async with sperre:
+            gruppe = befehl_gruppe(b)
+            if eintrag is not None and eintrag.get("ueberholt"):
+                ok, meldung = 2, ("Nicht ausgefuehrt: ein neuerer Befehl derselben Art fuer "
+                                  "dasselbe Geraet hat ihn ueberholt.")
+            else:
+                if gruppe is not None and v.offen_gruppen.get(gruppe) is eintrag:
+                    v.offen_gruppen.pop(gruppe, None)
+                async with v.gleichzeitig:
+                    ok, meldung = await befehl_ausfuehren(v, b, cfg, tab)
+                    if ok == 1:
+                        ist = await ist_ermitteln(v, b)
+    except asyncio.CancelledError:
+        abgebrochen = True
+        ok, meldung = 0, ("Abgebrochen: der Dienst hat die Verbindung zum Matter-Server neu "
+                          "aufgebaut oder endet. Ob der Befehl schon wirkte, ist offen.")
+    except Exception as err:  # noqa: BLE001
+        ok, meldung = 0, fehlertext(err)
+    antwort_schreiben(kennung, ok, meldung, ist)
+    _datei_weg(arbeit)
+    _LOG.info("Befehl %s (%s): ok=%s %s", kennung, b.get("aktion"), ok, meldung)
+    if fertig is not None:
+        try:
+            fertig()
+        except Exception:  # noqa: BLE001
+            pass
+    if abgebrochen:
+        raise asyncio.CancelledError()
+
+
+async def warteschlange(v: "MatterVerbindung", cfg: dict, tab: dict, fertig=None) -> int:
+    """Vorliegende Befehle beanspruchen und als Aufgaben starten. Rueckgabe:
+    Zahl der angenommenen Befehle. fertig() wird nach jedem beendeten Befehl
+    gerufen (Abbild neu schreiben)."""
     ORDNER_BEFEHLE.mkdir(parents=True, exist_ok=True)
-    geaendert = False
+    angenommen = []
     for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
         kennung = datei.stem
-        b = json_lesen(datei)
+        arbeit = datei.with_suffix(".inarbeit")
         try:
-            datei.unlink()
+            os.rename(datei, arbeit)
         except OSError:
-            pass
+            # Der Endpunkt hat sie eben zurueckgezogen (Wartezeit abgelaufen).
+            continue
+        b = json_lesen(arbeit)
         if not b:
             antwort_schreiben(kennung, 0, "Befehlsdatei war leer oder unlesbar.")
+            _datei_weg(arbeit)
             continue
         # Ein Befehl verfaellt. Bis 0.9.16 trug die Datei keinen Zeitstempel,
         # und diese Schleife arbeitete beim naechsten Verbindungsaufbau alles
@@ -2145,15 +2795,22 @@ async def warteschlange(v: MatterVerbindung, cfg: dict, tab: dict) -> bool:
                                   "Er wurde NICHT ausgefuehrt.")
                 _LOG.info("Befehl %s (%s) verfallen, Alter %d s - nicht ausgefuehrt.",
                           kennung, b.get("aktion"), alter)
+                _datei_weg(arbeit)
                 continue
-        try:
-            ok, meldung = await befehl_ausfuehren(v, b, cfg, tab)
-        except Exception as err:  # noqa: BLE001
-            ok, meldung = 0, fehlertext(err)
-        antwort_schreiben(kennung, ok, meldung)
-        _LOG.info("Befehl %s (%s): ok=%s %s", kennung, b.get("aktion"), ok, meldung)
-        geaendert = True
-    return geaendert
+        angenommen.append((kennung, arbeit, b))
+    for kennung, arbeit, b in angenommen:
+        gruppe = befehl_gruppe(b)
+        eintrag = None
+        if gruppe is not None:
+            vorher = v.offen_gruppen.get(gruppe)
+            if vorher is not None:
+                vorher["ueberholt"] = True
+            eintrag = {"ueberholt": False, "kennung": kennung}
+            v.offen_gruppen[gruppe] = eintrag
+        aufgabe = asyncio.ensure_future(_auftrag(v, kennung, arbeit, b, cfg, tab, eintrag, fertig))
+        v.auftraege.add(aufgabe)
+        aufgabe.add_done_callback(v.auftraege.discard)
+    return len(angenommen)
 
 
 # Was beim Dienststart schon laenger in der Warteschlange liegt, hat keinen
@@ -2177,6 +2834,18 @@ def befehle_beim_start_verwerfen() -> int:
         return 0
     verworfen = 0
     jetzt = time.time()
+    # 0.9.35: ein Befehl, den ein frueherer Dienst schon beansprucht hatte und
+    # nicht zu Ende brachte (Absturz, kill -9). Er wird nicht wiederholt - ob
+    # er wirkte, weiss niemand; wiederholt wuerde womoeglich eine Tuer zweimal.
+    for datei in sorted(ORDNER_BEFEHLE.glob("*.inarbeit")):
+        b = json_lesen(datei)
+        _datei_weg(datei)
+        antwort_schreiben(datei.stem, 0, "Abgebrochen: der vorige Dienst endete, waehrend "
+                                         "dieser Befehl lief. Ob er wirkte, ist offen; er wird "
+                                         "nicht wiederholt.")
+        _LOG.info("Befehl %s (%s) war beim Ende des vorigen Dienstes in Arbeit - nicht wiederholt.",
+                  datei.stem, b.get("aktion"))
+        verworfen += 1
     for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
         b = json_lesen(datei)
         ts = b.get("ts")
@@ -2315,8 +2984,8 @@ async def dienst(einmal: bool = False) -> int:
                     neu_verbinden = True
                     break
                 try:
-                    if await warteschlange(v, c, tab):
-                        lauf["offen"] = True
+                    await warteschlange(v, c, tab,
+                                        fertig=lambda: lauf.__setitem__("offen", True))
                 except Exception as err:  # noqa: BLE001
                     _LOG.error("Warteschlange: %s", fehlertext(err))
                 jetzt = time.time()
@@ -2342,6 +3011,7 @@ async def dienst(einmal: bool = False) -> int:
                     herzschlag_senden(c, 1)
                     letzter_herzschlag = jetzt
                 if einmal:
+                    await v.auftraege_abwarten()
                     break
                 await asyncio.sleep(1)
             # Der Ausgang des Lauschauftrags wird AUSGEWERTET. Bis 0.9.16
@@ -2672,7 +3342,16 @@ def geraet_leeren(nr: int, runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PA
             lambda p=p, k=kopf: [t for t in mqtt_leer_themen_aus_bestand(p) if t.startswith(k)],
             kopf, runden, pause, melden)
         rc = max(rc, r)
-    return max(rc, haus_leeren(nur_geraet=int(nr), runden=runden, pause=pause, melden=melden))
+    rc_haus = haus_leeren(nur_geraet=int(nr), runden=runden, pause=pause, melden=melden)
+    # 0.9.35 (D2): der feste Name unter haus/tuer/ wird freigegeben - beim
+    # naechsten Senden gilt der aktuelle Geraetename.
+    namen = haus_namen_lesen()
+    if str(int(nr)) in namen:
+        namen.pop(str(int(nr)), None)
+        if haus_namen_schreiben(namen):
+            melden(f"<INFO> MQTT: der feste Name von Geraet {int(nr)} unter {HAUS_WURZEL}/ "
+                   "wurde freigegeben.")
+    return max(rc, rc_haus)
 
 
 # ---------------------------------------------------------------------------
@@ -2710,7 +3389,7 @@ HAUS_WURZEL = "haus/tuer"
 DATEI_HAUS = PCONFIG.parent / (PNAME + ".haus_themen.json")
 HAUS_KONTAKTTYP = "21"
 HAUS_FRAGE_S = 300
-_HAUS: dict = {"letzte": {}, "versucht": 0.0}
+_HAUS: dict = {"letzte": {}, "versucht": 0.0, "konflikte": [], "konflikt_gefragt": 0.0}
 _HAUS_THEMA = re.compile(r"^haus/tuer/[a-z0-9_\-]{1,60}/(offen|verriegelt)$")
 _UMLAUTE = (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"),
             ("Ä", "ae"), ("Ö", "oe"), ("Ü", "ue"))
@@ -2724,23 +3403,43 @@ def haus_name(text) -> str:
     return t[:40].strip("_")
 
 
-def haus_paare(geraete: dict) -> tuple:
+def haus_paare(geraete: dict, feste_namen=None) -> tuple:
     """Rueckgabe (paare, herkunft): paare relativ zu haus/tuer
-    ("<name>/offen": 0|1|"-"), herkunft je Schluessel die Geraetenummer."""
+    ("<name>/offen": 0|1|"-"), herkunft je Schluessel die Geraetenummer.
+
+    feste_namen (0.9.35, D2): {geraetenummer: name}. Steht ein Geraet darin,
+    gilt dieser Name, gleich wie es inzwischen heisst; ein neues Geraet wird
+    eingetragen. Bis 0.9.34 wanderte das Thema mit jeder Umbenennung - und
+    bekam ein Geraet einen schon vergebenen Namen, rutschte das mit der
+    hoeheren Nummer still auf <name>_<nr>. Funkwacht und Beschattungswaechter
+    verloren die Tuer dann ohne Hinweis. Neu vergeben wird ein Name erst nach
+    "Themen dieses Geraets abraeumen" (geraet_leeren())."""
     paare: dict = {}
     herkunft: dict = {}
     namen: dict = {}
+    fest = feste_namen if isinstance(feste_namen, dict) else {}
+    for nr in sorted(geraete, key=lambda n: int(n) if str(n).isdigit() else 0):
+        if str(nr) in fest:
+            namen[fest[str(nr)]] = nr
     for nr in sorted(geraete, key=lambda n: int(n) if str(n).isdigit() else 0):
         g = geraete[nr]
-        name = haus_name(g.get("name")) or f"geraet{nr}"
-        if namen.get(name, nr) != nr:
-            name = f"{name}_{nr}"
-        namen[name] = nr
         endpunkte = g.get("endpunkte") or {}
         typen = g.get("typen") or {}
         kontakte = [ep for ep in sorted(endpunkte) if "kontakt" in (endpunkte[ep] or {})
                     and HAUS_KONTAKTTYP in [str(x) for x in (typen.get(ep) or [])]]
         schloesser = [ep for ep in sorted(endpunkte) if "schloss" in (endpunkte[ep] or {})]
+        if not kontakte and not schloesser:
+            # Kein Tuergeraet: es belegt keinen Namen unter haus/tuer/.
+            continue
+        if str(nr) in fest:
+            name = fest[str(nr)]
+        else:
+            name = haus_name(g.get("name")) or f"geraet{nr}"
+            if namen.get(name, nr) != nr:
+                name = f"{name}_{nr}"
+            namen[name] = nr
+            if feste_namen is not None:
+                feste_namen[str(nr)] = name
         for art, eps, feld in (("offen", kontakte, "kontakt"), ("verriegelt", schloesser, "schloss")):
             for ep in eps:
                 roh = endpunkte[ep].get(feld)
@@ -2757,6 +3456,34 @@ def haus_paare(geraete: dict) -> tuple:
                 paare[f"{n}/{art}"] = w
                 herkunft[f"{n}/{art}"] = int(nr) if str(nr).isdigit() else 0
     return paare, herkunft
+
+
+DATEI_HAUS_NAMEN = PCONFIG.parent / (PNAME + ".haus_namen.json")
+
+
+def haus_namen_lesen() -> dict:
+    aus = {}
+    d = json_lesen(DATEI_HAUS_NAMEN).get("namen")
+    for nr, name in (d.items() if isinstance(d, dict) else ()):
+        if str(nr).isdigit() and isinstance(name, str) and re.match(r"^[a-z0-9_\-]{1,50}$", name):
+            aus[str(nr)] = name
+    return aus
+
+
+def haus_namen_schreiben(namen: dict) -> bool:
+    if not namen:
+        try:
+            DATEI_HAUS_NAMEN.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        return True
+    return json_schreiben(DATEI_HAUS_NAMEN, {
+        "_hinweis": "Feste Namen der Geraete unter haus/tuer/<name>/ (Geraetenummer -> Name). "
+                    "Eine Umbenennung des Geraets verschiebt das Thema nicht; neu vergeben wird "
+                    "ein Name nach 'Themen dieses Geraets abraeumen'.",
+        "namen": dict(sorted(namen.items(), key=lambda x: int(x[0])))})
 
 
 def haus_gemerkt() -> dict:
@@ -2793,7 +3520,13 @@ def haus_senden(geraete: dict, cfg: dict, voll: bool = False) -> None:
         return
     if not cfg.get("mqtt_ein"):
         return
-    paare, herkunft = haus_paare(geraete)
+    namen = haus_namen_lesen()
+    vorher = dict(namen)
+    paare, herkunft = haus_paare(geraete, namen)
+    if namen != vorher and not haus_namen_schreiben(namen):
+        melde_gebremst("haus_namen", f"MQTT: die festen Namen unter {HAUS_WURZEL}/ liessen sich "
+                       f"nicht in {DATEI_HAUS_NAMEN} merken - nach einer Umbenennung kann das "
+                       "Thema wandern.")
     letzte = _HAUS["letzte"]
     if voll:
         senden = dict(paare)
@@ -2813,6 +3546,43 @@ def haus_senden(geraete: dict, cfg: dict, voll: bool = False) -> None:
     gemerkt = haus_gemerkt()
     neu = {f"{HAUS_WURZEL}/{k}": herkunft.get(k, 0) for k in senden
            if f"{HAUS_WURZEL}/{k}" not in gemerkt and _HAUS_THEMA.match(f"{HAUS_WURZEL}/{k}")}
+    if neu:
+        # 0.9.35 (D2): haus/tuer/ ist ein gemeinsamer Baum mehrerer Plugins.
+        # Steht unter einem Thema, das dieses Plugin noch nie gesendet hat,
+        # schon ein zurueckbehaltener Wert, gehoert er einem anderen Anbieter
+        # - dann wird NICHT darueber geschrieben (und spaeter auch nicht
+        # abgeraeumt). Ist der Broker nicht zu fragen, wird gesendet wie bisher.
+        # Ein bekannter Konflikt wird hoechstens alle HAUS_FRAGE_S nachgefragt -
+        # sonst hielte jede Rueckfrage die Ereignisschleife bei jedem Abbild an.
+        jetzt = time.time()
+        if 0 <= jetzt - _HAUS.get("konflikt_gefragt", 0.0) < HAUS_FRAGE_S:
+            for t in [t for t in neu if t in (_HAUS.get("konflikte") or [])]:
+                neu.pop(t, None)
+                k = t[len(HAUS_WURZEL) + 1:]
+                senden.pop(k, None)
+                paare.pop(k, None)
+        konflikte_vorher = list(_HAUS.get("konflikte") or [])
+        lage, belegt = ("ok", set())
+        if neu:
+            lage, belegt = mqtt_behalten_liste(sorted(neu), lambda t: t in neu)
+            _HAUS["konflikt_gefragt"] = jetzt
+            if lage == "ok":
+                _HAUS["konflikte"] = sorted(set(_HAUS.get("konflikte") or []) - set(neu))
+        if lage == "ok" and belegt:
+            for t in sorted(belegt):
+                neu.pop(t, None)
+                k = t[len(HAUS_WURZEL) + 1:]
+                senden.pop(k, None)
+                paare.pop(k, None)
+            _HAUS["konflikte"] = sorted(set(_HAUS.get("konflikte") or []) | set(belegt))
+            melde_gebremst("haus_konflikt",
+                           f"MQTT: unter {', '.join(sorted(belegt))} steht schon ein Wert eines "
+                           "anderen Anbieters. Dieses Plugin sendet dort nicht. Abhilfe: das "
+                           "Geraet umbenennen und 'Themen dieses Geraets abraeumen' druecken.")
+        if list(_HAUS.get("konflikte") or []) != konflikte_vorher:
+            # Auch eine LEERE Liste wird geschrieben - sonst zeigte der Reiter
+            # Test einen behobenen Konflikt weiter an.
+            zustand_schreiben(haus_konflikte=list(_HAUS.get("konflikte") or []))
     if neu:
         gemerkt.update(neu)
         if not _haus_schreiben(gemerkt):
@@ -2879,8 +3649,19 @@ def selbsttest() -> int:
 
     # Architektur - der Matter-Server laeuft nur auf 64 Bit
     bogen = os.uname().machine if hasattr(os, "uname") else "unbekannt"
-    if bogen in ("x86_64", "aarch64", "arm64"):
-        zeilen.append(f"[OK]   Architektur {bogen} ist 64 Bit")
+    # 0.9.35 (Nr. 20): uname nennt den KERN. Raspberry Pi OS 32 Bit startet
+    # auf Pi 4/5 einen 64-Bit-Kern - uname sagt aarch64, das Benutzerland
+    # (und damit Docker und jedes Abbild) ist aber armhf. Massgeblich ist die
+    # Wortbreite dieses Python-Prozesses.
+    import struct
+    bits = struct.calcsize("P") * 8
+    if bogen in ("x86_64", "aarch64", "arm64") and bits == 64:
+        zeilen.append(f"[OK]   Architektur {bogen} ist 64 Bit (Kern und Benutzerland)")
+    elif bogen in ("x86_64", "aarch64", "arm64"):
+        fehler += 1
+        zeilen.append(f"[FEHL] Der Kern ist 64 Bit ({bogen}), das Benutzerland aber {bits} Bit - "
+                      "der Matter-Server braucht ein 64-Bit-Betriebssystem, nicht nur einen "
+                      "64-Bit-Kern")
     else:
         fehler += 1
         zeilen.append(f"[FEHL] Architektur {bogen} ist nicht 64 Bit - der Matter-Server "
@@ -2976,7 +3757,8 @@ def selbsttest() -> int:
 # vier Namen der Liste nie hinausgingen (Bericht oberflaeche Nr. 11).
 def themen_selbstauskunft() -> dict:
     tab = tabelle()
-    probe = {"bool": True, "bit0": 1, "text": "x", "energie_struct": {"energy": 1000000}}
+    probe = {"bool": True, "bit0": 1, "text": "x", "energie_struct": {"energy": 1000000},
+             "struct0": {"0": 0}}
     attr: dict[str, object] = {}
     for cl, c in (tab.get("cluster") or {}).items():
         ep = "0" if c.get("nur_info") else "1"
@@ -2984,9 +3766,13 @@ def themen_selbstauskunft() -> dict:
             attr[f"{ep}/{cl}/{at}"] = probe.get(str(a.get("typ") or "zahl"), 100)
     g = knoten_abbilden({"node_id": 1, "available": True, "attributes": attr}, tab,
                         dict(VORGABEN, roh_ein=0))
-    stummel = types.SimpleNamespace(ereignisse={})
-    MatterVerbindung._taste(stummel, {"node_id": 1, "endpoint_id": 1, "cluster_id": 59,
-                                      "event_id": 1, "data": {"NewPosition": 1}})
+    stummel = types.SimpleNamespace(ereignisse={}, knoten={})
+    for ereignis, n in ((2, None), (6, 1), (6, 3), (6, 2)):
+        nutz = {"NewPosition": 1}
+        if n is not None:
+            nutz["totalNumberOfPressesCounted"] = n
+        MatterVerbindung._taste(stummel, {"node_id": 1, "endpoint_id": 1, "cluster_id": 59,
+                                          "event_id": ereignis, "data": nutz})
     for ep, felder in (stummel.ereignisse.get(1) or {}).items():
         ziel = g["endpunkte"].setdefault(ep, {})
         for thema, wert in felder.items():

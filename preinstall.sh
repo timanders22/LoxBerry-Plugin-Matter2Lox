@@ -69,6 +69,12 @@ if [ -d "$FAB" ] && [ -n "$(ls -A "$FAB" 2>/dev/null)" ]; then
     WEITER="$WEITER $FAB"
 fi
 [ -f "$BASE/data/plugins/$PFOLDER.nummern.json" ] && WEITER="$WEITER $BASE/data/plugins/$PFOLDER.nummern.json"
+# 0.9.35 (E7): die Deinstallation laesst eine letzte Sicherung der Fabric
+# liegen. Sie wird nicht von selbst eingespielt; der Hinweis nennt sie.
+SICHER="$BASE/data/plugins/$PFOLDER.fabric_sicherungen"
+if [ -d "$SICHER" ] && [ -n "$(ls -A "$SICHER" 2>/dev/null)" ]; then
+    echo "<INFO> Es liegen Sicherungen einer frueheren Matter-Fabric vor ($SICHER). Zurueckspielen: Reiter Einstellungen, Fuer Fortgeschrittene, Fabric wiederherstellen."
+fi
 if [ -n "$BEISEITE" ] || [ -n "$FEST" ] || [ -n "$WEITER" ]; then
     T="<WARNING> Neuinstallation: Einstellungen und Zugangsdaten einer frueheren Installation werden NICHT eingespielt."
     [ -n "$BEISEITE" ] && T="$T Beiseitegelegt:$BEISEITE (die Deinstallation raeumt sie ab)."

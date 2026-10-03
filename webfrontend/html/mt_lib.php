@@ -246,7 +246,11 @@ function mt_vorgaben()
         'server_host'       => '127.0.0.1',
         'server_port'       => 5580,
         'eigener_container' => 1,
-        'container_name'    => 'matter-server',
+        /* 0.9.35 (Nr. 1): nicht mehr "matter-server" - so heisst der
+         * Container in der Anleitung des Matter-Servers, und ein eigener
+         * Server des Anwenders trug oft denselben Namen. Eine gespeicherte
+         * Konfiguration behaelt ihren Namen. */
+        'container_name'    => 'matter2lox-server',
         'container_abbild'  => 'ghcr.io/matter-js/python-matter-server:stable',
         'bluetooth_adapter' => 0,
         'mqtt_ein'          => 1,
@@ -266,6 +270,18 @@ function mt_vorgaben()
         /* Tuer-1 (Verbesserungsbau 30.09.2026): Tueren und Schloesser
          * zusaetzlich unter haus/tuer/<name>/... melden. Ab Werk aus. */
         'tuer_haus'         => 0,
+        /* 0.9.35 (Nr. 1, Vertrag): der eigene Container lauscht nur auf
+         * 127.0.0.1 (--listen-address), solange server_host 127.0.0.1 oder
+         * localhost ist. Ab Werk ein. */
+        'server_lokal'      => 1,
+        /* 0.9.35 (Nr. 1): --primary-interface am Container, leer = weglassen. */
+        'primary_interface' => '',
+        /* 0.9.35 (Nr. 1): zweites Token NUR fuer lesende Aktionen am Endpunkt
+         * (status, statusalle, wert, liste, roh); leer = keines. */
+        'lesetoken'         => '',
+        /* 0.9.35 (Nr. 1): Adresse fuer die Loxone-Vorlagen (Host/IP[:Port]);
+         * leer = IP des LoxBerry. */
+        'loxone_adresse'    => '',
     );
 }
 
@@ -704,7 +720,9 @@ function mt_haus_gemerkt()
 /** Schluessel, die in einer aelteren Sicherung fehlen duerfen (Tuer-1). */
 function mt_sicherung_neue_schluessel()
 {
-    return array('tuer_haus');
+    /* 0.9.35 (Nr. 1): die vier neuen Schluessel duerfen in einer Sicherung
+     * bis 0.9.34 fehlen; sie behalten dann ihre Vorgabe. */
+    return array('tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse');
 }
 
 /**
@@ -756,12 +774,23 @@ function mt_eingabe_felder()
                                   'server_port' => 'text', 'container_name' => 'text',
                                   'container_abbild' => 'text', 'bluetooth_adapter' => 'text',
                                   'wartezeit' => 'text', 'sendetakt' => 'text', 'herzschlag' => 'text',
-                                  'steuerung_ein' => 'haken', 'schloss_ein' => 'haken'),
+                                  'steuerung_ein' => 'haken', 'schloss_ein' => 'haken',
+                                  // 0.9.35 (Nr. 1)
+                                  'server_lokal' => 'haken', 'primary_interface' => 'text'),
         'save_mqtt'      => array('mqtt_ein' => 'haken', 'mqtt_topic' => 'text', 'mqtt_nur' => 'text',
                                   'roh_ein' => 'haken', 'tuer_haus' => 'haken'),
         'netz_speichern' => array('wlan_ssid' => 'text', 'wlan_passwort' => 'geheim',
                                   'thread_dataset' => 'geheim'),
         'br_holen'       => array('thread_br' => 'text'),
+        // 0.9.35 (Nr. 1): Adresse fuer die Loxone-Vorlagen, eigenes Formular.
+        'save_loxone'    => array('loxone_adresse' => 'text'),
+        /* 0.9.35 (Nr. 4): die Felder der Reiter Anlernen und Test bleiben nach
+         * der Umleitung stehen - auch nach einem Erfolg, nicht nur nach einer
+         * Beanstandung. Der Code vom Geraet reist nie mit (ein zweiter Druck
+         * soll ihn nicht unbemerkt erneut senden). */
+        'anlernen'       => array('code' => 'geheim', 'anlern_ip' => 'text', 'nur_netz' => 'haken'),
+        'verwalten'      => array('test_geraet' => 'text', 'geraetename' => 'text'),
+        'schalten'       => array('test_geraet' => 'text', 'test_endpunkt' => 'text', 'test_wert' => 'text'),
     );
 }
 
@@ -940,6 +969,24 @@ function mt_log_gebremst($schluessel, $text, $sekunden = 3600)
  * Gemerkt wird der zuletzt ueber den Endpunkt GESENDETE Wert, nicht der
  * Zustand des Geraets: was in derselben Minute am Wandschalter, in einer App
  * oder im Reiter Test geschieht, sieht der Merker nicht.
+ *
+ * 0.9.35 (Nr. 4): Sperre JE GERAET statt einer fuer alle. Bis 0.9.34 hielt
+ * ein Befehl die eine Merkerdatei ueber die ganze Wartezeit gesperrt - ein
+ * langsames Geraet hielt damit jeden Sollwert-Befehl an jedes andere Geraet
+ * an, Loxone-Ausgaenge liefen der Reihe nach in ihre Frist. Jetzt:
+ *   - eine eigene Sperrdatei je Geraet (Knoten|Endpunkt) im Unterordner
+ *     gleichwert/ des Datenordners, gehalten waehrend des ganzen Befehls -
+ *     fuenf gleichzeitige gleiche Aufrufe an DASSELBE Geraet senden weiter
+ *     genau einmal, andere Geraete warten nicht;
+ *   - die gemeinsame Merkerdatei nur kurz zum Lesen und zum Nachfuehren;
+ *     nachgefuehrt wird auf dem FRISCH gelesenen Stand, damit kein Befehl
+ *     die Eintraege eines anderen Geraets mit einem alten Stand ueberschreibt;
+ *   - jede Sperre mit LOCK_NB und Wiederholung bis etwa 2 s. Wer sie dann
+ *     nicht hat, bekommt 503 (GRUND=BESCHAEFTIGT), statt bis zur Frist des
+ *     Miniservers zu haengen.
+ * Die Sperrdateien bleiben liegen (eine je Geraet und Endpunkt): eine
+ * geloeschte Sperrdatei, die ein anderer Prozess noch offen hat, sperrt
+ * nichts mehr.
  * ================================================================== */
 
 /**
@@ -948,6 +995,7 @@ function mt_log_gebremst($schluessel, $text, $sekunden = 3600)
  * ein und aus teilen sich 'schalter': der Sollwert ist der Zustand, nicht
  * der Befehl - aus nach ein geht hinaus. farbton und saettigung sind
  * Teilwerte der Farbe und ebenso Sollwerte (Nr. 19 "Farbe").
+ * 0.9.35 (Nr. 4): dazu loxfarbe, farbe_xy und lamelle.
  */
 function mt_gleichwert_schluessel($aktion)
 {
@@ -956,6 +1004,7 @@ function mt_gleichwert_schluessel($aktion)
         'farbtemperatur' => 'farbtemperatur', 'farbe' => 'farbe', 'farbton' => 'farbton',
         'saettigung' => 'saettigung', 'rollo' => 'rollo', 'soll_heizen' => 'soll_heizen',
         'soll_kuehlen' => 'soll_kuehlen', 'betriebsart' => 'betriebsart', 'luefter' => 'luefter',
+        'loxfarbe' => 'loxfarbe', 'farbe_xy' => 'farbe_xy', 'lamelle' => 'lamelle',
     );
     return isset($s[$aktion]) ? $s[$aktion] : '';
 }
@@ -967,23 +1016,37 @@ function mt_gleichwert_schluessel($aktion)
  *
  * - ein/aus/umschalten stellen den Schalter und koennen die Helligkeit
  *   aendern (On stellt die zuletzt gemerkte Stufe des Geraets her);
- * - helligkeit schaltet mit (MoveToLevelWithOnOff);
- * - die vier Farbbefehle ueberschreiben einander;
+ * - helligkeit schaltet mit (MoveToLevelWithOnOff, 0 = Off);
+ * - die Farbbefehle ueberschreiben einander;
  * - rollo_auf/_zu/_stopp bewegen den Behang.
+ * 0.9.35 (Nr. 4): loxfarbe stellt Helligkeit, Schalter UND Farbe - es
+ * verfaellt mit allen dreien in beide Richtungen. Hoehe und Lamelle koennen
+ * einander mitnehmen (UpOrOpen faehrt beide, manche Antriebe kippen beim
+ * Verfahren); im Zweifel geht der naechste gleiche Wert hinaus.
  */
 function mt_gleichwert_verfaellt($aktion)
 {
-    $farbe = array('farbtemperatur', 'farbe', 'farbton', 'saettigung');
+    $farbe = array('farbtemperatur', 'farbe', 'farbton', 'saettigung', 'farbe_xy', 'loxfarbe');
     if (in_array($aktion, array('ein', 'aus', 'umschalten'), true)) {
-        return array('schalter', 'helligkeit');
+        return array('schalter', 'helligkeit', 'loxfarbe');
     }
     if ($aktion === 'helligkeit') {
-        return array('schalter');
+        return array('schalter', 'loxfarbe');
+    }
+    if ($aktion === 'loxfarbe') {
+        return array_values(array_merge(array('schalter', 'helligkeit'),
+                                        array_diff($farbe, array('loxfarbe'))));
     }
     if (in_array($aktion, $farbe, true)) {
         return array_values(array_diff($farbe, array($aktion)));
     }
     if (in_array($aktion, array('rollo_auf', 'rollo_zu', 'rollo_stopp'), true)) {
+        return array('rollo', 'lamelle');
+    }
+    if ($aktion === 'rollo') {
+        return array('lamelle');
+    }
+    if ($aktion === 'lamelle') {
         return array('rollo');
     }
     if ($aktion === 'attribut' || $aktion === 'befehl') {
@@ -1002,7 +1065,9 @@ function mt_gleichwert_betrifft($aktion)
  * Der verglichene Wert in einer Form: bei ein/aus der Befehl, sonst die Zahl
  * mit hoechstens drei Nachkommastellen und ohne Nullen am Ende (20, 20.0 und
  * 20,0 sind gleich). farbe traegt die Saettigung mit - ohne Angabe 100, wie
- * der Dienst sie dann setzt.
+ * der Dienst sie dann setzt. 0.9.35 (Nr. 4): farbe_xy vergleicht x/y mit
+ * vier Stellen (so fein loest Matter den Farbort auf, 1/65536), loxfarbe
+ * die ganze Zahl.
  */
 function mt_gleichwert_wert($befehl)
 {
@@ -1010,10 +1075,17 @@ function mt_gleichwert_wert($befehl)
     if ($aktion === 'ein' || $aktion === 'aus') {
         return $aktion;
     }
-    $zahl = function ($v) {
-        $t = rtrim(rtrim(sprintf('%.3F', (float) $v), '0'), '.');
+    $zahl = function ($v, $stellen = 3) {
+        $t = rtrim(rtrim(sprintf('%.' . (int) $stellen . 'F', (float) $v), '0'), '.');
         return $t === '-0' ? '0' : $t;
     };
+    if ($aktion === 'farbe_xy') {
+        return $zahl(isset($befehl['x']) ? $befehl['x'] : 0, 4) . '/'
+             . $zahl(isset($befehl['y']) ? $befehl['y'] : 0, 4);
+    }
+    if ($aktion === 'loxfarbe') {
+        return isset($befehl['wert']) ? (string) (int) $befehl['wert'] : '';
+    }
     $w = isset($befehl['wert']) ? $zahl($befehl['wert']) : '';
     if ($aktion === 'farbe') {
         $w .= '/' . $zahl(isset($befehl['saettigung']) ? $befehl['saettigung'] : 100);
@@ -1026,39 +1098,93 @@ function mt_gleichwert_datei()
     return mt_paths()['datadir'] . '/befehl_gleichwert.json';
 }
 
-/**
- * Den Merker oeffnen und sperren. Rueckgabe: Dateizeiger oder false.
- *
- * Die Sperre bleibt waehrend des ganzen Befehls gehalten (wie EVCC und die
- * Schlossbremse): fuenf gleichzeitige gleiche Aufrufe senden so einmal.
- * "e" (close-on-exec): ein Kindprozess, den ein spaeterer Bau auf diesem Weg
- * startet, erbt die gesperrte Datei nicht (Fehlerklasse 3, "Sperre vererbt
- * sich an Kinder"). Ohne Datenordner oder Sperre: false.
- */
-function mt_gleichwert_oeffnen()
+/** 0.9.35 (Nr. 4): Ordner der Sperrdateien je Geraet. */
+function mt_gleichwert_ordner()
 {
-    $datei = mt_gleichwert_datei();
+    return mt_paths()['datadir'] . '/gleichwert';
+}
+
+/**
+ * 0.9.35 (Nr. 4): eine Datei oeffnen und sperren, ohne zu haengen.
+ *
+ * LOCK_NB mit Wiederholung alle 50 ms bis $frist Sekunden. Rueckgabe:
+ * array(Dateizeiger|false, Grund) - Grund '' bei Erfolg, 'MERKER', wenn die
+ * Datei sich nicht oeffnen laesst oder flock selbst scheitert, 'BESCHAEFTIGT',
+ * wenn ein anderer Aufruf die Sperre ueber die Frist hinaus haelt.
+ * "e" (close-on-exec): ein Kindprozess erbt die gesperrte Datei nicht
+ * (Fehlerklasse 3, "Sperre vererbt sich an Kinder").
+ */
+function mt_gleichwert_sperren($datei, $art = LOCK_EX, $frist = 2.0)
+{
     if (!is_dir(dirname($datei))) {
-        return false;
+        return array(false, 'MERKER');
     }
     $fh = @fopen($datei, 'c+e');
     if ($fh === false) {
-        return false;
+        return array(false, 'MERKER');
     }
-    if (!@flock($fh, LOCK_EX)) {
-        fclose($fh);
-        return false;
+    $ende = microtime(true) + (float) $frist;
+    while (true) {
+        $blockiert = 0;
+        if (@flock($fh, $art | LOCK_NB, $blockiert)) {
+            return array($fh, '');
+        }
+        /* flock scheitert auch ohne fremde Sperre (Dateisystem ohne
+         * Sperren). Das ist kein "beschaeftigt", sondern ein Merkerfehler -
+         * ohne $blockiert waere es 2 s Warten fuer nichts. */
+        if (!$blockiert) {
+            fclose($fh);
+            return array(false, 'MERKER');
+        }
+        if (microtime(true) >= $ende) {
+            fclose($fh);
+            return array(false, 'BESCHAEFTIGT');
+        }
+        usleep(50000);
     }
-    return $fh;
 }
 
-/** Den gesperrten Merker lesen; Unlesbares gilt als leer (dann geht der
- * Befehl hinaus - im Zweifel senden, nie still verschlucken). */
-function mt_gleichwert_lesen($fh)
+/**
+ * Die Sperre EINES Geraets ("Knoten|Endpunkt") nehmen.
+ *
+ * 0.9.35 (Nr. 4): bis 0.9.34 sperrte diese Funktion die gemeinsame
+ * Merkerdatei ueber den ganzen Befehl. Rueckgabe wie mt_gleichwert_sperren().
+ */
+function mt_gleichwert_oeffnen($geraet)
 {
-    rewind($fh);
+    $ordner = mt_gleichwert_ordner();
+    if (!is_dir($ordner)) {
+        @mkdir($ordner, 0770, true);
+    }
+    $name = preg_replace('/[^0-9]+/', '_', (string) $geraet);
+    return mt_gleichwert_sperren($ordner . '/' . $name . '.sperre');
+}
+
+/** Die Geraetesperre loesen. */
+function mt_gleichwert_freigeben($fh)
+{
+    if (is_resource($fh)) {
+        @flock($fh, LOCK_UN);
+        fclose($fh);
+    }
+}
+
+/**
+ * Den gemeinsamen Merker lesen - nur fuer die Dauer des Lesens gesperrt.
+ * Rueckgabe: array(Merker|false, Grund). Unlesbarer INHALT gilt als leer
+ * (dann geht der Befehl hinaus - im Zweifel senden, nie still verschlucken);
+ * eine Datei, die sich nicht oeffnen oder sperren laesst, ergibt false.
+ */
+function mt_gleichwert_lesen()
+{
+    list($fh, $grund) = mt_gleichwert_sperren(mt_gleichwert_datei(), LOCK_SH);
+    if ($fh === false) {
+        return array(false, $grund);
+    }
     $d = json_decode((string) stream_get_contents($fh), true);
-    return is_array($d) ? $d : array();
+    @flock($fh, LOCK_UN);
+    fclose($fh);
+    return array(is_array($d) ? $d : array(), '');
 }
 
 /** Sekunden seit DEMSELBEN Wert fuer dieses Geraet ("Knoten|Endpunkt"),
@@ -1084,8 +1210,8 @@ function mt_gleichwert_seit($merker, $geraet, $schluessel, $wert, $fenster = 60)
  * - Was der Befehl veraendern kann, verfaellt (mt_gleichwert_verfaellt()),
  *   gelungen oder nicht - im Zweifel geht der naechste gleiche Wert hinaus.
  * - Gemerkt wird der eigene Wert nur, wenn der Dienst die Ausfuehrung
- *   bestaetigt hat (OK=1). OK=0 oder ohne Antwort (OK=2): der eigene
- *   Eintrag faellt weg, ein Wiederholen geht hinaus.
+ *   bestaetigt hat (OK=1). OK=0, ohne Antwort oder ueberholt (OK=2): der
+ *   eigene Eintrag faellt weg, ein Wiederholen geht hinaus.
  * - Eintraege ab 60 s werden nicht mitgeschleppt.
  */
 function mt_gleichwert_nachher($merker, $knoten, $geraet, $aktion, $wert, $gelungen)
@@ -1125,19 +1251,30 @@ function mt_gleichwert_nachher($merker, $knoten, $geraet, $aktion, $wert, $gelun
     return $neu;
 }
 
-/** Den Merker schreiben (ausser bei null), entsperren und schliessen.
- * Erfolg nur bei vollstaendig geschriebenem Inhalt (Regeln/03). */
-function mt_gleichwert_schliessen($fh, $merker)
+/**
+ * Den Merker nach dem Befehl nachfuehren: kurz sperren, FRISCH lesen,
+ * mt_gleichwert_nachher() anwenden, schreiben, loesen.
+ * Erfolg nur bei vollstaendig geschriebenem Inhalt (Regeln/03).
+ * 0.9.35 (Nr. 4): ersetzt das Schreiben ueber den lange gehaltenen Zeiger.
+ */
+function mt_gleichwert_nachfuehren($knoten, $geraet, $aktion, $wert, $gelungen)
 {
-    $ok = true;
-    if ($merker !== null) {
-        $roh = (string) json_encode((object) $merker);
-        $ok = ftruncate($fh, 0) && rewind($fh) && @fwrite($fh, $roh) === strlen($roh) && fflush($fh);
-        if (!$ok) {
-            mt_log_gebremst('gleichwert_schreiben', 'Die Merkerdatei der Gleichwert-Unterdrueckung ('
-                . mt_gleichwert_datei() . ') liess sich nicht schreiben - ein gleicher Sollwert geht dann '
-                . 'erneut hinaus. Pruefen: Platz und Eigentuemer (loxberry).');
-        }
+    list($fh, $grund) = mt_gleichwert_sperren(mt_gleichwert_datei());
+    if ($fh === false) {
+        mt_log_gebremst('gleichwert_schreiben', 'Die Merkerdatei der Gleichwert-Unterdrueckung ('
+            . mt_gleichwert_datei() . ') liess sich zum Nachfuehren nicht sperren (' . $grund
+            . ') - ein gleicher Sollwert geht dann erneut hinaus.');
+        return false;
+    }
+    $alt = json_decode((string) stream_get_contents($fh), true);
+    $neu = mt_gleichwert_nachher(is_array($alt) ? $alt : array(), $knoten, $geraet, $aktion,
+                                 $wert, $gelungen);
+    $roh = (string) json_encode((object) $neu);
+    $ok = ftruncate($fh, 0) && rewind($fh) && @fwrite($fh, $roh) === strlen($roh) && fflush($fh);
+    if (!$ok) {
+        mt_log_gebremst('gleichwert_schreiben', 'Die Merkerdatei der Gleichwert-Unterdrueckung ('
+            . mt_gleichwert_datei() . ') liess sich nicht schreiben - ein gleicher Sollwert geht dann '
+            . 'erneut hinaus. Pruefen: Platz und Eigentuemer (loxberry).');
     }
     @flock($fh, LOCK_UN);
     fclose($fh);
@@ -1268,16 +1405,27 @@ function mt_dienst($befehl)
  * diese eine Funktion ab. Zwei Kopien derselben Logik laufen zwangslaeufig
  * auseinander.
  *
- * Rueckgabe: array(ok, Meldung). ok = 1 erledigt, 0 abgelehnt,
- * 2 eingereiht, aber ohne Antwort in der Wartezeit - Ergebnis unbekannt.
- * Es wird nie ein Erfolg gemeldet, den niemand geprueft hat.
+ * Rueckgabe: array(ok, Meldung, ist). ok = 1 erledigt, 0 abgelehnt oder
+ * nicht ausgefuehrt, 2 ohne Ergebnis: eingereiht ohne Warten, in Arbeit,
+ * aber ohne Antwort in der Wartezeit, oder vom Dienst als "von einem
+ * neueren Befehl desselben Geraets ueberholt" gemeldet. Es wird nie ein
+ * Erfolg gemeldet, den niemand geprueft hat.
+ * 0.9.35 (Nr. 2): drittes Element "ist" - der Ist-Wert nach dem Befehl, wenn
+ * die Antwortdatei ihn traegt, sonst null. list() mit zwei Elementen liest
+ * weiter nur ok und Meldung.
+ * 0.9.35 (Nr. 3): $cfg - wer die Konfiguration schon gelesen hat (der
+ * unangemeldete Endpunkt mit mt_config(false)), gibt sie mit. Ohne sie las
+ * diese Funktion mt_config() MIT Schreibrecht - aus dem Endpunkt heraus
+ * haette das eine Zweitschrift zurueckgeschrieben oder eine .kaputt angelegt.
  */
-function mt_befehl_absetzen($befehl, $wartezeit = null)
+function mt_befehl_absetzen($befehl, $wartezeit = null, $cfg = null)
 {
     $p = mt_paths();
-    $cfg = mt_config();
+    if (!is_array($cfg)) {
+        $cfg = mt_config();
+    }
     if ($wartezeit === null) {
-        $wartezeit = (int) $cfg['wartezeit'];
+        $wartezeit = isset($cfg['wartezeit']) ? (int) $cfg['wartezeit'] : 10;
     }
     /* Obergrenze 200 s, nicht 20. Bis 0.9.16 stand hier min(20, ...) - das
      * Anlernen uebergibt 190 s, vier weitere Aufrufer 70 s. Alles darueber
@@ -1292,30 +1440,49 @@ function mt_befehl_absetzen($befehl, $wartezeit = null)
      * dabei eine Tuer. Der Endpunkt prueft das seit jeher (html/index.php);
      * die Knoepfe des Reiters Test taten es bis 0.9.16 nicht. */
     if (mt_dienst_pid() === 0) {
-        return array(0, mt_t('TEST.A_DIENST_GESTOPPT'));
+        return array(0, mt_t('TEST.A_DIENST_GESTOPPT'), null);
     }
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0700, true) && !is_dir($ordner)) {
-        return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
+        return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner, null);
     }
     @chmod($ordner, 0700);
-    $kennung = bin2hex(random_bytes(8));
+    /* 0.9.35 (Nr. 2): zeitlich sortierbarer Name (VERTRAG "Warteschlange"):
+     * Sekunden, Mikrosekunden, dann Zufall gegen Gleichstand. Der Dienst
+     * arbeitet in Namensreihenfolge ab und fuehrt je Geraet nur den
+     * juengsten Stellbefehl eines Durchlaufs aus - mit einem reinen
+     * Zufallsnamen war "juengster" nicht bestimmbar. */
+    $jetzt = microtime(true);
+    $sek = (int) floor($jetzt);
+    $usek = min(999999, max(0, (int) round(($jetzt - $sek) * 1000000)));
+    $kennung = sprintf('%010d%06d_%s', $sek, $usek, bin2hex(random_bytes(4)));
     $datei = $ordner . '/' . $kennung . '.json';
     /* Ein Befehl kann WLAN-Passwort, Thread-Dataset oder den Anlerncode
      * tragen. Deshalb 0600, und die Rechte VOR dem Inhalt - genau wie bei der
      * Konfiguration. Bis 0.9.16 stand hier gar kein chmod. Der Zeitstempel
-     * kommt mit, damit der Dienst einen alten Befehl verwerfen kann. */
-    $befehl['ts'] = time();
+     * kommt mit, damit der Dienst einen alten Befehl verwerfen kann;
+     * 0.9.35 (Nr. 2) als Gleitkommazahl (microtime). */
+    $befehl['ts'] = $jetzt;
     if (!mt_json_schreiben($datei, $befehl, 0600)) {
-        return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
+        return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei, null);
     }
     $antwort = $p['datadir'] . '/antworten/' . $kennung . '.json';
+    /* Die Antwort auswerten. ok=2 vom Dienst heisst "ueberholt" und wird
+     * unveraendert durchgereicht; ein unbekannter Wert gilt als 0. */
+    $auswerten = function ($pfad) {
+        $a = mt_json_lesen($pfad);
+        $ok = isset($a['ok']) && is_numeric($a['ok']) ? (int) $a['ok'] : 0;
+        if (!in_array($ok, array(0, 1, 2), true)) {
+            $ok = 0;
+        }
+        $ist = isset($a['ist']) && (is_scalar($a['ist'])) ? $a['ist'] : null;
+        return array($ok, (string) (isset($a['meldung']) && is_scalar($a['meldung']) ? $a['meldung'] : ''),
+                     $ist);
+    };
     for ($i = 0; $i < $wartezeit * 10; $i++) {
         if (is_file($antwort)) {
-            $a = mt_json_lesen($antwort);
-            return array((int) (isset($a['ok']) ? $a['ok'] : 0),
-                         (string) (isset($a['meldung']) ? $a['meldung'] : ''));
+            return $auswerten($antwort);
         }
         usleep(100000);
     }
@@ -1326,14 +1493,22 @@ function mt_befehl_absetzen($befehl, $wartezeit = null)
      * der Dienst verwirft Stellbefehle nach BEFEHL_VERFALL_S und beim Start
      * alles, was aelter als 60 s ist. */
     if ($wartezeit === 0) {
-        return array(2, mt_t('EINST.M_BEFEHL_EINGEREIHT'));
+        return array(2, mt_t('EINST.M_BEFEHL_EINGEREIHT'), null);
     }
-    /* Nichts gehoert zu haben heisst nicht, dass nichts geschieht - aber die
-     * unbearbeitete Datei bleibt nicht liegen. */
-    if (is_file($datei)) {
-        @unlink($datei);
+    /* 0.9.35 (Nr. 2): das Loeschen ENTSCHEIDET. Der Dienst beansprucht eine
+     * Datei per rename X.json -> X.inarbeit, bevor er sie liest. Gelingt das
+     * Loeschen, hatte er sie nicht - der Befehl ist sicher nicht
+     * ausgefuehrt (0). Gelingt es nicht, ist er in Arbeit (2). Bis 0.9.34
+     * hiess beides "ohne Antwort" (2), auch wenn sicher nichts geschah. */
+    if (@unlink($datei)) {
+        return array(0, sprintf(mt_t('EINST.M_BEFEHL_NICHT_AUSGEFUEHRT'), $wartezeit), null);
     }
-    return array(2, sprintf(mt_t('EINST.M_BEFEHL_STUMM'), $wartezeit));
+    clearstatcache(true, $antwort);
+    if (is_file($antwort)) {
+        // Die Antwort kam genau zwischen der letzten Runde und dem Loeschen.
+        return $auswerten($antwort);
+    }
+    return array(2, sprintf(mt_t('EINST.M_BEFEHL_LAEUFT_NOCH'), $wartezeit), null);
 }
 
 /* ---------------- MQTT-Gateway des LoxBerry ----------------
@@ -1788,7 +1963,14 @@ function mt_docker_da()
 function mt_docker($argumente, $frist = null)
 {
     if (!mt_docker_da()) {
-        return array(0, 'Docker ist auf diesem LoxBerry nicht installiert.');
+        return array(0, mt_t('EINST.M_AKT_KEIN_DOCKER'));
+    }
+    /* 0.9.35 (Nr. 9): Seitenbremse. Hat der Seitenaufruf Docker schon als
+     * nicht ansprechbar gemessen, folgt kein weiterer Aufruf; und alle
+     * Aufrufe zusammen bleiben in der Seitenfrist (mt_docker_seite()). */
+    $seite = mt_docker_seite();
+    if ($seite['lage'] !== '' && $seite['lage'] !== 'ok') {
+        return array(0, mt_t('EINST.DOCKER_GESPERRT'));
     }
     $ausgabe = array();
     $code = 0;
@@ -1803,24 +1985,63 @@ function mt_docker($argumente, $frist = null)
     /* E1 (Welle 2): der Hintergrundvorgang "Matter-Server einrichten" gibt die
      * Restzeit seiner 15-Minuten-Frist mit; ohne Angabe wie bisher. */
     $frist = $frist === null ? (in_array($wort, array('pull', 'run'), true) ? 900 : 30) : max(1, (int) $frist);
-    @exec('timeout -k 5 ' . $frist . ' docker ' . $argumente . ' 2>&1', $ausgabe, $code);
+    if ($seite['bis'] > 0) {
+        $rest = $seite['bis'] - time();
+        if ($rest < 1) {
+            return array(0, mt_t('EINST.DOCKER_SEITENFRIST'));
+        }
+        $frist = min($frist, $rest);
+    }
+    @exec('timeout -k ' . ($seite['bis'] > 0 ? 1 : 5) . ' ' . $frist . ' docker ' . $argumente . ' 2>&1', $ausgabe, $code);
     if ($code === 124 || $code === 137) {
         $ausgabe[] = sprintf(mt_t('EINST.FRIST_ABGELAUFEN'), $frist);
     }
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 }
 
-/** 'laeuft', 'gestoppt', 'fehlt' oder 'kein_docker' */
-function mt_container_zustand()
+/**
+ * 0.9.35 (Nr. 9): die Docker-Lage DIESES Seitenaufrufs und seine Frist.
+ *
+ * Bis 0.9.34 fragte jeder Seitenaufruf Docker mehrfach (Zustand, Fassung mit
+ * drei Aufrufen, Ampel, Eigentumspruefung), jeder Aufruf mit 30 s Frist - bei
+ * haengendem Docker stand die Seite minutenlang. Jetzt misst die Oberflaeche
+ * zuerst mt_docker_lage(5) und traegt das Ergebnis hier ein: ist Docker nicht
+ * "ok", verweigert mt_docker() jeden weiteren Aufruf sofort; ist er "ok",
+ * bleiben alle Aufrufe zusammen innerhalb der Frist ($sekunden ab jetzt).
+ * Der Hintergrundvorgang setzt nichts - dort gilt wie bisher die Frist je
+ * Aufruf. Rueckgabe: array('lage' => ..., 'bis' => Unixzeit oder 0).
+ */
+function mt_docker_seite($lage = null, $sekunden = null)
+{
+    static $s = array('lage' => '', 'bis' => 0);
+    if ($lage !== null) {
+        $s['lage'] = (string) $lage;
+        $s['bis'] = $sekunden !== null ? time() + max(1, (int) $sekunden) : 0;
+    }
+    return $s;
+}
+
+/** 'laeuft', 'gestoppt', 'fehlt' oder 'kein_docker'. $name: ein anderer
+ *  Container als der eingestellte (0.9.35, Nr. 5/7). */
+function mt_container_zustand($name = null)
 {
     $cfg = mt_config();
-    $name = mt_container_name($cfg);
+    if ($name === null) {
+        $name = mt_container_name($cfg);
+    }
     if (!mt_docker_da()) {
         return 'kein_docker';
     }
-    list($ok, $aus) = mt_docker('inspect -f {{.State.Running}} ' . escapeshellarg($name));
+    // 0.9.35 (Nr. 9): Docker auf dieser Seite schon als gestoert gemessen.
+    $seite = mt_docker_seite();
+    if ($seite['lage'] !== '' && $seite['lage'] !== 'ok') {
+        return 'kein_docker';
+    }
+    list($ok, $aus) = mt_docker('inspect --type container -f {{.State.Running}} -- ' . escapeshellarg($name));
     if (!$ok) {
-        return 'fehlt';
+        /* 0.9.35 (Nr. 9): "fehlt" nur, wenn Docker das sagt. Eine abgelaufene
+         * Frist oder ein anderer Fehler ist keine Aussage ueber den Container. */
+        return stripos($aus, 'no such') !== false ? 'fehlt' : 'kein_docker';
     }
     return trim($aus) === 'true' ? 'laeuft' : 'gestoppt';
 }
@@ -1832,7 +2053,14 @@ function mt_container_name($cfg = null)
         $cfg = mt_config();
     }
     $n = trim((string) $cfg['container_name']);
-    return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/', $n) ? $n : 'matter-server';
+    // 0.9.35 (Nr. 1): Rueckfall wie die neue Vorgabe.
+    return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$/', $n) ? $n : 'matter2lox-server';
+}
+
+/** 0.9.35 (Nr. 5): das Label, an dem ein eigener Container erkannt wird. */
+function mt_container_label()
+{
+    return 'de.loxberry.plugin.folder=' . mt_paths()['plugin'];
 }
 
 /* Das Abbild an EINER Stelle beurteilen.
@@ -1852,46 +2080,268 @@ function mt_container_abbild($cfg = null)
         ? $abbild : 'ghcr.io/matter-js/python-matter-server:stable';
 }
 
-/** Die vollstaendige Aufrufzeile - auch fuer die Anzeige in der Oberflaeche. */
-function mt_container_befehl($cfg = null)
+/**
+ * 0.9.35 (Nr. 2 und 5): die Soll-Gestalt des eigenen Containers, aus der
+ * mt_container_befehl() die Aufrufzeile baut und gegen die
+ * mt_container_abweichung() den laufenden Container haelt. EINE Quelle fuer
+ * beides - sonst meldete der Vergleich Abweichungen, die die Aufrufzeile gar
+ * nicht erzeugt.
+ *
+ * Neu gegenueber 0.9.34:
+ *   --listen-address 127.0.0.1  bei server_lokal=1 und server_host 127.0.0.1
+ *                               oder localhost: die WebSocket-Schnittstelle
+ *                               (steuert JEDES Geraet) ist dann nicht mehr
+ *                               aus dem ganzen Heimnetz erreichbar.
+ *   --port <server_port>        nur wenn er nicht 5580 ist. Bewusst nicht
+ *                               immer: so bleibt die Aufrufzeile bestehender
+ *                               Anlagen gleich, und der Vergleich meldet
+ *                               nach dem Update nur, was sich wirklich
+ *                               aendert.
+ *   --primary-interface <x>     wenn eingetragen.
+ *   --bluetooth-adapter N und -v /run/dbus nur, wenn /run/dbus da ist UND
+ *                               /sys/class/bluetooth/hci<N> - bis 0.9.34
+ *                               genuegte /run/dbus, und ein Rechner ohne
+ *                               diesen Adapter bekam einen Server, der beim
+ *                               Start nach einem fehlenden Adapter fragt.
+ * Rueckgabe: array(name, abbild, label, mounts (Quelle => Ziel), args).
+ */
+function mt_container_soll($cfg = null)
 {
     if ($cfg === null) {
         $cfg = mt_config();
     }
     $p = mt_paths();
-    $name = mt_container_name($cfg);
-    $abbild = mt_container_abbild($cfg);
-    $bt = (int) $cfg['bluetooth_adapter'];
+    $bt = is_numeric($cfg['bluetooth_adapter']) ? (int) $cfg['bluetooth_adapter'] : 0;
     $bt = ($bt >= 0 && $bt <= 9) ? $bt : 0;
-    $daten = $p['fabric'];
+    $mounts = array($p['fabric'] => '/data');
+    /* 0.9.35 (Nr. E5): die Bauart haengt am Abbild. matterjs-server (laut
+     * seiner Anleitung docs/cli.md und docs/docker.md) kennt
+     * --paa-root-cert-dir nicht, waehlt die Fabric-ID ab Werk zufaellig
+     * (python-matter-server: 1) und laeuft ohne root (USER 1000:1000) - er
+     * braucht Schreibrecht auf /data. Deshalb: ohne --paa-root-cert-dir, mit
+     * --fabricid 1, und --user mit Eigentuemer und Gruppe des Fabric-Ordners
+     * (kein chown als root noetig). */
+    $abbild = mt_container_abbild($cfg);
+    $bauart = mt_abbild_bauart($abbild);
+    $user = '';
+    if ($bauart === 'matterjs') {
+        $args = array('--storage-path', '/data');
+        $user = mt_fabric_benutzer();
+    } else {
+        $args = array('--storage-path', '/data', '--paa-root-cert-dir', '/data/credentials');
+    }
+    $host = strtolower(trim((string) $cfg['server_host']));
+    if ((string) $cfg['server_lokal'] === '1' && in_array($host, array('127.0.0.1', 'localhost'), true)) {
+        $args[] = '--listen-address';
+        $args[] = '127.0.0.1';
+    }
+    $port = is_numeric($cfg['server_port']) ? (int) $cfg['server_port'] : 5580;
+    if ($port !== 5580 && $port >= 1 && $port <= 65535) {
+        $args[] = '--port';
+        $args[] = (string) $port;
+    }
+    $pi = trim((string) $cfg['primary_interface']);
+    $tm = mt_textmuster();
+    if ($pi !== '' && preg_match($tm['primary_interface'], $pi)) {
+        $args[] = '--primary-interface';
+        $args[] = $pi;
+    }
+    if (mt_bluetooth_da($bt)) {
+        // Die Vorgabe-Befehlszeile des Abbilds muss vollstaendig wiederholt
+        // werden, sobald man etwas anhaengt - so steht es in der Anleitung.
+        $mounts['/run/dbus'] = '/run/dbus';
+        $args[] = '--bluetooth-adapter';
+        $args[] = (string) $bt;
+    }
+    if ($bauart === 'matterjs') {
+        $args[] = '--fabricid';
+        $args[] = '1';
+    }
+    return array(
+        'name'   => mt_container_name($cfg),
+        'abbild' => $abbild,
+        'bauart' => $bauart,
+        'user'   => $user,
+        'label'  => mt_container_label(),
+        'mounts' => $mounts,
+        'args'   => $args,
+    );
+}
 
+/** 0.9.35 (Nr. E5): 'matterjs' fuer ein matterjs-server-Abbild, sonst 'python'. */
+function mt_abbild_bauart($abbild)
+{
+    return strpos((string) $abbild, 'matterjs-server') !== false ? 'matterjs' : 'python';
+}
+
+/** 0.9.35 (Nr. E5): die beiden Abbilder fuer den Umstieg und den Rueckweg. */
+function mt_abbild_vorgabe($bauart)
+{
+    return $bauart === 'matterjs' ? 'ghcr.io/matter-js/matterjs-server:stable'
+                                  : 'ghcr.io/matter-js/python-matter-server:stable';
+}
+
+/**
+ * 0.9.35 (Nr. E5): uid:gid fuer --user beim matterjs-server - Eigentuemer und
+ * Gruppe des Fabric-Ordners. Gibt es ihn noch nicht, legt ihn das Neuanlegen
+ * als dieser Prozess an (mkdir 0700); dann dessen Kennungen.
+ */
+function mt_fabric_benutzer()
+{
+    $f = mt_fabric_pfad();
+    if (is_dir($f)) {
+        $u = @fileowner($f);
+        $g = @filegroup($f);
+        if ($u !== false && $g !== false) {
+            return (int) $u . ':' . (int) $g;
+        }
+    }
+    $u = function_exists('posix_geteuid') ? posix_geteuid() : getmyuid();
+    $g = function_exists('posix_getegid') ? posix_getegid() : getmygid();
+    return (int) $u . ':' . (int) $g;
+}
+
+/** 0.9.35 (Nr. 2): D-Bus da UND der Adapter hci<N> da? */
+function mt_bluetooth_da($nr)
+{
+    return is_dir('/run/dbus') && file_exists('/sys/class/bluetooth/hci' . (int) $nr);
+}
+
+/** Die vollstaendige Aufrufzeile - auch fuer die Anzeige in der Oberflaeche.
+ *  $name: ein anderer Name als der eingestellte (0.9.35, Nr. 6: das Neuanlegen
+ *  legt unter dem eingestellten Namen an; der Parameter bleibt fuer Aufrufer). */
+function mt_container_befehl($cfg = null, $name = null)
+{
+    $s = mt_container_soll($cfg);
     $zeile = 'run -d'
-        . ' --name ' . escapeshellarg($name)
+        . ' --name ' . mt_sh_arg($name !== null ? $name : $s['name'])
         . ' --restart=unless-stopped'
         /* I3 (Durchgang 30.09.2026, Entscheidung 9 sinngemaess): das Label
          * sagt, dass DIESES Plugin den Container betreibt. Nur einen solchen
          * entfernt die Deinstallation; bis 0.9.30 entfernte sie jeden
          * Container mit dem eingestellten Namen - auch einen eigenen
          * Matter-Server des Anwenders (gemessen, Bericht installer I3). */
-        . ' --label ' . escapeshellarg('de.loxberry.plugin.folder=' . $p['plugin'])
+        . ' --label ' . mt_sh_arg($s['label'])
         . ' --security-opt apparmor=unconfined'
         . ' --network=host'
-        . ' -v ' . escapeshellarg($daten . ':/data');
-    if (is_dir('/run/dbus')) {
-        $zeile .= ' -v /run/dbus:/run/dbus:ro';
+        // 0.9.35 (Nr. E5): matterjs-server laeuft als Eigentuemer der Fabric.
+        . ($s['user'] !== '' ? ' --user ' . mt_sh_arg($s['user']) : '');
+    foreach ($s['mounts'] as $quelle => $ziel) {
+        $zeile .= ' -v ' . mt_sh_arg($quelle . ':' . $ziel . ($ziel === '/run/dbus' ? ':ro' : ''));
     }
-    $zeile .= ' ' . escapeshellarg($abbild)
-        . ' --storage-path /data --paa-root-cert-dir /data/credentials';
-    if (is_dir('/run/dbus')) {
-        // Die Vorgabe-Befehlszeile des Abbilds muss vollstaendig wiederholt
-        // werden, sobald man etwas anhaengt - so steht es in der Anleitung.
-        $zeile .= ' --bluetooth-adapter ' . $bt;
+    $zeile .= ' ' . mt_sh_arg($s['abbild']);
+    foreach ($s['args'] as $a) {
+        $zeile .= ' ' . mt_sh_arg($a);
     }
     return $zeile;
 }
 
+/** 0.9.35 (Nr. 2): ein Argument fuer die Schale - unquotiert, wenn es nur aus
+ *  unbedenklichen Zeichen besteht (lesbare Aufrufzeile), sonst escapeshellarg. */
+function mt_sh_arg($a)
+{
+    $a = (string) $a;
+    return preg_match('#^[A-Za-z0-9_./:=@%+\-]+$#', $a) === 1 ? $a : escapeshellarg($a);
+}
+
+
+/**
+ * 0.9.35 (Nr. 5): Wie ist der Container $name wirklich angelegt?
+ * docker inspect als JSON. Rueckgabe: array oder null (keiner, keine Antwort).
+ */
+function mt_container_ist($name)
+{
+    list($ok, $aus) = mt_docker('inspect --type container --format ' . escapeshellarg('{{json .}}')
+                                . ' -- ' . escapeshellarg($name));
+    if (!$ok) {
+        return null;
+    }
+    $d = json_decode(trim($aus), true);
+    if (!is_array($d)) {
+        return null;
+    }
+    $mounts = array();
+    foreach ((isset($d['Mounts']) && is_array($d['Mounts']) ? $d['Mounts'] : array()) as $m) {
+        if (isset($m['Source'], $m['Destination'])) {
+            $mounts[(string) $m['Source']] = (string) $m['Destination'];
+        }
+    }
+    $labels = isset($d['Config']['Labels']) && is_array($d['Config']['Labels']) ? $d['Config']['Labels'] : array();
+    return array(
+        'name'    => ltrim(isset($d['Name']) ? (string) $d['Name'] : '', '/'),
+        'abbild'  => isset($d['Config']['Image']) ? (string) $d['Config']['Image'] : '',
+        'label'   => isset($labels['de.loxberry.plugin.folder'])
+                     ? 'de.loxberry.plugin.folder=' . $labels['de.loxberry.plugin.folder'] : '',
+        'mounts'  => $mounts,
+        /* Config.Cmd ist genau das, was hinter dem Abbild auf der Aufrufzeile
+         * stand (es ersetzt das CMD des Abbilds); Args kaeme nach dem
+         * Einstiegspunkt und haengt vom Abbild ab. */
+        'args'    => isset($d['Config']['Cmd']) && is_array($d['Config']['Cmd'])
+                     ? array_map('strval', $d['Config']['Cmd']) : array(),
+        'netz'    => isset($d['HostConfig']['NetworkMode']) ? (string) $d['HostConfig']['NetworkMode'] : '',
+        // 0.9.35 (Nr. E5): --user (matterjs-server)
+        'user'    => isset($d['Config']['User']) ? (string) $d['Config']['User'] : '',
+        'laeuft'  => !empty($d['State']['Running']),
+    );
+}
+
+/**
+ * 0.9.35 (Nr. 5): Weicht der laufende Container von den Einstellungen ab?
+ * "Container-Einstellungen wirken nicht" - bis 0.9.34 aenderte Speichern nur
+ * die Konfiguration; der Container lief mit der alten Aufrufzeile weiter, und
+ * nichts sagte es. Rueckgabe: Liste der Abweichungen als Text (leer = passt),
+ * oder null, wenn sich der Container nicht lesen liess.
+ */
+function mt_container_abweichung($cfg = null, $name = null)
+{
+    $s = mt_container_soll($cfg);
+    $ist = mt_container_ist($name !== null ? $name : $s['name']);
+    if ($ist === null) {
+        return null;
+    }
+    $ab = array();
+    if ($ist['name'] !== $s['name']) {
+        $ab[] = sprintf(mt_t('EINST.AB_NAME'), $ist['name'], $s['name']);
+    }
+    if ($ist['abbild'] !== $s['abbild']) {
+        $ab[] = sprintf(mt_t('EINST.AB_ABBILD'), $ist['abbild'], $s['abbild']);
+    }
+    if ($ist['label'] !== $s['label']) {
+        $ab[] = sprintf(mt_t('EINST.AB_LABEL'), $ist['label'] !== '' ? $ist['label'] : '-', $s['label']);
+    }
+    // 0.9.35 (Nr. E5): der Benutzer zaehlt nur, wenn die Soll-Gestalt einen nennt.
+    if ($s['user'] !== '' && $ist['user'] !== $s['user']) {
+        $ab[] = sprintf(mt_t('EINST.AB_USER'), $ist['user'] !== '' ? $ist['user'] : '-', $s['user']);
+    } elseif ($s['user'] === '' && $ist['user'] !== '' && !in_array($ist['user'], array('0', 'root', '0:0'), true)) {
+        $ab[] = sprintf(mt_t('EINST.AB_USER'), $ist['user'], '-');
+    }
+    if ($ist['netz'] !== '' && $ist['netz'] !== 'host') {
+        $ab[] = sprintf(mt_t('EINST.AB_NETZ'), $ist['netz']);
+    }
+    $ist_m = array();
+    foreach ($ist['mounts'] as $q => $z) {
+        $echt = @realpath($q);
+        $ist_m[($echt !== false ? $echt : $q) . ':' . $z] = $q . ':' . $z;
+    }
+    $soll_m = array();
+    foreach ($s['mounts'] as $q => $z) {
+        $echt = @realpath($q);
+        $soll_m[($echt !== false ? $echt : $q) . ':' . $z] = $q . ':' . $z;
+    }
+    foreach (array_diff_key($soll_m, $ist_m) as $m) {
+        $ab[] = sprintf(mt_t('EINST.AB_MOUNT_FEHLT'), $m);
+    }
+    foreach (array_diff_key($ist_m, $soll_m) as $m) {
+        $ab[] = sprintf(mt_t('EINST.AB_MOUNT_ZUVIEL'), $m);
+    }
+    if ($ist['args'] !== $s['args']) {
+        $ab[] = sprintf(mt_t('EINST.AB_ARGS'), implode(' ', $ist['args']), implode(' ', $s['args']));
+    }
+    return $ab;
+}
+
 /** $was ist 'anlegen', 'start', 'stop', 'restart', 'entfernen' oder 'holen'. */
-function mt_container($was)
+function mt_container($was, $anderer = null)
 {
     /* Aus einem ausgepackten Archiv (Archivmodus in mt_paths()) wird kein
      * Container angefasst: Docker ist systemweit, und der Container heisst
@@ -1902,6 +2352,16 @@ function mt_container($was)
     }
     $cfg = mt_config();
     $name = mt_container_name($cfg);
+    /* 0.9.35 (Nr. 7): ein anderer eigener Container (Label dieses Plugins,
+     * anderer Name) - nur anhalten, starten und entfernen, mit derselben
+     * Eigentumspruefung. */
+    if ($anderer !== null) {
+        if (!in_array($was, array('start', 'stop', 'entfernen'), true)
+            || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,90}$/', (string) $anderer)) {
+            return array(0, mt_t('EINST.FEHLER_CONTAINERBEFEHL'));
+        }
+        $name = (string) $anderer;
+    }
     $p = mt_paths();
     // Nach jedem Eingriff am Container ist die zwischengespeicherte Antwort
     // auf "nimmt jemand Verbindungen an?" hinfaellig. Sonst stuende nach dem
@@ -1915,8 +2375,8 @@ function mt_container($was)
                 @mkdir($p['fabric'], 0700, true);
             }
             if (mt_container_zustand() !== 'fehlt') {
-                return array(0, 'Es gibt bereits einen Container mit dem Namen ' . $name
-                              . '. Erst entfernen oder einen anderen Namen waehlen.');
+                // 0.9.35 (Nr. 10): Sprachschluessel statt fester deutscher Satz.
+                return array(0, sprintf(mt_t('EINST.CONTAINER_SCHON_DA'), $name));
             }
             return mt_docker(mt_container_befehl($cfg));
         case 'start':
@@ -1932,7 +2392,7 @@ function mt_container($was)
              * seit dem Nachtrag (ENTSCHEIDUNGEN Nr. 15): sonst startete der
              * Knopf einen fremden, bewusst angehaltenen Container. Nicht zu
              * klaeren heisst: nichts anfassen, den Befehl zum Abtippen nennen. */
-            list($eigen, $grund) = mt_container_eigen($cfg);
+            list($eigen, $grund) = mt_container_eigen($cfg, $name);
             if ($eigen === 2) {
                 return array(0, sprintf(mt_t('EINST.CONTAINER_KEINER'), $name));
             }
@@ -1953,7 +2413,8 @@ function mt_container($was)
             // Nur der Container, NIE der Datenordner: darin liegt die Fabric.
             return mt_docker('rm -f ' . escapeshellarg($name));
     }
-    return array(0, 'Unbekannter Containerbefehl.');
+    // 0.9.35 (Nr. 10): Sprachschluessel statt fester Satz.
+    return array(0, mt_t('EINST.FEHLER_CONTAINERBEFEHL'));
 }
 
 /**
@@ -1965,7 +2426,7 @@ function mt_container($was)
  * keine Antwort, Pruefdatei fehlt). Nur 1 erlaubt anhalten, neu starten und
  * entfernen; alles andere faellt geschlossen aus.
  */
-function mt_container_eigen($cfg = null)
+function mt_container_eigen($cfg = null, $name = null)
 {
     if ($cfg === null) {
         $cfg = mt_config();
@@ -1975,14 +2436,73 @@ function mt_container_eigen($cfg = null)
     if (!is_file($skript)) {
         return array(-1, sprintf(mt_t('EINST.CONTAINER_PRUEFUNG_FEHLT'), $skript));
     }
+    /* 0.9.35 (Nr. 9): Docker auf dieser Seite schon als gestoert gemessen -
+     * dann nicht fragen; und die Frist des Seitenaufrufs gilt auch hier
+     * (MT_DOCKER_FRIST je docker-Aufruf im Skript, Standard 30 s). */
+    $seite = mt_docker_seite();
+    if ($seite['lage'] !== '' && $seite['lage'] !== 'ok') {
+        return array(-1, mt_t('EINST.DOCKER_GESPERRT'));
+    }
+    $je = 30;
+    $gesamt = 100;
+    if ($seite['bis'] > 0) {
+        $gesamt = $seite['bis'] - time();
+        if ($gesamt < 1) {
+            return array(-1, mt_t('EINST.DOCKER_SEITENFRIST'));
+        }
+        $je = max(1, (int) floor($gesamt / 3));
+    }
     $eigen = (int) (isset($cfg['eigener_container']) && (string) $cfg['eigener_container'] === '1');
+    /* 0.9.35 (Nr. 3): vierter Wert = LoxBerry-Wurzel, damit das Skript die
+     * Quelle des /data-Mounts gegen den Fabric-Pfad halten kann. */
     $aus = array();
     $rc = 0;
-    @exec('timeout -k 5 100 bash ' . escapeshellarg($skript) . ' ' . escapeshellarg($p['plugin'])
-          . ' ' . escapeshellarg(mt_container_name($cfg)) . ' ' . $eigen . ' 2>&1', $aus, $rc);
+    @exec('env MT_DOCKER_FRIST=' . (int) $je . ' timeout -k 2 ' . (int) $gesamt . ' bash ' . escapeshellarg($skript)
+          . ' ' . escapeshellarg($p['plugin'])
+          . ' ' . escapeshellarg($name !== null ? (string) $name : mt_container_name($cfg)) . ' ' . $eigen
+          . ($p['home'] !== '' ? ' ' . escapeshellarg($p['home']) : '') . ' 2>&1', $aus, $rc);
     $satz = trim(implode(' ', $aus));
     $stand = array(0 => 1, 1 => 0, 2 => 2);
     return array(isset($stand[$rc]) ? $stand[$rc] : -1, $satz !== '' ? $satz : 'Rueckgabe ' . (int) $rc);
+}
+
+/**
+ * 0.9.35 (Nr. 5 und 7): eigene Container UNTER EINEM ANDEREN NAMEN als dem
+ * eingestellten - nach einer Aenderung von container_name, nach der neuen
+ * Vorgabe "matter2lox-server" oder bei eigener_container=0. Gefunden ueber
+ * das Label (docker ps -a --filter label=...), dazu ein Altbestand ohne Label
+ * unter dem alten Vorgabenamen "matter-server", wenn container_eigen.sh ihn
+ * als eigen erkennt (Mount-Quelle = Fabric-Pfad dieses Plugins).
+ * Umbenannte Reste eines Neuanlegens (<name>-alt-<zeit>) stehen mit drin.
+ * Rueckgabe: Liste von array(name, zustand, abbild); leer auch bei Stoerung.
+ */
+function mt_container_andere($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = mt_config();
+    }
+    $eigen_name = mt_container_name($cfg);
+    list($ok, $aus) = mt_docker('ps -a --filter ' . escapeshellarg('label=' . mt_container_label())
+                                . ' --format ' . escapeshellarg('{{.Names}}|{{.State}}|{{.Image}}'));
+    $liste = array();
+    if ($ok) {
+        foreach (explode("\n", (string) $aus) as $z) {
+            $t = explode('|', trim($z));
+            if (count($t) >= 3 && $t[0] !== '' && $t[0] !== $eigen_name
+                && preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,90}$/', $t[0])) {
+                $liste[$t[0]] = array('name' => $t[0], 'zustand' => $t[1], 'abbild' => $t[2]);
+            }
+        }
+    }
+    if ($eigen_name !== 'matter-server' && !isset($liste['matter-server'])) {
+        list($e, ) = mt_container_eigen($cfg, 'matter-server');
+        if ($e === 1) {
+            $z = mt_container_zustand('matter-server');
+            $liste['matter-server'] = array('name' => 'matter-server',
+                'zustand' => $z === 'laeuft' ? 'running' : 'exited', 'abbild' => '');
+        }
+    }
+    return array_values($liste);
 }
 
 /**
@@ -2024,16 +2544,21 @@ function mt_container_fassung($cfg = null)
  * Den Matter-Server wirklich aktualisieren.
  *
  * "Abbild holen" allein wirkt nicht: der laufende Container haengt an der
- * Kennung, mit der er angelegt wurde. Erst Entfernen und Neuanlegen bringt den
- * neuen Stand. Der Datenordner - und damit die Fabric - bleibt dabei
- * unberuehrt; er haengt am Ablageort, nicht am Container.
+ * Kennung, mit der er angelegt wurde. Erst Neuanlegen bringt den neuen Stand.
+ * Der Datenordner - und damit die Fabric - bleibt dabei unberuehrt; er haengt
+ * am Ablageort, nicht am Container.
  *
  * Gemeldet wird die WIRKUNG: die Kennung vorher und nachher. Hat sich nichts
  * geaendert, steht das ausdruecklich da, statt einen Erfolg zu behaupten.
  *
+ * 0.9.35 (Nr. 6): neu angelegt wird ueber mt_container_neu_anlegen() - mit
+ * Rueckweg und automatischer Fabric-Sicherung. Bis 0.9.34 wurde der alte
+ * Container erst entfernt und dann der neue angelegt; scheiterte das Anlegen,
+ * stand gar kein Matter-Server mehr da. Nur aus dem Hintergrundvorgang.
+ *
  * Rueckgabe: array(ok, Meldung)
  */
-function mt_container_aktualisieren()
+function mt_container_aktualisieren(array &$stand)
 {
     $cfg = mt_config();
     if (!mt_docker_da()) {
@@ -2043,14 +2568,16 @@ function mt_container_aktualisieren()
     if ($vorher['container'] === '') {
         return array(0, mt_t('EINST.M_AKT_KEIN_CONTAINER'));
     }
-    /* Matter2Lox-a1: aktualisieren heisst entfernen und neu anlegen - nur
-     * beim eigenen Container, und gefragt wird VOR dem Abbildholen. */
+    /* Matter2Lox-a1: aktualisieren heisst neu anlegen - nur beim eigenen
+     * Container, und gefragt wird VOR dem Abbildholen. */
     list($eigen, $grund) = mt_container_eigen($cfg);
     if ($eigen !== 1) {
         $n = mt_container_name($cfg);
         return array(0, mt_e(sprintf(mt_t('EINST.CONTAINER_NICHT_EIGEN'), $n, $grund,
                                      'docker rm -f ' . $n)));
     }
+    $stand['schritt'] = 'holen';
+    mt_ct_vorgang_schreiben($stand);
     list($ok, $aus) = mt_container('holen');
     if (!$ok) {
         return array(0, sprintf(mt_t('EINST.M_AKT_PULL_FEHL'), mt_e(substr($aus, 0, 300))));
@@ -2059,23 +2586,245 @@ function mt_container_aktualisieren()
     if ($gezogen['abbild'] !== '' && $gezogen['abbild'] === $vorher['container']) {
         // Nichts Neues. Den Container dafuer anzuhalten waere eine
         // Betriebsunterbrechung ohne jeden Gegenwert.
-        return array(1, sprintf(mt_t('EINST.M_AKT_UNVERAENDERT'),
-                                mt_e(substr($vorher['container'], 0, 19)),
-                                $gezogen['marke'] !== '' ? mt_e($gezogen['marke']) : '?'));
+        $satz = sprintf(mt_t('EINST.M_AKT_UNVERAENDERT'),
+                        mt_e(substr($vorher['container'], 0, 19)),
+                        $gezogen['marke'] !== '' ? mt_e($gezogen['marke']) : '?');
+        // 0.9.35 (Nr. 5): weichen die Einstellungen ab, wird das gesagt.
+        $ab = mt_container_abweichung($cfg);
+        if ($ab) {
+            $satz .= ' ' . mt_t('EINST.M_AKT_ABWEICHUNG');
+        }
+        return array(1, $satz);
     }
-    list($ok, $aus) = mt_container('entfernen');
+    list($ok, $satz) = mt_container_neu_anlegen($cfg, mt_container_name($cfg), $stand,
+                                                (int) $stand['start'] + mt_ct_frist());
     if (!$ok) {
-        return array(0, sprintf(mt_t('EINST.M_AKT_RM_FEHL'), mt_e(substr($aus, 0, 300))));
-    }
-    list($ok, $aus) = mt_container('anlegen');
-    if (!$ok) {
-        return array(0, sprintf(mt_t('EINST.M_AKT_RUN_FEHL'), mt_e(substr($aus, 0, 300))));
+        return array(0, $satz);
     }
     $nachher = mt_container_fassung($cfg);
     return array(1, sprintf(mt_t('EINST.M_AKT_OK'),
                             mt_e(substr($vorher['container'], 0, 19)),
                             mt_e(substr($nachher['container'], 0, 19)),
-                            $nachher['marke'] !== '' ? mt_e($nachher['marke']) : '?'));
+                            $nachher['marke'] !== '' ? mt_e($nachher['marke']) : '?') . ' ' . $satz);
+}
+
+/**
+ * 0.9.35 (Nr. 5): "Einstellungen uebernehmen (Container neu anlegen)" - nur
+ * aus dem Hintergrundvorgang. Neu angelegt wird der eigene Container unter
+ * dem eingestellten Namen; gibt es den nicht, aber einen eigenen unter einem
+ * anderen Namen (container_name geaendert, Label dieses Plugins), wird DER
+ * abgeloest. Fehlt das Abbild, wird es vorher geholt. Rueckgabe array(ok, html).
+ */
+function mt_ct_uebernehmen(array &$stand)
+{
+    if (mt_paths()['home'] === '') {
+        return array(0, mt_t('EINST.ARCHIV_VERWEIGERT'));
+    }
+    $cfg = mt_config();
+    if ((string) $cfg['eigener_container'] !== '1') {
+        return array(0, mt_t('EINST.V_NUR_EIGENER'));
+    }
+    $ende = (int) $stand['start'] + mt_ct_frist();
+    list($lage, $lsatz) = mt_docker_lage(20);
+    if ($lage !== 'ok') {
+        $h = mt_docker_hinweis($lage);
+        return array(0, $h !== '' ? $h : mt_e($lsatz));
+    }
+    $name = mt_container_name($cfg);
+    list($eigen, $grund) = mt_container_eigen($cfg);
+    if ($eigen === 1) {
+        $alt = $name;
+    } elseif ($eigen === 2) {
+        $andere = mt_container_andere($cfg);
+        $alt = '';
+        foreach ($andere as $a) {
+            // Ein laufender geht vor; Reste eines Neuanlegens (-alt-) nie.
+            if (strpos($a['name'], '-alt-') !== false) {
+                continue;
+            }
+            if ($alt === '' || $a['zustand'] === 'running') {
+                $alt = $a['name'];
+            }
+        }
+        if ($alt === '') {
+            return array(0, sprintf(mt_t('EINST.U_NICHTS'), mt_e($name)));
+        }
+    } else {
+        return array(0, mt_e(sprintf(mt_t('EINST.CONTAINER_NICHT_EIGEN'), $name, $grund,
+                                     'docker rm -f ' . $name)));
+    }
+    $abbild = mt_container_abbild($cfg);
+    list($da, ) = mt_docker('image inspect ' . escapeshellarg($abbild), 30);
+    if (!$da) {
+        $rest = $ende - time();
+        if ($rest < 5) {
+            return array(0, sprintf(mt_t('EINST.E_FRIST'), mt_ct_frist() / 60, mt_e(mt_t('EINST.V_S_HOLEN'))));
+        }
+        $stand['schritt'] = 'holen';
+        mt_ct_vorgang_schreiben($stand);
+        list($ok, $aus) = mt_docker('pull ' . escapeshellarg($abbild), $rest);
+        if (!$ok) {
+            return array(0, sprintf(mt_t('EINST.E_PULL_FEHL'), mt_e($abbild))
+                            . ' <span class="sm-mono">' . mt_e(substr($aus, 0, 400)) . '</span>');
+        }
+    }
+    return mt_container_neu_anlegen($cfg, $alt, $stand, $ende);
+}
+
+/**
+ * 0.9.35 (Nr. E5): alle Matter-Server-Container dieses Rechners (Abbild
+ * python-matter-server oder matterjs-server), mit Bauart, Zustand und der
+ * Angabe, ob ihr /data die Fabric DIESES Plugins ist. Beide Bauarten duerfen
+ * nie gleichzeitig auf demselben Datenordner laufen (matterjs-server schreibt
+ * die Python-Dateien mit). Rueckgabe: Liste array(name, abbild, bauart,
+ * laeuft, eigene_fabric); leer, wenn Docker nicht antwortet.
+ */
+function mt_container_bauarten()
+{
+    list($ok, $aus) = mt_docker('ps -a --format ' . escapeshellarg('{{.Names}}|{{.Image}}|{{.State}}'));
+    if (!$ok) {
+        return array();
+    }
+    $fabric = mt_fabric_pfad();
+    $fecht = @realpath($fabric);
+    $liste = array();
+    foreach (explode("\n", (string) $aus) as $z) {
+        $t = explode('|', trim($z));
+        if (count($t) < 3 || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,90}$/', $t[0])
+            || (strpos($t[1], 'python-matter-server') === false && strpos($t[1], 'matterjs-server') === false)) {
+            continue;
+        }
+        list($mok, $quelle) = mt_docker('inspect --type container -f '
+            . escapeshellarg('{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')
+            . ' -- ' . escapeshellarg($t[0]), 10);
+        $quelle = trim((string) $quelle);
+        $qecht = $quelle !== '' ? @realpath($quelle) : false;
+        $liste[] = array('name' => $t[0], 'abbild' => $t[1], 'bauart' => mt_abbild_bauart($t[1]),
+                         'laeuft' => $t[2] === 'running',
+                         'eigene_fabric' => $mok && $quelle !== ''
+                             && ($quelle === $fabric || ($qecht !== false && $qecht === $fecht)));
+    }
+    return $liste;
+}
+
+/**
+ * 0.9.35 (Nr. 6): den eigenen Container MIT RUECKWEG neu anlegen.
+ *
+ *  1. den alten ($alt) umbenennen in <alt>-alt-<zeit> und anhalten,
+ *  2. die Fabric sichern (mt_fabric_auto_sichern(), bei angehaltenem
+ *     Container - sonst wird mitten in offene Dateien gepackt); scheitert
+ *     das, wird NICHT neu angelegt,
+ *  3. den neuen unter dem eingestellten Namen anlegen (docker run -d startet
+ *     ihn) und 8 s beobachten: laeuft er und ist nicht neu gestartet worden?
+ *  4. erst dann den alten entfernen. Sonst: den neuen entfernen, den alten
+ *     zurueckbenennen und starten.
+ * Die Fabric selbst wird nie angefasst. Rueckgabe array(ok, html).
+ */
+function mt_container_neu_anlegen($cfg, $alt, array &$stand, $ende)
+{
+    $p = mt_paths();
+    $name = mt_container_name($cfg);
+    $rest_name = substr((string) $alt, 0, 60) . '-alt-' . date('YmdHis');
+    mt_erreichbar_vergessen();
+
+    $stand['schritt'] = 'umbenennen';
+    mt_ct_vorgang_schreiben($stand);
+    $war_an = mt_container_zustand($alt) === 'laeuft';
+    list($ok, $aus) = mt_docker('rename ' . escapeshellarg($alt) . ' ' . escapeshellarg($rest_name), 60);
+    if (!$ok) {
+        return array(0, sprintf(mt_t('EINST.N_RENAME_FEHL'), mt_e($alt))
+                        . ' <span class="sm-mono">' . mt_e(substr($aus, 0, 300)) . '</span>');
+    }
+    mt_log('Container: ' . $alt . ' umbenannt in ' . $rest_name . ' (Rueckweg beim Neuanlegen).');
+    $stand['schritt'] = 'anhalten';
+    mt_ct_vorgang_schreiben($stand);
+    list($ok, $aus) = mt_docker('stop -t 20 ' . escapeshellarg($rest_name), 60);
+    if (!$ok) {
+        $r = mt_container_rueckweg($rest_name, $alt, $war_an, '');
+        return array(0, sprintf(mt_t('EINST.N_STOP_FEHL'), mt_e($alt))
+                        . ' <span class="sm-mono">' . mt_e(substr($aus, 0, 300)) . '</span> ' . $r);
+    }
+
+    $stand['schritt'] = 'sichern';
+    mt_ct_vorgang_schreiben($stand);
+    list($sok, $swas) = mt_fabric_auto_sichern();
+    if (!$sok) {
+        $r = mt_container_rueckweg($rest_name, $alt, $war_an, '');
+        return array(0, sprintf(mt_t('EINST.N_SICHERUNG_FEHL'), $swas) . ' ' . $r);
+    }
+    $gesichert = $swas !== '' ? sprintf(mt_t('EINST.N_GESICHERT'), mt_e(basename($swas))) : mt_t('EINST.N_NICHTS_ZU_SICHERN');
+
+    $rest = (int) $ende - time();
+    if ($rest < 15) {
+        $r = mt_container_rueckweg($rest_name, $alt, $war_an, '');
+        return array(0, sprintf(mt_t('EINST.E_FRIST'), mt_ct_frist() / 60, mt_e(mt_t('EINST.V_S_ANLEGEN'))) . ' ' . $r);
+    }
+    $stand['schritt'] = 'anlegen';
+    mt_ct_vorgang_schreiben($stand);
+    if (!is_dir($p['fabric'])) {
+        @mkdir($p['fabric'], 0700, true);
+    }
+    list($ok, $aus) = mt_docker(mt_container_befehl($cfg), $rest - 10);
+    $laeuft = $ok ? mt_container_bleibt($name, 8) : '';
+    if (!$ok || $laeuft !== '') {
+        $grund = !$ok ? substr($aus, 0, 400) : $laeuft;
+        $r = mt_container_rueckweg($rest_name, $alt, $war_an, $name);
+        return array(0, mt_t('EINST.N_NEU_FEHL') . ' <span class="sm-mono">' . mt_e($grund) . '</span> ' . $r);
+    }
+    list($ok, $aus) = mt_docker('rm -f ' . escapeshellarg($rest_name), 60);
+    mt_log('Container: neu angelegt als ' . $name . ', ' . ($ok ? 'alter (' . $rest_name . ') entfernt.'
+                                                               : 'alter (' . $rest_name . ') liess sich nicht entfernen.'));
+    if (!$ok) {
+        return array(1, sprintf(mt_t('EINST.N_OK_REST'), mt_e($name), mt_e($rest_name)) . ' ' . $gesichert);
+    }
+    return array(1, sprintf(mt_t('EINST.N_OK'), mt_e($name)) . ' ' . $gesichert);
+}
+
+/**
+ * 0.9.35 (Nr. 6): Laeuft der frisch angelegte Container nach $sekunden noch,
+ * ohne neu gestartet worden zu sein? Rueckgabe '' (ja) oder der Befund mit
+ * den letzten Zeilen seines Protokolls.
+ */
+function mt_container_bleibt($name, $sekunden = 8)
+{
+    sleep(max(1, (int) $sekunden));
+    list($ok, $aus) = mt_docker('inspect --type container -f '
+        . escapeshellarg('{{.State.Running}}|{{.RestartCount}}|{{.State.ExitCode}}') . ' -- ' . escapeshellarg($name), 30);
+    $t = explode('|', trim((string) $aus));
+    if ($ok && count($t) === 3 && $t[0] === 'true' && (int) $t[1] === 0) {
+        return '';
+    }
+    list(, $log) = mt_docker('logs --tail 15 ' . escapeshellarg($name), 30);
+    $log = preg_replace('/\x1B\[[0-9;]*[A-Za-z]/', '', (string) $log);
+    return sprintf(mt_t('EINST.N_LAEUFT_NICHT'), isset($t[0]) ? $t[0] : '?', isset($t[1]) ? (int) $t[1] : -1,
+                   isset($t[2]) ? (int) $t[2] : -1) . ' ' . substr(trim($log), -600);
+}
+
+/**
+ * 0.9.35 (Nr. 6): Rueckweg - den neuen ($neu, falls angelegt und mit unserem
+ * Label) entfernen, den alten zurueckbenennen und, wenn er lief, starten.
+ * Rueckgabe: ein Satz (HTML) ueber das Ergebnis.
+ */
+function mt_container_rueckweg($rest_name, $alt, $war_an, $neu)
+{
+    if ($neu !== '') {
+        $ist = mt_container_ist($neu);
+        if ($ist !== null && $ist['label'] === mt_container_label()) {
+            mt_docker('rm -f ' . escapeshellarg($neu), 60);
+        }
+    }
+    list($ok, $aus) = mt_docker('rename ' . escapeshellarg($rest_name) . ' ' . escapeshellarg($alt), 60);
+    if (!$ok) {
+        mt_log('Container: Rueckweg gescheitert - ' . $rest_name . ' liess sich nicht zurueckbenennen.');
+        return sprintf(mt_t('EINST.N_RUECK_FEHL'), mt_e($rest_name), mt_e($alt));
+    }
+    if ($war_an) {
+        list($ok, ) = mt_docker('start ' . escapeshellarg($alt), 60);
+        mt_log('Container: Rueckweg - ' . $alt . ' zurueckbenannt' . ($ok ? ' und gestartet.' : ', Start gescheitert.'));
+        return sprintf(mt_t($ok ? 'EINST.N_RUECK_OK' : 'EINST.N_RUECK_START_FEHL'), mt_e($alt));
+    }
+    mt_log('Container: Rueckweg - ' . $alt . ' zurueckbenannt.');
+    return sprintf(mt_t('EINST.N_RUECK_OK_AUS'), mt_e($alt));
 }
 
 /* ==================================================================
@@ -2187,11 +2936,16 @@ function mt_ct_vorgang()
         return array('zustand' => 'keiner');
     }
     $d += array('vorgang' => '', 'start' => 0, 'pid' => 0, 'meldung' => '', 'schritt' => '', 'ende' => 0);
+    /* 0.9.35 (Nr. 15): 'grund' sagt, woran ein Abbruch erkannt wurde -
+     * prozess_fort (lief, Prozess ist weg) oder nie_angelaufen. */
+    $d['grund'] = '';
     if ($d['zustand'] === 'laeuft' && !mt_ct_vorgang_prozess($d['pid'])) {
         $d['zustand'] = 'abgebrochen';
+        $d['grund'] = 'prozess_fort';
     }
     if ($d['zustand'] === 'gestartet' && time() - (int) $d['start'] > 20) {
         $d['zustand'] = 'abgebrochen';
+        $d['grund'] = 'nie_angelaufen';
     }
     return $d;
 }
@@ -2214,7 +2968,8 @@ function mt_ct_vorgang_aktiv()
  */
 function mt_ct_vorgang_starten($auftrag)
 {
-    if (!in_array($auftrag, array('einrichten', 'holen', 'aktualisieren'), true)) {
+    // 0.9.35 (Nr. 5): 'uebernehmen' = Einstellungen uebernehmen (neu anlegen).
+    if (!in_array($auftrag, array('einrichten', 'holen', 'aktualisieren', 'uebernehmen'), true)) {
         return array(0, mt_t('EINST.FEHLER_CONTAINERBEFEHL'));
     }
     $p = mt_paths();
@@ -2222,7 +2977,7 @@ function mt_ct_vorgang_starten($auftrag)
         return array(0, mt_t('EINST.ARCHIV_VERWEIGERT'));
     }
     $cfg = mt_config();
-    if ($auftrag === 'einrichten' && (string) $cfg['eigener_container'] !== '1') {
+    if (in_array($auftrag, array('einrichten', 'uebernehmen'), true) && (string) $cfg['eigener_container'] !== '1') {
         return array(0, mt_t('EINST.V_NUR_EIGENER'));
     }
     $prog = mt_ct_vorgang_programm();
@@ -2234,8 +2989,14 @@ function mt_ct_vorgang_starten($auftrag)
     }
     $sperre = @fopen($p['datadir'] . '/container_vorgang.lock', 'c');
     if ($sperre === false) {
+        // 0.9.35 (Nr. 15): gehoert die Datei root (Handstart), genuegt Lesen.
+        $sperre = @fopen($p['datadir'] . '/container_vorgang.lock', 'r');
+    }
+    if ($sperre === false) {
         return array(0, mt_t('EINST.V_DATEI'));
     }
+    /* 0.9.35 (Nr. 15): der laufende Vorgang haelt dieselbe Sperre fuer seine
+     * ganze Laufzeit (bin/container_vorgang.php) - belegt heisst "laeuft". */
     if (!flock($sperre, LOCK_EX | LOCK_NB)) {
         fclose($sperre);
         return array(0, mt_t('EINST.V_LAEUFT_SCHON'));
@@ -2294,7 +3055,13 @@ function mt_ct_vorgang_anzeige($v = null)
                                            mt_e($schritt)));
     }
     if ($z === 'abgebrochen') {
-        return array('sm-warnung', sprintf(mt_t('EINST.V_ABGEBROCHEN'), mt_e($art), mt_e($schritt)));
+        /* 0.9.35 (Nr. 15): den moeglichen Grund nennen. Der Vorgang laeuft
+         * als Kind des Webservers; ein Neustart von Apache (oder des
+         * LoxBerry) beendet ihn mit, obwohl er per setsid abgeloest ist -
+         * systemd raeumt die ganze Prozessgruppe des Dienstes ab. */
+        $g = (isset($v['grund']) && $v['grund'] === 'nie_angelaufen') ? 'EINST.V_GRUND_NIE' : 'EINST.V_GRUND_FORT';
+        return array('sm-warnung', sprintf(mt_t('EINST.V_ABGEBROCHEN'), mt_e($art), mt_e($schritt))
+                                   . ' ' . sprintf(mt_t($g), mt_e(mt_paths()['logdir'] . '/container_vorgang.err')));
     }
     if (($z === 'fertig' || $z === 'fehler') && time() - (int) $v['ende'] < 3600) {
         $wann = date('d.m.Y H:i', (int) $v['ende']);
@@ -2350,6 +3117,18 @@ function mt_ct_einrichten(array &$stand)
         // Fremd oder nicht zu klaeren: NICHTS anfassen (Entscheidung 11/15).
         return array(0, mt_e(sprintf(mt_t('EINST.CONTAINER_NICHT_EIGEN'), $name, $grund,
                                      'docker start ' . $name)));
+    }
+    /* 0.9.35 (Nr. 5): kein zweiter Container neben einem eigenen. Gibt es
+     * unter einem anderen Namen schon einen (Label dieses Plugins, oder der
+     * Altbestand "matter-server"), legt "Einrichten" nichts an - beide
+     * stuenden sonst auf demselben Port und derselben Fabric. */
+    $andere = mt_container_andere($cfg);
+    if ($andere) {
+        $namen = array();
+        foreach ($andere as $a) {
+            $namen[] = $a['name'];
+        }
+        return array(0, sprintf(mt_t('EINST.E_ANDERER'), mt_e(implode(', ', $namen)), mt_e($name)));
     }
     $abbild = mt_container_abbild($cfg);
     $geholt = '';
@@ -2423,10 +3202,13 @@ function mt_ct_vorgang_ausfuehren($auftrag)
             list($ok, $aus) = mt_container('holen');
             $satz = sprintf(mt_t($ok ? 'EINST.CONTAINER_OK' : 'EINST.CONTAINER_FEHL'), 'holen')
                   . ' <span class="sm-mono">' . mt_e(substr($aus, 0, $ok ? 200 : 800)) . '</span>';
+        } elseif ($auftrag === 'uebernehmen') {
+            // 0.9.35 (Nr. 5)
+            list($ok, $satz) = mt_ct_uebernehmen($stand);
         } else {
             $stand['schritt'] = 'aktualisieren';
             mt_ct_vorgang_schreiben($stand);
-            list($ok, $satz) = mt_container_aktualisieren();
+            list($ok, $satz) = mt_container_aktualisieren($stand);
         }
     } catch (Throwable $e) {
         $ok = 0;
@@ -2458,18 +3240,20 @@ function mt_ct_vorgang_ausfuehren($auftrag)
  *              (dienst.pid, zustand.json, loxone.json, mt_ok_endpunkt()).
  * Dazu 'docker' (Lage oder '') fuer den langen Hinweis.
  */
-function mt_ct_ampel($cfg = null)
+function mt_ct_ampel($cfg = null, $dlage = null)
 {
     if ($cfg === null) {
         $cfg = mt_config();
     }
     $adr = (string) $cfg['server_host'] . ':' . (int) $cfg['server_port'];
-    $a = array('docker' => '', 'eigen' => 0);
+    $a = array('docker' => '', 'eigen' => 0, 'andere' => array());
     // Zeile 1
     if ((string) $cfg['eigener_container'] !== '1') {
         $a['container'] = array('grau', sprintf(mt_t('EINST.A_C_EIGENER'), mt_e($adr)));
     } else {
-        list($lage, $lsatz) = mt_docker_lage(5);
+        /* 0.9.35 (Nr. 9): die Lage dieses Seitenaufrufs (index.php misst sie
+         * einmal), nicht ein zweites "docker info". */
+        list($lage, $lsatz) = is_array($dlage) ? $dlage : mt_docker_lage(5);
         $a['docker'] = $lage;
         if ($lage !== 'ok') {
             $a['container'] = array('grau', mt_e($lsatz));
@@ -2482,7 +3266,15 @@ function mt_ct_ampel($cfg = null)
                     ? array('gruen', sprintf(mt_t('EINST.A_C_LAEUFT'), mt_e($name), mt_e($grund)))
                     : array('rot', sprintf(mt_t('EINST.A_C_STEHT'), mt_e($name)));
             } elseif ($eigen === 2) {
-                $a['container'] = array('rot', sprintf(mt_t('EINST.A_C_KEINER'), mt_e($name)));
+                /* 0.9.35 (Nr. 5): ein eigener Container unter anderem Namen? */
+                $a['andere'] = mt_container_andere($cfg);
+                $namen = array();
+                foreach ($a['andere'] as $an) {
+                    $namen[] = $an['name'];
+                }
+                $a['container'] = $namen
+                    ? array('rot', sprintf(mt_t('EINST.A_C_ANDERER'), mt_e($name), mt_e(implode(', ', $namen))))
+                    : array('rot', sprintf(mt_t('EINST.A_C_KEINER'), mt_e($name)));
             } elseif ($eigen === 0) {
                 $a['container'] = array('grau', sprintf(mt_t('EINST.A_C_FREMD'), mt_e($name), mt_e($grund)));
             } else {
@@ -2938,15 +3730,132 @@ function mt_status_felder()
     );
 }
 
-/** Adresse des eigenen Status-Endpunkts. */
+/* ---------------- Token-Hilfen fuer den Endpunkt ----------------
+ *
+ * 0.9.35 (Nr. 8): ein zweites Token NUR fuer lesende Aktionen
+ * (Schluessel lesetoken, leer = keines). Wer den virtuellen Eingaengen eine
+ * Adresse gibt, gibt ihr damit nicht mehr das Recht, Tueren aufzusperren:
+ * die Eingangsvorlagen tragen das Lesetoken, sobald eines gesetzt ist, die
+ * Ausgangsvorlagen immer das Aktionstoken.
+ */
+
+/** Die Aktionen, die das Lesetoken oeffnet - an EINER Stelle. */
+function mt_lesende_aktionen()
+{
+    return array('status', 'statusalle', 'wert', 'liste', 'roh');
+}
+
+/** Das Lesetoken; '' heisst: keines eingerichtet. Ein leeres gilt nie. */
+function mt_lesetoken($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = mt_config();
+    }
+    $t = isset($cfg['lesetoken']) && is_scalar($cfg['lesetoken']) ? (string) $cfg['lesetoken'] : '';
+    return trim($t) === '' ? '' : $t;
+}
+
+/**
+ * Welches Token hat der Aufrufer vorgelegt? 'aktion', 'lesen' oder ''.
+ * Beide Vergleiche mit hash_equals (gleichbleibende Zeit). Ein leeres
+ * Aktionstoken oeffnet nichts - auch nicht ueber das Lesetoken: wer das
+ * Aktionstoken bewusst leert, schliesst den Endpunkt ganz (das fragt
+ * html/index.php vorher ab).
+ */
+function mt_token_art($cfg, $ist)
+{
+    $ist = is_string($ist) ? $ist : '';
+    $soll = isset($cfg['aktionstoken']) && is_scalar($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    if ($soll !== '' && hash_equals($soll, $ist)) {
+        return 'aktion';
+    }
+    $lese = mt_lesetoken($cfg);
+    if ($lese !== '' && hash_equals($lese, $ist)) {
+        return 'lesen';
+    }
+    return '';
+}
+
+/**
+ * Rechner (und Port) fuer die Adressen in den Loxone-Vorlagen und den
+ * Selbsttest des Endpunkts.
+ *
+ * 0.9.35 (Nr. 11): nicht mehr der Host-Kopf des Browsers. Bis 0.9.34 stand
+ * in der Vorlage, womit der Bediener die Oberflaeche geoeffnet hatte - ein
+ * Rechnername, den der Miniserver nicht aufloesen kann, "localhost" aus
+ * einem Tunnel oder die Adresse eines Reverse-Proxys. Reihenfolge:
+ *   1. loxone_adresse aus der Konfiguration, wenn gesetzt und gueltig;
+ *   2. LBSystem::get_localip(), mit Port, wenn der Webserver nicht auf 80
+ *      lauscht (nur, wenn die LoxBerry-Bibliothek geladen ist);
+ *   3. der Host-Kopf wie bisher, sonst der Rechnername.
+ * Eine IPv6-Adresse bekommt eckige Klammern; vorhandene bleiben stehen
+ * (bis 0.9.34 entfernte der Filter die Klammern und zerstoerte die Adresse).
+ */
+function mt_endpunkt_host($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = mt_config();
+    }
+    $klammern = function ($h) {
+        // Zwei oder mehr Doppelpunkte ohne Klammer: eine blanke IPv6-Adresse.
+        if (strpos($h, '[') === false && substr_count($h, ':') >= 2) {
+            return '[' . $h . ']';
+        }
+        return $h;
+    };
+    $eigen = isset($cfg['loxone_adresse']) && is_scalar($cfg['loxone_adresse'])
+        ? trim((string) $cfg['loxone_adresse']) : '';
+    if ($eigen !== '' && preg_match('/^[A-Za-z0-9.\-:\[\]]{1,80}$/', $eigen)) {
+        return $klammern($eigen);
+    }
+    $ip = '';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'get_localip')) {
+        try {
+            $ip = trim((string) LBSystem::get_localip());
+        } catch (Throwable $e) {
+            $ip = '';
+        }
+    }
+    if ($ip !== '' && preg_match('/^[0-9A-Fa-f.:]{2,45}$/', $ip)) {
+        $host = $klammern($ip);
+        $port = 0;
+        try {
+            if (function_exists('lbwebserverport')) {
+                $port = (int) lbwebserverport();
+            } elseif (class_exists('LBSystem', false) && method_exists('LBSystem', 'lbwebserverport')) {
+                $port = (int) LBSystem::lbwebserverport();
+            }
+        } catch (Throwable $e) {
+            $port = 0;
+        }
+        if ($port > 0 && $port !== 80) {
+            $host .= ':' . $port;
+        }
+        return $host;
+    }
+    // Rueckfall wie bis 0.9.34 - mit [ ] im erlaubten Zeichenvorrat.
+    $host = isset($_SERVER['HTTP_HOST']) && is_string($_SERVER['HTTP_HOST'])
+        ? preg_replace('/[^A-Za-z0-9\.\-:\[\]]/', '', $_SERVER['HTTP_HOST']) : '';
+    return $host !== '' ? $host : (gethostname() ?: 'loxberry');
+}
+
+/** Basisadresse des Endpunkts ohne /index.php: http://<rechner>/plugins/<ordner> */
+function mt_endpunkt_basis($cfg = null)
+{
+    return 'http://' . mt_endpunkt_host($cfg) . '/plugins/' . mt_paths()['plugin'];
+}
+
+/**
+ * Adresse des eigenen Status-Endpunkts.
+ * 0.9.35 (Nr. 8): lesende Aktionen tragen das Lesetoken, wenn eines gesetzt
+ * ist, alle anderen das Aktionstoken. 0.9.35 (Nr. 11): Rechner aus
+ * mt_endpunkt_host().
+ */
 function mt_endpunkt_adresse($aktion, $nummer = null)
 {
-    $p = mt_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-        : (gethostname() ?: 'loxberry');
-    return 'http://' . $host . '/plugins/' . $p['plugin']
-         . '/index.php?token=' . mt_token() . '&aktion=' . $aktion
+    $lese = in_array((string) $aktion, mt_lesende_aktionen(), true) ? mt_lesetoken() : '';
+    return mt_endpunkt_basis()
+         . '/index.php?token=' . ($lese !== '' ? $lese : mt_token()) . '&aktion=' . $aktion
          . ($nummer !== null ? '&geraet=' . (int) $nummer : '');
 }
 
@@ -3035,6 +3944,8 @@ function mt_vorlage($nummer = 1)
         'VI_matter_geraet' . (int) $nummer . '.xml',
         mt_xml_virtual_in_http(array(
             'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : ''),
+            // 0.9.35 (Nr. 8/11): Lesetoken, wenn gesetzt; Rechner aus
+            // mt_endpunkt_host().
             'address' => mt_endpunkt_adresse('status', $nummer),
             'polling' => '60',
             'comment' => 'Erzeugt vom LoxBerry-Plugin Matter to Loxone (' . date('d.m.Y') . ')',
@@ -3075,6 +3986,7 @@ function mt_vorlage_alle()
         'VI_matter_alle.xml',
         mt_xml_virtual_in_http(array(
             'title'   => 'Matter alle Geraete',
+            // 0.9.35 (Nr. 8/11): Lesetoken, wenn gesetzt.
             'address' => mt_endpunkt_adresse('statusalle'),
             'polling' => '60',
             'comment' => 'Alle Geraete in einer Datei. Erzeugt vom LoxBerry-Plugin '
@@ -3089,53 +4001,85 @@ function mt_vorlage_alle()
  * Angeboten wird nur, was das Geraet laut Cluster-Tabelle auch kann: ohne
  * OnOff kein Schaltbefehl, ohne LevelControl kein Helligkeitsregler. Ein
  * Ausgang, der ins Leere geht, ist schlimmer als keiner.
+ *
+ * 0.9.35 (Nr. 10a): je Endpunkt UND Thema ein Befehl. Bis 0.9.34 merkte
+ * sich die Vorlage je Thema nur den letzten Endpunkt ($themen[$thema] =
+ * $ep) - eine Bridge oder eine Doppelsteckdose bekam genau einen Schalter.
+ * Titel: hat das Geraet ein Thema nur auf EINEM Endpunkt, bleibt der Titel
+ * wie bisher (MATTER_<N>_<AKTION>, Schalter MATTER_<N>_EIN_AUS) - wer eine
+ * Einendpunkt-Vorlage schon eingelesen und verdrahtet hat, findet dieselben
+ * Namen wieder. Erst wenn es dasselbe Thema auf mehreren Endpunkten gibt,
+ * traegt der Titel die Endpunktnummer: MATTER_<N>_<EP>_<AKTION>.
+ * 0.9.35 (Nr. 11): Rechner aus mt_endpunkt_host(); immer das Aktionstoken
+ * (das Lesetoken oeffnet keinen Stellbefehl).
  */
 function mt_vorlage_out($nummer = 1)
 {
     $geraete = mt_geraete();
     $g = isset($geraete[(string) $nummer]) ? $geraete[(string) $nummer] : null;
     $themen = array();
-    if ($g !== null && !empty($g['endpunkte'])) {
+    if ($g !== null && !empty($g['endpunkte']) && is_array($g['endpunkte'])) {
         foreach ($g['endpunkte'] as $ep => $felder) {
-            foreach ($felder as $thema => $wert) {
-                $themen[$thema] = (string) $ep;
+            foreach ((array) $felder as $thema => $wert) {
+                $themen[(string) $thema][] = (string) $ep;
             }
         }
     }
-    $basis = mt_endpunkt_adresse('', $nummer);
     // Die Adresse des VirtualOut traegt nur Rechner und Pfad; der Rest steht
-    // je Befehl. Deshalb wird sie hier wieder zerlegt.
-    $teile = explode('/index.php?', $basis, 2);
-    $adresse = $teile[0];
+    // je Befehl.
+    $adresse = mt_endpunkt_basis();
     $frage = '/index.php?token=' . mt_token() . '&geraet=' . (int) $nummer . '&aktion=';
 
+    /* Die Endpunkte, auf denen eines der Themen vorkommt, aufsteigend. */
+    $eps = function ($liste) use ($themen) {
+        $r = array();
+        foreach ((array) $liste as $t) {
+            if (isset($themen[$t])) {
+                $r = array_merge($r, $themen[$t]);
+            }
+        }
+        $r = array_values(array_unique($r));
+        sort($r, SORT_NUMERIC);
+        return $r;
+    };
+    $text = function ($schl) {
+        return trim(strip_tags(html_entity_decode(mt_t($schl), ENT_QUOTES, 'UTF-8')));
+    };
+    /* Titel und Kommentar je Endpunkt (siehe Kopf: ohne EP bei nur einem). */
+    $kopf = function ($teil, $ep, $mehrere, $titel) use ($nummer, $text) {
+        return array(
+            'title'   => 'MATTER_' . (int) $nummer . '_' . ($mehrere ? strtoupper($ep) . '_' : '') . $teil,
+            'comment' => $text($titel) . ($mehrere ? ' - ' . sprintf($text('LOX.A_ENDPUNKT'), $ep) : ''),
+        );
+    };
+
     $cmds = array();
-    // Analogbefehl: EINE Adresse mit dem Wertplatzhalter <v.0>.
-    $wert = function ($thema, $titel, $aktion) use (&$cmds, $themen, $frage, $nummer) {
-        if (!isset($themen[$thema])) { return; }
-        $cmds[] = array(
-            'title'   => 'MATTER_' . (int) $nummer . '_' . strtoupper($aktion),
-            'comment' => trim(strip_tags(html_entity_decode(mt_t($titel), ENT_QUOTES, 'UTF-8'))),
-            'analog'  => true,
-            'on'      => $frage . $aktion . '&endpunkt=' . $themen[$thema] . '&wert=<v.0>',
-        );
+    // Analogbefehl: EINE Adresse mit dem Wertplatzhalter (<v.0> ganze Zahl,
+    // <v.1> eine Nachkommastelle).
+    $wert = function ($thema, $titel, $aktion, $platz = '<v.0>') use (&$cmds, $eps, $kopf, $frage) {
+        $liste = $eps($thema);
+        foreach ($liste as $ep) {
+            $c = $kopf(strtoupper($aktion), $ep, count($liste) > 1, $titel);
+            $c['analog'] = true;
+            $c['on'] = $frage . $aktion . '&endpunkt=' . $ep . '&wert=' . $platz;
+            $cmds[] = $c;
+        }
     };
-    // Schaltbefehl: zwei Adressen. Die Aktionen heissen 'ein' und 'aus' -
-    // genau so stehen sie in der Weissliste von webfrontend/html/index.php.
-    // Ein erfundenes 'schalten&wert=1' wuerde dort mit UNBEKANNTE_AKTION
-    // abgewiesen, und in Loxone sieht man davon nichts.
-    $schalter = function ($thema, $titel) use (&$cmds, $themen, $frage, $nummer) {
-        if (!isset($themen[$thema])) { return; }
-        $ep = $themen[$thema];
-        $cmds[] = array(
-            'title'   => 'MATTER_' . (int) $nummer . '_EIN_AUS',
-            'comment' => trim(strip_tags(html_entity_decode(mt_t($titel), ENT_QUOTES, 'UTF-8'))),
-            'analog'  => false,
-            'on'      => $frage . 'ein&endpunkt=' . $ep,
-            'off'     => $frage . 'aus&endpunkt=' . $ep,
-        );
+    // Schaltbefehl: zwei Adressen. Die Aktionen stehen genau so in der
+    // Weissliste von webfrontend/html/index.php - ein erfundenes
+    // 'schalten&wert=1' wuerde dort mit UNBEKANNTE_AKTION abgewiesen, und in
+    // Loxone sieht man davon nichts.
+    $digital = function ($thema, $titel, $teil, $ein, $aus) use (&$cmds, $eps, $kopf, $frage) {
+        $liste = $eps($thema);
+        foreach ($liste as $ep) {
+            $c = $kopf($teil, $ep, count($liste) > 1, $titel);
+            $c['analog'] = false;
+            $c['on'] = $frage . $ein . '&endpunkt=' . $ep;
+            $c['off'] = $frage . $aus . '&endpunkt=' . $ep;
+            $cmds[] = $c;
+        }
     };
-    $schalter('schalter',             'LOX.A_SCHALTEN');
+    $digital('schalter',              'LOX.A_SCHALTEN',       'EIN_AUS', 'ein', 'aus');
     $wert('helligkeit',               'LOX.A_HELLIGKEIT',     'helligkeit');
     $wert('farbtemperatur_mired',     'LOX.A_FARBTEMPERATUR', 'farbtemperatur');
     // Farbton und Saettigung als zwei getrennte Analogbefehle: ein
@@ -3143,10 +4087,23 @@ function mt_vorlage_out($nummer = 1)
     // Ausfuhren dieser Anlage bei Helligkeit und Kelvin auch.
     $wert('farbton_roh',              'LOX.A_FARBTON',        'farbton');
     $wert('saettigung',               'LOX.A_SAETTIGUNG',     'saettigung');
+    // 0.9.35 (Nr. 10c): der Ausgang des Loxone-Lichtbausteins (RGB als
+    // BBBGGGRRR oder Lumitech 20bbbtttt) in EINEM Analogbefehl - fuer jede
+    // Leuchte mit Farbtemperatur oder Farbe. Der Dienst zerlegt den Wert.
+    $wert(array('farbtemperatur_mired', 'farbton_roh', 'farbe_x'),
+                                      'LOX.A_LOXFARBE',       'loxfarbe');
     $wert('position',                 'LOX.A_ROLLO',          'rollo');
-    $wert('soll_heizen',              'LOX.A_SOLL_HEIZEN',    'soll_heizen');
-    $wert('soll_kuehlen',             'LOX.A_SOLL_KUEHLEN',   'soll_kuehlen');
+    $wert('lamelle',                  'LOX.A_LAMELLE',        'lamelle');
+    // 0.9.35 (Nr. 10b): Sollwerte mit einer Nachkommastelle - mit <v.0>
+    // kamen 21,5 Grad als 22 an.
+    $wert('soll_heizen',              'LOX.A_SOLL_HEIZEN',    'soll_heizen', '<v.1>');
+    $wert('soll_kuehlen',             'LOX.A_SOLL_KUEHLEN',   'soll_kuehlen', '<v.1>');
+    $wert('betriebsart',              'LOX.A_BETRIEBSART',    'betriebsart');
     $wert('luefter_soll',             'LOX.A_LUEFTER',        'luefter');
+    // 0.9.35 (Nr. 10c): Schloss als Digitalausgang, Ein = sperren, Aus =
+    // entsperren. Wirkt nur mit dem eigenen Haken schloss_ein (der Kommentar
+    // sagt es); die Schlossbremse im Endpunkt gilt auch hier.
+    $digital('schloss',               'LOX.A_SCHLOSS',        'SCHLOSS', 'sperren', 'entsperren');
 
     return array(
         'VQ_matter_geraet' . (int) $nummer . '.xml',
@@ -3344,8 +4301,24 @@ function mt_zahlgrenzen()
 /** Die Haken der Konfiguration - dieselbe Liste wie HAKEN im Dienst. */
 function mt_haken()
 {
+    // 0.9.35 (Nr. 1): server_lokal neu im Haken-Satz (Vertrag, HAKEN im Dienst).
     return array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein',
-                 'tuer_haus');
+                 'tuer_haus', 'server_lokal');
+}
+
+/**
+ * 0.9.35 (Nr. 1): die Muster der neuen Textfelder an EINER Stelle -
+ * Formular (htmlauth/index.php) und Zurueckspielen (mt_wert_pruefen) lesen
+ * beide hier. Werte laut Vertrag.
+ */
+function mt_textmuster()
+{
+    return array(
+        'primary_interface' => '/^[A-Za-z0-9_.\-]{0,15}$/',
+        'lesetoken'         => '/^[A-Za-z0-9_.\-]{0,64}$/',
+        'loxone_adresse'    => '/^[A-Za-z0-9.\-:\[\]]{0,80}$/',
+        'anlern_ip'         => '/^[0-9A-Fa-f:.]{2,45}$/',
+    );
 }
 
 /**
@@ -3408,6 +4381,12 @@ function mt_wert_pruefen($schluessel, $wert)
          * Klammergruppen, die den Port herausloesen. */
         'thread_br'         => '#^(\[[0-9A-Fa-f:]{2,45}\]|[A-Za-z0-9][A-Za-z0-9.\-]{0,80})(:[0-9]{1,5})?$|^$#',
     );
+    // 0.9.35 (Nr. 1): primary_interface, lesetoken, loxone_adresse.
+    foreach (mt_textmuster() as $tk => $tm) {
+        if ($tk !== 'anlern_ip') {
+            $muster[$tk] = $tm;
+        }
+    }
     /* Nr. 19 (B-Nachzug 01.10.2026): ein Praefix nur aus Schraegstrichen
      * ergaebe nach dem Abschneiden ein leeres Praefix, und Dienst wie
      * Oberflaeche naehmen still die Vorgabe "matter" - dieselbe Regel wie im
@@ -3658,15 +4637,19 @@ function mt_praefix_merken($liste)
  *
  * Rueckgabe: array(ok, Pfad oder Meldung, Zahl der Dateien im Archiv)
  */
-function mt_fabric_packen()
+function mt_fabric_packen($ziel = null)
 {
     $p = mt_paths();
     $quelle = mt_fabric_pfad();
-    $ordner = $p['datadir'];
+    /* 0.9.35 (Nr. 6): $ziel = fester Pfad (automatische Sicherung), sonst wie
+     * bisher eine Datei im Datenordner, die der Aufrufer ausliefert. */
+    $ordner = $ziel !== null ? dirname($ziel) : $p['datadir'];
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
         return array(0, sprintf(mt_t('EINST.M_FABRIC_TAR_FEHL'), -1, mt_e($ordner)), 0);
     }
-    $ziel = $ordner . '/fabric_export.' . getmypid() . '.tar.gz';
+    if ($ziel === null) {
+        $ziel = $ordner . '/fabric_export.' . getmypid() . '.tar.gz';
+    }
     $fehl = $ziel . '.err';
     $aus = array();
     $rc = 0;
@@ -3689,6 +4672,277 @@ function mt_fabric_packen()
         }
     }
     return array(1, $ziel, $n);
+}
+
+
+/* ==================================================================
+ * 0.9.35 (Nr. 6 und 12): automatische Fabric-Sicherungen und das
+ * Zurueckspielen einer Fabric ueber die Oberflaeche
+ *
+ * Vor JEDEM Neuanlegen des Containers (Aktualisieren, Einstellungen
+ * uebernehmen) legt mt_container_neu_anlegen() eine Sicherung an:
+ * data/plugins/<ordner>.fabric_sicherungen/fabric-<Datum>_<Zeit>.tar.gz,
+ * Ordner 0700, Dateien 0600, hoechstens drei. NEBEN dem Datenordner, aus
+ * demselben Grund wie die Fabric selbst (mt_fabric_pfad()): den Datenordner
+ * raeumt jedes Plugin-Update ab.
+ *
+ * Bis 0.9.34 ging Zurueckspielen bewusst nur von Hand ("ein Endpunkt, der ein
+ * beliebiges Archiv in den Datenordner auspackt, waere eine Hintertuer").
+ * Jetzt geht es ueber die Oberflaeche - mit den Sicherungen, die diese
+ * Hintertuer zumachen: angemeldeter Bereich, Formularmerkmal, Pflichthaken,
+ * Liste VOR dem Auspacken geprueft (nur Dateien und Ordner, nur relative
+ * Pfade, kein "..", keine Verweise), tar mit --no-same-owner, Container
+ * vorher angehalten, die bisherige Fabric bleibt als .vorher-<Zeit> liegen.
+ * ================================================================== */
+
+function mt_fabric_sicherungsordner()
+{
+    return mt_paths()['datadir'] . '.fabric_sicherungen';
+}
+
+/** Die automatischen Sicherungen, neueste zuerst: array(name, pfad, groesse, zeit). */
+function mt_fabric_sicherungen()
+{
+    $d = mt_fabric_sicherungsordner();
+    $aus = array();
+    foreach ((array) @scandir($d) as $f) {
+        $f = (string) $f;
+        if (preg_match('/^fabric-[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.tar\.gz$/', $f) && is_file($d . '/' . $f)) {
+            $aus[$f] = array('name' => $f, 'pfad' => $d . '/' . $f,
+                             'groesse' => (int) @filesize($d . '/' . $f), 'zeit' => (int) @filemtime($d . '/' . $f));
+        }
+    }
+    krsort($aus);   // der Name traegt Datum und Zeit
+    return array_values($aus);
+}
+
+/**
+ * Eine automatische Sicherung anlegen und auf $behalten Stueck kuerzen.
+ * Rueckgabe: array(ok, Pfad ('' = es gab nichts zu sichern) oder Meldung, Dateien).
+ */
+function mt_fabric_auto_sichern($behalten = 3)
+{
+    $quelle = mt_fabric_pfad();
+    $inhalt = is_dir($quelle) ? @scandir($quelle) : array();
+    if (!is_dir($quelle) || (is_array($inhalt) && count($inhalt) <= 2)) {
+        return array(1, '', 0);
+    }
+    if (!mt_tar_da()) {
+        return array(0, mt_t('EINST.M_FABRIC_KEIN_TAR'), 0);
+    }
+    $ordner = mt_fabric_sicherungsordner();
+    if (!is_dir($ordner) && !@mkdir($ordner, 0700, true) && !is_dir($ordner)) {
+        return array(0, sprintf(mt_t('EINST.FS_ORDNER'), mt_e($ordner)), 0);
+    }
+    @chmod($ordner, 0700);
+    $ziel = $ordner . '/fabric-' . date('Y-m-d_His') . '.tar.gz';
+    list($ok, $was, $n) = mt_fabric_packen($ziel);
+    if (!$ok) {
+        return array(0, $was, 0);
+    }
+    @chmod($ziel, 0600);
+    foreach (array_slice(mt_fabric_sicherungen(), max(1, (int) $behalten)) as $alt) {
+        @unlink($alt['pfad']);
+    }
+    mt_log('Fabric: automatische Sicherung ' . $ziel . ' (' . (int) $n . ' Dateien).');
+    return array(1, $ziel, $n);
+}
+
+/**
+ * Taugt dieses Archiv als Fabric? Die Liste wird VOR dem Auspacken geprueft:
+ * nur Dateien und Ordner (keine Verweise, Geraete, Pipes), nur relative
+ * Pfade, kein "..", kein Rueckstrich (tar maskiert damit Sonderzeichen),
+ * hoechstens 20000 Eintraege und 512 MB. Rueckgabe array(ok, Dateien oder Meldung).
+ */
+function mt_fabric_archiv_pruefen($archiv)
+{
+    if (!is_file($archiv)) {
+        return array(0, mt_t('EINST.FW_KEINE_DATEI'));
+    }
+    $namen = array();
+    $rc = 0;
+    @exec('LC_ALL=C timeout -k 5 60 tar -tzf ' . escapeshellarg($archiv) . ' 2>/dev/null', $namen, $rc);
+    if ($rc !== 0 || !$namen) {
+        return array(0, mt_t('EINST.FW_KEIN_TAR'));
+    }
+    $lang = array();
+    $rc = 0;
+    @exec('LC_ALL=C timeout -k 5 60 tar -tvzf ' . escapeshellarg($archiv) . ' 2>/dev/null', $lang, $rc);
+    if ($rc !== 0 || count($lang) !== count($namen)) {
+        return array(0, mt_t('EINST.FW_LISTE'));
+    }
+    if (count($namen) > 20000) {
+        return array(0, mt_t('EINST.FW_ZU_VIELE'));
+    }
+    $summe = 0;
+    $dateien = 0;
+    foreach ($namen as $i => $n) {
+        $n = (string) $n;
+        $typ = substr((string) $lang[$i], 0, 1);
+        if ($typ !== '-' && $typ !== 'd') {
+            return array(0, sprintf(mt_t('EINST.FW_TYP'), mt_e(substr($n, 0, 120))));
+        }
+        if ($n === '' || $n[0] === '/' || strpos($n, '\\') !== false
+            || preg_match('#(^|/)\.\.(/|$)#', $n) === 1) {
+            return array(0, sprintf(mt_t('EINST.FW_PFAD'), mt_e(substr($n, 0, 120))));
+        }
+        if ($typ === '-') {
+            $dateien++;
+            if (preg_match('/^\S+\s+\S+\s+([0-9]+)\s/', (string) $lang[$i], $m)) {
+                $summe += (int) $m[1];
+            }
+        }
+    }
+    if ($dateien === 0) {
+        return array(0, mt_t('EINST.FW_LEER'));
+    }
+    if ($summe > 512 * 1024 * 1024) {
+        return array(0, mt_t('EINST.FW_ZU_GROSS'));
+    }
+    return array(1, $dateien);
+}
+
+/**
+ * Eine Fabric zurueckspielen - synchron, jeder Schritt mit Frist (anhalten
+ * hoechstens 40 s je Container, auspacken 300 s, starten 60 s). Nicht,
+ * solange ein Hintergrundvorgang laeuft (dieselbe Sperre wie dort).
+ *  1. Archiv pruefen (mt_fabric_archiv_pruefen()),
+ *  2. jeden laufenden eigenen Container anhalten (eingestellter Name und
+ *     mt_container_andere()); laesst sich das nicht klaeren: abbrechen,
+ *  3. die Fabric in <fabric>.vorher-<Zeit> umbenennen,
+ *  4. auspacken (umask 077, --no-same-owner); scheitert das, kommt die
+ *     bisherige Fabric zurueck,
+ *  5. die angehaltenen Container wieder starten.
+ * Rueckgabe array(ok, html).
+ */
+function mt_fabric_wiederherstellen($archiv)
+{
+    $p = mt_paths();
+    if ($p['home'] === '') {
+        return array(0, mt_t('EINST.ARCHIV_VERWEIGERT'));
+    }
+    if (!mt_tar_da()) {
+        return array(0, mt_t('EINST.M_FABRIC_KEIN_TAR'));
+    }
+    $ziel = mt_fabric_pfad();
+    if (substr($ziel, -7) !== '.matter') {
+        return array(0, mt_t('EINST.FW_ZIEL'));
+    }
+    $sperre = @fopen($p['datadir'] . '/container_vorgang.lock', 'c');
+    if ($sperre === false) {
+        $sperre = @fopen($p['datadir'] . '/container_vorgang.lock', 'r');
+    }
+    if ($sperre === false || !flock($sperre, LOCK_EX | LOCK_NB) || mt_ct_vorgang_aktiv() !== null) {
+        if ($sperre !== false) {
+            fclose($sperre);
+        }
+        return array(0, mt_t('EINST.V_LAEUFT_SCHON'));
+    }
+    $erg = mt_fabric_wiederherstellen_gesperrt($archiv, $ziel);
+    flock($sperre, LOCK_UN);
+    fclose($sperre);
+    return $erg;
+}
+
+function mt_fabric_wiederherstellen_gesperrt($archiv, $ziel)
+{
+    list($ok, $n) = mt_fabric_archiv_pruefen($archiv);
+    if (!$ok) {
+        return array(0, $n);
+    }
+    $cfg = mt_config();
+    mt_erreichbar_vergessen();
+    // 2. laufende eigene Container anhalten
+    $angehalten = array();
+    if (mt_docker_da()) {
+        list($lage, $lsatz) = mt_docker_lage(10);
+        if ($lage !== 'ok') {
+            return array(0, sprintf(mt_t('EINST.FW_DOCKER'), mt_e($lsatz)));
+        }
+        $kandidaten = array();
+        list($eigen, $grund) = mt_container_eigen($cfg);
+        if ($eigen === -1) {
+            return array(0, sprintf(mt_t('EINST.FW_UNKLAR'), mt_e($grund)));
+        }
+        if ($eigen === 1) {
+            $kandidaten[] = mt_container_name($cfg);
+        }
+        foreach (mt_container_andere($cfg) as $a) {
+            $kandidaten[] = $a['name'];
+        }
+        foreach ($kandidaten as $k) {
+            if (mt_container_zustand($k) !== 'laeuft') {
+                continue;
+            }
+            list($sok, $saus) = mt_docker('stop -t 20 ' . escapeshellarg($k), 40);
+            if (!$sok) {
+                $r = mt_fabric_starten($angehalten);
+                return array(0, sprintf(mt_t('EINST.FW_STOP_FEHL'), mt_e($k))
+                                . ' <span class="sm-mono">' . mt_e(substr($saus, 0, 200)) . '</span> ' . $r);
+            }
+            $angehalten[] = $k;
+        }
+    }
+    // 3. umbenennen
+    $vorher = '';
+    if (file_exists($ziel)) {
+        $vorher = $ziel . '.vorher-' . date('YmdHis');
+        if (!@rename($ziel, $vorher)) {
+            $r = mt_fabric_starten($angehalten);
+            return array(0, sprintf(mt_t('EINST.FW_RENAME_FEHL'), mt_e($ziel)) . ' ' . $r);
+        }
+    }
+    // 4. auspacken
+    $fehl = dirname($ziel) . '/.fabric_auspacken.' . getmypid() . '.err';
+    $rc = 0;
+    $aus = array();
+    if (!@mkdir($ziel, 0700, true)) {
+        $rc = -1;
+    } else {
+        @exec('umask 077; LC_ALL=C timeout -k 5 300 tar -xzf ' . escapeshellarg($archiv) . ' -C ' . escapeshellarg($ziel)
+              . ' --no-same-owner --no-overwrite-dir 2>' . escapeshellarg($fehl), $aus, $rc);
+    }
+    $meld = trim((string) @file_get_contents($fehl));
+    @unlink($fehl);
+    if ($rc !== 0) {
+        if (is_dir($ziel)) {
+            @exec('rm -rf -- ' . escapeshellarg($ziel));
+        }
+        $zurueck = $vorher !== '' && @rename($vorher, $ziel);
+        $r = mt_fabric_starten($angehalten);
+        mt_log('Fabric: Zurueckspielen gescheitert (tar ' . (int) $rc . ').');
+        return array(0, sprintf(mt_t('EINST.FW_TAR_FEHL'), (int) $rc, mt_e((string) strtok($meld . "\n", "\n")))
+                        . ' ' . ($vorher === '' ? '' : mt_t($zurueck ? 'EINST.FW_ALT_ZURUECK' : 'EINST.FW_ALT_NICHT_ZURUECK'))
+                        . ' ' . $r);
+    }
+    // 5. starten
+    $r = mt_fabric_starten($angehalten);
+    mt_log('Fabric: zurueckgespielt (' . (int) $n . ' Dateien), bisherige Fabric: ' . ($vorher !== '' ? $vorher : '-') . '.');
+    return array(1, sprintf(mt_t('EINST.FW_OK'), (int) $n)
+                    . ($vorher !== '' ? ' ' . sprintf(mt_t('EINST.FW_VORHER'), mt_e($vorher)) : '') . ' ' . $r);
+}
+
+/** Die angehaltenen Container wieder starten; Rueckgabe ein Satz (HTML). */
+function mt_fabric_starten(array $namen)
+{
+    if (!$namen) {
+        return '';
+    }
+    $gut = array();
+    $schlecht = array();
+    foreach ($namen as $k) {
+        list($ok, ) = mt_docker('start ' . escapeshellarg($k), 60);
+        if ($ok) {
+            $gut[] = $k;
+        } else {
+            $schlecht[] = $k;
+        }
+    }
+    $satz = $gut ? sprintf(mt_t('EINST.FW_GESTARTET'), mt_e(implode(', ', $gut))) : '';
+    if ($schlecht) {
+        $satz .= ' ' . sprintf(mt_t('EINST.FW_START_FEHL'), mt_e(implode(', ', $schlecht)));
+    }
+    return trim($satz);
 }
 
 

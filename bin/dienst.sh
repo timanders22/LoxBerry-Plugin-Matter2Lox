@@ -318,8 +318,11 @@ starten() {
         return 1
     fi
     if ! startsperre_nehmen; then
+        # 0.9.35 (Nr. 22): Rueckgabe 4, nicht 0. Bis 0.9.34 meldete
+        # postinstall.sh daraufhin "wurde wieder gestartet", obwohl nichts
+        # gestartet wurde. 4 heisst: nichts getan, ein anderer Start laeuft.
         echo "Ein anderer Start dieses Plugins laeuft seit ueber 15 Sekunden - jetzt wird nichts gestartet."
-        return 0
+        return 4
     fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
@@ -398,6 +401,12 @@ starten() {
 }
 
 anhalten() {
+    # 0.9.35 (Nr. 21): unter der Startsperre. Bis 0.9.34 konnte ein Waechter,
+    # der den Sollmerker noch gesehen hatte und auf die Sperre wartete, nach
+    # einem "stop" starten() rufen - das legt den Sollmerker neu an, und der
+    # eben angehaltene Dienst lief wieder. Bekommt "stop" die Sperre in 15 s
+    # nicht, haelt es trotzdem an: Anhalten darf nie an einer Sperre haengen.
+    startsperre_nehmen || true
     rm -f "$SOLL"
     # ALLE eigenen Dienste, nicht nur den aus der PID-Datei. Bis 0.9.25
     # endete dieser Weg bei "laeuft nicht", sobald die PID-Datei fehlte -
@@ -498,6 +507,10 @@ case "$1" in
         # nichts - der naechste kommt in einer Minute.
         if [ "$INSTALLIERT" = "1" ] && [ -f "$SOLL" ]; then
             startsperre_nehmen || exit 0
+            # 0.9.35 (Nr. 21): nach dem Warten auf die Sperre noch einmal
+            # nachsehen - in der Zwischenzeit kann "stop" den Sollmerker
+            # entfernt haben.
+            [ -f "$SOLL" ] || exit 0
             if ! laeuft; then
                 ordner_anlegen
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
