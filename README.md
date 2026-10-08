@@ -10,6 +10,33 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.36
+
+Zwei kleine Punkte aus der Verbesserungsliste (Docker-1-E5, Matter2Lox-k1).
+Gemessen an einer Docker-Attrappe unter PHP 7.4, 8.3 und 8.5; **nicht am
+Gerät**, und der Healthcheck selbst ist nicht in einem echten Container
+gelaufen.
+
+* **Healthcheck für den Matter-Server-Container – nur, wo das Abbild keinen
+  hat.** Aus der Registry gelesen: `python-matter-server` bringt keinen mit,
+  `matterjs-server` einen eigenen (`/usr/local/bin/healthcheck.sh`, alle 60 s,
+  Startfrist 15 Minuten). Für `python-matter-server` legt das Plugin den
+  Container jetzt mit einem eigenen an: eine TCP-Verbindung mit `python3` auf
+  die WebSocket-Schnittstelle (127.0.0.1, eingestellter Port), dieselben Zeiten
+  wie beim Nachfolger. Beim `matterjs-server` und bei jedem anderen Abbild setzt
+  das Plugin keinen und überschreibt nichts.
+* **Neue Zeile im Reiter *Test*:** *Healthcheck des Containers* – healthy,
+  starting, unhealthy (mit Fehlschlägen in Folge und letzter Ausgabe) oder
+  „kein Healthcheck“. Docker startet einen Container, der unhealthy wird,
+  **nicht** neu; die Zeile ist eine Auskunft.
+* **Ein vorhandener Container muss nicht neu angelegt werden.** Der
+  Healthcheck zählt nicht als Abweichung, das Update hält also keinen Server
+  an. Er kommt beim nächsten Neuanlegen von selbst (etwa *Einstellungen
+  übernehmen*, Umstieg oder *Matter-Server einrichten*); bis dahin sagt der
+  Reiter *Test* „kein Healthcheck – … beim nächsten Neuanlegen“.
+* Die Aufrufzeile im Reiter *Einstellungen* zeigt die neuen Schalter
+  (`--health-cmd` … `--health-retries 6`) mit.
+
 ## Neu in 0.9.35
 
 Umsetzung der Prüfung vom 03.10.2026: Fehler, Sicherheit, Zusammenspiel mit

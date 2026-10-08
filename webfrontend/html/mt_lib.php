@@ -2103,7 +2103,10 @@ function mt_container_abbild($cfg = null)
  *                               genuegte /run/dbus, und ein Rechner ohne
  *                               diesen Adapter bekam einen Server, der beim
  *                               Start nach einem fehlenden Adapter fragt.
- * Rueckgabe: array(name, abbild, label, mounts (Quelle => Ziel), args).
+ * Rueckgabe: array(name, abbild, label, mounts (Quelle => Ziel), args,
+ * health). 0.9.36 (Docker-1-E5): health sind die Schalter des eigenen
+ * Healthchecks (leer = keiner, das Abbild entscheidet), siehe
+ * mt_container_healthcheck().
  */
 function mt_container_soll($cfg = null)
 {
@@ -2162,6 +2165,8 @@ function mt_container_soll($cfg = null)
         'abbild' => $abbild,
         'bauart' => $bauart,
         'user'   => $user,
+        // 0.9.36 (Docker-1-E5): eigener Healthcheck nur fuer ein Abbild ohne.
+        'health' => mt_container_healthcheck($abbild, $port),
         'label'  => mt_container_label(),
         'mounts' => $mounts,
         'args'   => $args,
@@ -2179,6 +2184,42 @@ function mt_abbild_vorgabe($bauart)
 {
     return $bauart === 'matterjs' ? 'ghcr.io/matter-js/matterjs-server:stable'
                                   : 'ghcr.io/matter-js/python-matter-server:stable';
+}
+
+/**
+ * 0.9.36 (Docker-1-E5): die Schalter fuer einen EIGENEN Healthcheck - nur fuer
+ * ein Abbild, das nachweislich keinen mitbringt. Aus der Registry gemessen:
+ *   ghcr.io/matter-js/python-matter-server:stable  (02.10.2026) Healthcheck null
+ *   ghcr.io/matter-js/matterjs-server:stable       (08.10.2026) eigener:
+ *       CMD /usr/local/bin/healthcheck.sh, 60 s, Frist 10 s, Startfrist
+ *       900 s, 6 Versuche - der bleibt, nichts wird ueberschrieben.
+ * Fuer jedes andere Abbild ist nicht gemessen, was es mitbringt: keiner.
+ *
+ * Die Pruefung ist ein TCP-Verbindungsaufbau auf die WebSocket-Schnittstelle
+ * im Container (Netz des Wirts: 127.0.0.1 erreicht den Server auch mit
+ * --listen-address 127.0.0.1). python3 ist im Abbild, denn der Server ist ein
+ * Python-Programm (Einstiegspunkt matter-server); curl oder nc sind ohne
+ * Laden des Abbilds nicht zu belegen. Zeiten wie beim matterjs-server, damit
+ * beide Bauarten im Reiter Test gleich lesen: die Startfrist deckt auch ein
+ * langsames Laden vieler Knoten. Docker startet einen Container, der
+ * "unhealthy" wird, NICHT neu - der Healthcheck ist eine Auskunft.
+ * $port: der eingestellte Port (wie --port in mt_container_soll()).
+ * Rueckgabe: Liste der Schalter fuer docker run, leer = kein eigener.
+ */
+function mt_container_healthcheck($abbild, $port)
+{
+    if (strpos((string) $abbild, 'python-matter-server') === false) {
+        return array();
+    }
+    $port = ($port >= 1 && $port <= 65535) ? (int) $port : 5580;
+    return array(
+        '--health-cmd',
+        'python3 -c \'import socket; socket.create_connection(("127.0.0.1", ' . $port . '), 5).close()\'',
+        '--health-interval', '60s',
+        '--health-timeout', '10s',
+        '--health-start-period', '900s',
+        '--health-retries', '6',
+    );
 }
 
 /**
@@ -2226,6 +2267,10 @@ function mt_container_befehl($cfg = null, $name = null)
         . ' --network=host'
         // 0.9.35 (Nr. E5): matterjs-server laeuft als Eigentuemer der Fabric.
         . ($s['user'] !== '' ? ' --user ' . mt_sh_arg($s['user']) : '');
+    // 0.9.36 (Docker-1-E5): eigener Healthcheck, nur wenn das Abbild keinen hat.
+    foreach ($s['health'] as $h) {
+        $zeile .= ' ' . mt_sh_arg($h);
+    }
     foreach ($s['mounts'] as $quelle => $ziel) {
         $zeile .= ' -v ' . mt_sh_arg($quelle . ':' . $ziel . ($ziel === '/run/dbus' ? ':ro' : ''));
     }
@@ -2267,6 +2312,13 @@ function mt_container_ist($name)
         }
     }
     $labels = isset($d['Config']['Labels']) && is_array($d['Config']['Labels']) ? $d['Config']['Labels'] : array();
+    /* 0.9.36 (Docker-1-E5): State.Health gibt es nur bei einem Container mit
+     * Healthcheck (eigener oder aus dem Abbild). {{.State.Health.Status}}
+     * bricht ohne ihn mit einem Vorlagenfehler ab (Regeln/12) - darum aus
+     * dem JSON. Letzte Ausgabe der Pruefung gekuerzt auf 200 Zeichen. */
+    $hz = isset($d['State']['Health']) && is_array($d['State']['Health']) ? $d['State']['Health'] : array();
+    $h_log = isset($hz['Log']) && is_array($hz['Log']) && $hz['Log'] ? end($hz['Log']) : array();
+    $h_aus = is_array($h_log) && isset($h_log['Output']) && is_string($h_log['Output']) ? trim($h_log['Output']) : '';
     return array(
         'name'    => ltrim(isset($d['Name']) ? (string) $d['Name'] : '', '/'),
         'abbild'  => isset($d['Config']['Image']) ? (string) $d['Config']['Image'] : '',
@@ -2282,6 +2334,11 @@ function mt_container_ist($name)
         // 0.9.35 (Nr. E5): --user (matterjs-server)
         'user'    => isset($d['Config']['User']) ? (string) $d['Config']['User'] : '',
         'laeuft'  => !empty($d['State']['Running']),
+        // 0.9.36 (Docker-1-E5): '' = kein Healthcheck; sonst starting/healthy/unhealthy.
+        'health'  => isset($hz['Status']) && is_string($hz['Status']) ? $hz['Status'] : '',
+        'health_folge'   => isset($hz['FailingStreak']) && is_numeric($hz['FailingStreak'])
+                            ? (int) $hz['FailingStreak'] : 0,
+        'health_ausgabe' => strlen($h_aus) > 200 ? substr($h_aus, 0, 200) . '...' : $h_aus,
     );
 }
 
@@ -2334,6 +2391,12 @@ function mt_container_abweichung($cfg = null, $name = null)
     foreach (array_diff_key($ist_m, $soll_m) as $m) {
         $ab[] = sprintf(mt_t('EINST.AB_MOUNT_ZUVIEL'), $m);
     }
+    /* 0.9.36 (Docker-1-E5): der Healthcheck zaehlt hier bewusst NICHT. Er ist
+     * eine Auskunft, kein Teil des Betriebs (Docker startet bei "unhealthy"
+     * nicht neu). Zaehlte er, meldete jede Anlage mit einem vor 0.9.36
+     * angelegten python-matter-server nach dem Update eine Abweichung und
+     * boete das Neuanlegen an - ein Anhalten des Servers fuer eine reine
+     * Anzeige. Er kommt mit dem naechsten Neuanlegen von selbst. */
     if ($ist['args'] !== $s['args']) {
         $ab[] = sprintf(mt_t('EINST.AB_ARGS'), implode(' ', $ist['args']), implode(' ', $s['args']));
     }

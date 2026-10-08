@@ -574,6 +574,49 @@ function mt_pruef_serverart($cfg)
     return array($srv || $liste ? 1 : -1, implode(' ', $teile));
 }
 
+/**
+ * 0.9.36 (Docker-1-E5): Healthcheck-Zustand des eigenen Containers, aus
+ * docker inspect (State.Health, ueber mt_container_ist()). Vier Antworten:
+ * healthy (1), starting (Hinweis), unhealthy (0, mit Fehlschlaegen in Folge
+ * und der letzten Ausgabe) und "kein Healthcheck" (Hinweis) - dort mit dem
+ * Satz, ob das Plugin beim naechsten Neuanlegen einen eigenen setzt.
+ * Laeuft der Container nicht oder antwortet Docker nicht: Hinweis, kein
+ * Haken und kein Kreuz ueber etwas Ungemessenem.
+ * $zustand: Ergebnis von mt_container_zustand() desselben Seitenaufrufs.
+ * Rueckgabe array(stand, html).
+ */
+function mt_pruef_healthcheck($cfg, $zustand)
+{
+    if ($zustand === 'kein_docker') {
+        return array(-1, mt_t('TEST.A_HC_NICHT_LESBAR'));
+    }
+    if ($zustand !== 'laeuft') {
+        return array(-1, mt_t('TEST.A_HC_NICHT_LAUFEND'));
+    }
+    $ist = mt_container_ist(mt_container_name($cfg));
+    if ($ist === null) {
+        return array(-1, mt_t('TEST.A_HC_NICHT_LESBAR'));
+    }
+    if ($ist['health'] === 'healthy') {
+        return array(1, mt_t('TEST.A_HC_HEALTHY'));
+    }
+    if ($ist['health'] === 'starting') {
+        return array(-1, mt_t('TEST.A_HC_STARTING'));
+    }
+    if ($ist['health'] === 'unhealthy') {
+        $t = sprintf(mt_t('TEST.A_HC_UNHEALTHY'), (int) $ist['health_folge']);
+        if ($ist['health_ausgabe'] !== '') {
+            $t .= ' ' . sprintf(mt_t('TEST.A_HC_AUSGABE'), mt_e($ist['health_ausgabe']));
+        }
+        return array(0, $t);
+    }
+    if ($ist['health'] === '') {
+        $soll = mt_container_soll($cfg);
+        return array(-1, mt_t($soll['health'] ? 'TEST.A_HC_KEINER_NEU' : 'TEST.A_HC_KEINER'));
+    }
+    return array(-1, sprintf(mt_t('TEST.A_HC_ANDERS'), mt_e($ist['health'])));
+}
+
 /** 0.9.35 (Nr. D2): die festen Namen unter haus/tuer/ (Geraetenummer => Name), Datei des Dienstes. */
 function mt_haus_namen()
 {
@@ -887,6 +930,9 @@ function mt_pruefungen()
         );
         $zeilen[] = mt_pruefzeile($stand, mt_t('TEST.F_CONTAINER'),
             isset($text[$zu]) ? $text[$zu] : $zu);
+        // 0.9.36 (Docker-1-E5): der Healthcheck-Zustand des Containers.
+        $hc = mt_pruef_healthcheck($cfg, $zu);
+        $zeilen[] = mt_pruefzeile($hc[0], mt_t('TEST.F_HC'), $hc[1]);
     } else {
         $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_CONTAINER'), mt_t('TEST.A_CONT_FREMD'));
     }
