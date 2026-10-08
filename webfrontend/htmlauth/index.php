@@ -1336,7 +1336,7 @@ if ($mt_rahmen) {
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $mt_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
-<div class="sm-warnung"><?= mt_t('EINST.WAS_IST_DAS') ?></div>
+<div class="sm-hinweis"><?= mt_t('EINST.WAS_IST_DAS') ?></div>
 
 <h2><?= mt_e(mt_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('EINST.DIENST_ERKLAERUNG') ?></p>

@@ -10,6 +10,16 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.37
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* Die **Zusammenfassung** oben im Reiter Einstellungen („Dieses Plugin ist die Brücke, nicht der
+  Matter-Controller“) steht jetzt in einem grünen statt einem gelben Kasten – sie ist eine
+  Erklärung, keine Warnung. Gelb bleiben die Warnungen weiter unten.
+* Die Statuskacheln über den Reitern (Dienst, Container, Geräte, MQTT) bleiben, wie sie sind.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 0.9.36
 
 Zwei kleine Punkte aus der Verbesserungsliste (Docker-1-E5, Matter2Lox-k1).
