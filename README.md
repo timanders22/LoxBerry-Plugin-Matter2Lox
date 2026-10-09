@@ -10,6 +10,17 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.38
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone, Schritt 7):** Die Spalte „Eingänge verbinden mit“
+  nennt die Quellen in fester Form: `Ausgang von #3` statt „I ← #3“, `I1 = #6, I2 = #7` statt
+  „I1 ← #6, I2 ← #7“, `Ausgang AQ von #11` statt „I ← #11 (AQ)“, am Statusbaustein `V1 = #2, V2 = #5`.
+  Gleiche Bausteine, gleiche Verbindungen; den Taster an der Beleuchtungssteuerung (#11) schließen
+  Sie wie bisher selbst an.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 0.9.37
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
