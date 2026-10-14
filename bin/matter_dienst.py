@@ -2258,8 +2258,8 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
         # und nachher frisch gelesen.
         if not cfg.get("fabric_entfernen_ein"):
             return (0, "Fremde Systeme zu trennen ist ausgeschaltet. Reiter Einstellungen, "
-                       "Haken Fremde Systeme vom Geraet trennen zulassen (nicht am Geraet "
-                       "erprobt). Es wurde nichts gesendet.")
+                       "Haken Fremde Systeme vom Geraet trennen zulassen. Es wurde nichts "
+                       "gesendet.")
         idx = _dauer_lesen(b.get("fabric_index"))
         if idx is None or not 1 <= idx <= 254:
             return (0, "Die Nummer des Systems (FabricIndex) muss eine ganze Zahl von 1 bis 254 "

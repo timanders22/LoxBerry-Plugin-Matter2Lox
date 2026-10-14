@@ -1950,6 +1950,9 @@ if (is_array($mt_fabrics)) {
   <input data-role="none" type="checkbox" name="fabric_entfernen_ja" value="1"> <?= mt_e(mt_t('ANLERN.L_FABRIC_JA')) ?></label>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="fabric_entfernen"><?= mt_e(mt_t('ANLERN.K_FABRIC_ENTFERNEN')) ?></button>
 </form>
+<?php /* 0.9.41 (Hausherr 15.10.2026): Haken an, Steuerung aus - die
+   Steuerung nennen, nicht den Haken. */
+} elseif ((string) $mt_cfg['fabric_entfernen_ein'] === '1' && empty($mt_cfg['steuerung_ein'])) { ?><?= mt_e(mt_t('ANLERN.FABRIC_STEUERUNG_AUS')) ?>
 <?php } else { ?><?= mt_e(mt_t('ANLERN.FABRIC_AUS')) ?><?php } ?></td></tr>
 <?php } ?>
 </table>

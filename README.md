@@ -10,6 +10,27 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.41
+
+Am 15.10.2026 mit dem python-matter-server, einem Shelly 2PM Gen3 und einem Amazon Echo an echten
+Geräten geprüft: Kopplung per QR-Code mit Alexa, die Liste der gekoppelten Systeme, Schalten aus
+beiden Systemen, *Fenster schließen*, *System trennen* (das fremde System verschwand, die Liste ging
+von zwei auf ein System zurück, Matter2Lox blieb verbunden) und das Entfernen des Geräts; im
+Protokoll stand kein Kopplungscode. Geändert sind nur Texte und Anzeige:
+
+* *Fremde Systeme trennen*: der Zusatz, der Weg sei am Gerät nicht erprobt, entfällt an Haken,
+  Knopf, Hilfe und Meldungen. Der Haken bleibt ab Werk aus, das Häkchen je Zeile bleibt Pflicht, und
+  die eigene Verbindung wird weiter hart abgewiesen. Mit dem matterjs-server ist das Trennen weiter
+  nur gegen die Attrappe gemessen.
+* *Gekoppelte Systeme*: die eigene Zeile heißt „Matter2Lox (Test-Hersteller-ID)“ statt „Test“ (so
+  nennt der Matter-Server die Hersteller-ID 0xFFF1). Erkannt wird sie an der eigenen Verbindung
+  (CurrentFabricIndex), nicht an der Hersteller-ID.
+* Spalte *Trennen*: ist der Haken an, die Steuerung aber aus, steht dort „Steuerung aus (Reiter
+  Einstellungen)“ statt „aus (Reiter Einstellungen)“.
+* Reiter *MQTT*: das Thema `firmware` heißt in der Erklärung „Matter-Softwarestand (Angabe des
+  Geräts)“. Das muss nicht die Firmware des Herstellers sein – ein Shelly meldet über Matter z. B.
+  1.3.0-s2, seine Shelly-Firmware ist 2.1. Der Themenname bleibt `firmware`.
+
 ## Neu in 0.9.40
 
 *Fenster schließen* (Reiter *Geräte anlernen*) wirkt jetzt auch ohne die Freigabe schreibender
@@ -53,11 +74,12 @@ Gerät – und zuerst ein Sicherheitsbefund. Gebaut gegen eine Attrappe beider M
   Nummer, System (Herstellername vom Matter-Server, sonst aus einer kleinen eigenen Liste), Hersteller-ID
   und Bezeichnung; die Zeile *dieses Plugin* ist Matter2Lox selbst. Gelesen wird bei jedem Druck frisch
   vom Gerät (Attribute `0/62/1` und `0/62/5`, ungefiltert), mit beiden Servern auf demselben Weg.
-* **Fremdes System trennen – nicht am Gerät erprobt.** Mit dem neuen Haken *Fremde Systeme vom Gerät
-  trennen zulassen (nicht am Gerät erprobt)* (Reiter *Einstellungen*, ab Werk aus) bekommt jede
+* **Fremdes System trennen.** Mit dem neuen Haken *Fremde Systeme vom Gerät trennen zulassen*
+  (Reiter *Einstellungen*, ab Werk aus) bekommt jede
   fremde Zeile ein Häkchen und den Knopf *System trennen*. Der Dienst liest die Liste unmittelbar
   davor neu, weist die eigene Verbindung hart ab und meldet danach, was die neu gelesene Liste zeigt.
-  Belegt ist der Weg im Quelltext beider Server; erprobt hat ihn niemand.
+  Belegt ist der Weg im Quelltext beider Server; am Gerät geprüft am 15.10.2026 mit dem
+  python-matter-server (siehe *Neu in 0.9.41*).
 * **Kopplungsfenster am Gerät:** liefert der Matter-Server den Fensterzustand des Geräts (Cluster 60),
   steht im Reiter, ob gerade ein Fenster offen ist und wer es geöffnet hat – auch ein fremdes. Liefert
   er ihn nicht, fehlt die Zeile.
@@ -1577,12 +1599,14 @@ Damit niemand mehr Verlass in diese Zeilen legt, als sie tragen:
   Feldname `Energy`, Feldnummer 0, Einheit mWh. Das Plugin nimmt beide Formen
   an und gibt lieber nichts zurück als eine erfundene Zahl.
 * **Kopplungsfenster und gekoppelte Systeme (seit 0.9.39)** – gebaut nach dem
-  Quelltext beider Matter-Server und gegen eine Attrappe gemessen. Nicht
-  gemessen: ob Apple, Google oder Alexa den Code annehmen und das QR-Bild vom
+  Quelltext beider Matter-Server und gegen eine Attrappe gemessen; am
+  15.10.2026 mit dem python-matter-server an einem Shelly 2PM Gen3 und Alexa
+  geprüft (QR-Kopplung, Liste, *Fenster schließen*, *System trennen*). Nicht
+  gemessen: ob Apple oder Google den Code annehmen und das QR-Bild vom
   Bildschirm lesen; welche Fehlermeldung ein Gerät auf „Fenster schließen“
   gibt, wenn kein Fenster offen ist; wie der matterjs-server ein schon offenes
-  Fenster behandelt; ob `0/62/1` im Bestand des python-matter-server
-  vollständig steht; die Antwort eines Geräts auf *System trennen*.
+  Fenster behandelt und ein System trennt; ob `0/62/1` im Bestand des
+  python-matter-server vollständig steht.
 * Die Cluster mit `_ungeprueft` in `templates/matter_cluster.json`
   — zurzeit **16 Cluster**. Ihre Nummern stammen aus der Spezifikation,
   gemessen hat sie an einem Gerät niemand. Aufgezählt werden sie nicht hier,

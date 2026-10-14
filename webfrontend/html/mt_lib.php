@@ -4983,6 +4983,17 @@ function mt_fabric_liste_pruefen($d)
 /** Der Herstellername einer Zeile, oder "Name unbekannt". */
 function mt_hersteller_text($e)
 {
+    /* 0.9.41 (Hausherr 15.10.2026): die eigene Zeile heisst Matter2Lox.
+     * Erkannt an 'eigen' (CurrentFabricIndex, 0/62/5), nie an der
+     * Hersteller-ID - die Test-ID 0xFFF1 kann auch ein anderes System tragen.
+     * Der python-matter-server nennt 0xFFF1 "Test" (am Geraet gesehen); das
+     * sagte dem Laien nicht, dass es das Plugin selbst ist. Die Test-IDs der
+     * CSA sind 0xFFF1 bis 0xFFF4. */
+    if (!empty($e['eigen'])) {
+        $vid = $e['hersteller_id'];
+        return mt_t($vid !== null && $vid >= 0xFFF1 && $vid <= 0xFFF4
+            ? 'ANLERN.NAME_EIGEN_TEST' : 'ANLERN.NAME_EIGEN');
+    }
     if ($e['hersteller'] !== '') {
         return $e['hersteller'] . ($e['name_quelle'] === 'rueckfall' ? ' ' . mt_t('ANLERN.NAME_RUECKFALL') : '');
     }
