@@ -10,6 +10,12 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.40
+
+*Fenster schließen* (Reiter *Geräte anlernen*) wirkt jetzt auch ohne die Freigabe schreibender
+Befehle, denn Schließen nimmt Zugang weg und gibt keinen; das Öffnen des Fensters und das Trennen
+fremder Systeme brauchen sie weiter.
+
 ## Neu in 0.9.39
 
 Kopplungsfenster mit QR-Bild, Dauer und „Fenster schließen“, die Liste der gekoppelten Systeme je

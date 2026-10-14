@@ -2105,7 +2105,10 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
     if aktion == "fabrics":
         return await fabrics_aktion(v, b)
 
-    if not cfg.get("steuerung_ein"):
+    # 0.9.40 (Hausherr 14.10.2026): "Fenster schliessen" braucht die
+    # Steuerungsfreigabe nicht - Schliessen nimmt Zugang weg und gibt keinen.
+    # Oeffnen, Trennen und alles Schreibende bleiben hinter der Freigabe.
+    if not cfg.get("steuerung_ein") and aktion != "fenster_zu":
         return (0, "Die Steuerung ist ausgeschaltet. Reiter Einstellungen, "
                    "Haken Schreibende Befehle zulassen.")
 
