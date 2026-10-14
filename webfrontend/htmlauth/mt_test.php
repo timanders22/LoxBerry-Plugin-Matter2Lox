@@ -889,6 +889,116 @@ function mt_pruef_mqtt_dateien($cfg)
     return array($stand, implode('<br>', $teile) . ($da === 0 ? ' ' . mt_t('TEST.A_MQTTDATEI_HINWEIS') : ''));
 }
 
+/**
+ * 0.9.39 (Befund F1): steht ein Kopplungscode im Protokoll? Bis 0.9.38
+ * schrieb der Dienst den manuellen Code und den QR-Text beim Oeffnen eines
+ * Kopplungsfensters in matter2lox.log. Gesucht wird in der Datei und in ihrer
+ * Vorgaengerin (.1) nach derselben Form, die der Schutzfilter des Dienstes
+ * maskiert.
+ */
+function mt_pruef_codes_protokoll()
+{
+    $p = mt_paths();
+    $gelesen = 0;
+    $zeilen = 0;
+    $treffer = 0;
+    foreach (array($p['log'], $p['log'] . '.1') as $datei) {
+        if (!is_file($datei)) {
+            continue;
+        }
+        $fh = @fopen($datei, 'r');
+        if ($fh === false) {
+            continue;
+        }
+        $gelesen++;
+        while (($z = fgets($fh)) !== false) {
+            $zeilen++;
+            if (mt_code_im_text($z)) {
+                $treffer++;
+            }
+        }
+        fclose($fh);
+    }
+    if ($gelesen === 0) {
+        return array(-1, mt_t('TEST.A_CODES_LOG_KEIN'));
+    }
+    if ($treffer > 0) {
+        return array(0, sprintf(mt_t('TEST.A_CODES_LOG_FEHL'), $treffer));
+    }
+    return array(1, sprintf(mt_t('TEST.A_CODES_LOG_OK'), $zeilen));
+}
+
+/**
+ * 0.9.39 (Entscheidung 9): bleiben Rohweg und Endpunkt zu? Gelesen wird der
+ * Quelltext von Dienst und Endpunkt und gegen die Entscheidung gehalten -
+ * nicht gegeneinander: Rohweg sperrt 60 und 62 (beide Stellen), der Endpunkt
+ * kennt keine Verwaltungsaktion, der eigene Verwaltungsweg nimmt genau zwei
+ * Paare.
+ */
+function mt_pruef_verwaltungsweg()
+{
+    $verwaltung = array('fenster', 'fenster_zu', 'fabrics', 'fabric_entfernen', 'entfernen', 'name');
+    $paare_soll = array('60/RevokeCommissioning', '62/RemoveFabric');
+    $dienst = mt_paths()['bindir'] . '/matter_dienst.py';
+    $ep = mt_endpunkt_datei();
+    $py = is_file($dienst) ? (string) @file_get_contents($dienst) : '';
+    $php = is_file($ep) ? (string) @file_get_contents($ep) : '';
+    if ($py === '' || $php === '') {
+        return array(-1, sprintf(mt_t('TEST.A_VW_FEHL'), mt_e($py === '' ? $dienst : $ep)));
+    }
+    $maengel = array();
+    if (!preg_match('/^ROHWEG_GESPERRT = \(([0-9, ]+)\)/m', $py, $m)
+            || array_diff(array('60', '62'), array_map('trim', explode(',', $m[1])))) {
+        $maengel[] = 'ROHWEG_GESPERRT (Dienst)';
+    }
+    $paare = array();
+    if (preg_match('/^VERWALTUNGSBEFEHLE = \{(.*?)^\}/ms', $py, $m)
+            && preg_match_all('/\(([0-9]+), "([A-Za-z]+)"\):/', $m[1], $t, PREG_SET_ORDER)) {
+        foreach ($t as $x) {
+            $paare[] = $x[1] . '/' . $x[2];
+        }
+    }
+    sort($paare);
+    if ($paare !== $paare_soll) {
+        $maengel[] = 'VERWALTUNGSBEFEHLE: ' . ($paare ? implode(', ', $paare) : '-');
+    }
+    if (!preg_match('/in_array\(\$mt_roh_cluster, array\(([0-9, ]+)\), true\)/', $php, $m)
+            || array_diff(array('60', '62'), array_map('trim', explode(',', $m[1])))) {
+        $maengel[] = 'Rohweg-Sperre (Endpunkt)';
+    }
+    $aktionen = mt_lesende_aktionen();
+    if (preg_match('/\$mt_schaltend = array\((.*?)\);/s', $php, $m)
+            && preg_match_all("/'([a-z_]+)'/", $m[1], $t)) {
+        $aktionen = array_merge($aktionen, $t[1]);
+    } else {
+        $maengel[] = '$mt_schaltend (Endpunkt)';
+    }
+    $offen = array_intersect($verwaltung, $aktionen);
+    if ($offen) {
+        $maengel[] = 'Endpunkt: ' . implode(', ', $offen);
+    }
+    if ($maengel) {
+        return array(0, sprintf(mt_t('TEST.A_VW_FEHL'), mt_e(implode('; ', $maengel))));
+    }
+    return array(1, sprintf(mt_t('TEST.A_VW_OK'), mt_e(implode(', ', $verwaltung)),
+                            mt_e(implode(', ', $paare_soll))));
+}
+
+/** 0.9.39 (Entscheidung 1): kann das Plugin QR-Bilder erzeugen? Mit dem
+ *  oeffentlichen Beispieltext der Matter-Spezifikation, nicht mit einem Code
+ *  dieser Anlage. Gemessen wird auch die Zeit (Python-Start am Geraet). */
+function mt_pruef_qr()
+{
+    $t0 = microtime(true);
+    $grund = '';
+    $svg = mt_qr_svg('MT:Y.K9042C00KA0648G00', $grund);
+    $ms = (int) round((microtime(true) - $t0) * 1000);
+    if ($svg === '') {
+        return array(-1, sprintf(mt_t('TEST.A_QR_FEHL'), mt_e($grund)));
+    }
+    return array(1, sprintf(mt_t('TEST.A_QR_OK'), $ms, strlen($svg)));
+}
+
 function mt_pruefungen()
 {
     $cfg = mt_config();
@@ -1176,6 +1286,14 @@ function mt_pruefungen()
     $fo = mt_pruef_formulare();
     $zeilen[] = mt_pruefzeile($fo[0], mt_t('TEST.F_FORMULARE'), $fo[1]);
 
+    // 0.9.39: Kopplungscode im Protokoll (F1), Sperren (Entscheidung 9), QR-Bild.
+    $cp = mt_pruef_codes_protokoll();
+    $zeilen[] = mt_pruefzeile($cp[0], mt_t('TEST.F_CODES_LOG'), $cp[1]);
+    $vw = mt_pruef_verwaltungsweg();
+    $zeilen[] = mt_pruefzeile($vw[0], mt_t('TEST.F_VERWALTUNGSWEG'), $vw[1]);
+    $qp = mt_pruef_qr();
+    $zeilen[] = mt_pruefzeile($qp[0], mt_t('TEST.F_QR'), $qp[1]);
+
     $th = mt_pruef_themen();
     $zeilen[] = mt_pruefzeile($th[0], mt_t('TEST.F_THEMEN'), $th[1]);
 
@@ -1327,7 +1445,50 @@ function mt_test_aktion($aktion)
             if ($knoten === 0) {
                 return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
             }
-            return mt_befehl_absetzen(array('aktion' => 'fenster', 'knoten' => $knoten), 70);
+            /* 0.9.39 (Entscheidung 3): Dauer 3, 5, 10 oder 15 Minuten, immer
+             * als timeout gesendet. Etwas anderes wird abgewiesen, nicht
+             * gerundet; der Dienst prueft noch einmal (180 bis 900 s). */
+            $min = isset($_POST['fenster_dauer']) && is_string($_POST['fenster_dauer']) ? $_POST['fenster_dauer'] : '';
+            if (!preg_match('/^[0-9]{1,2}$/', $min) || !in_array((int) $min, mt_fenster_dauern(), true)) {
+                return array(0, mt_t('ANLERN.M_FENSTER_DAUER'));
+            }
+            return mt_befehl_absetzen(array('aktion' => 'fenster', 'knoten' => $knoten,
+                                            'dauer' => (int) $min * 60), 70);
+
+        case 'fenster_zu':
+            // 0.9.39 (Entscheidung 5): RevokeCommissioning, kein Haekchen - Schliessen nimmt Zugang weg.
+            if ($knoten === 0) {
+                return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            return mt_befehl_absetzen(array('aktion' => 'fenster_zu', 'knoten' => $knoten), 70);
+
+        case 'fabrics':
+            // 0.9.39 (Entscheidungen 6 und 7): liest nur.
+            if ($knoten === 0) {
+                return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            return mt_befehl_absetzen(array('aktion' => 'fabrics', 'knoten' => $knoten), 70);
+
+        case 'fabric_entfernen':
+            /* 0.9.39 (Entscheidung 8): eigener Haken (ab Werk aus), Nummer
+             * hart geprueft, Pflichthaken je Zeile. Die eigene Fabric weist
+             * der Dienst ab, nachdem er die Liste frisch gelesen hat. */
+            if ($knoten === 0) {
+                return array(0, mt_t('TEST.M_GERAET_UNBEKANNT'));
+            }
+            $cfg = mt_config();
+            if (empty($cfg['fabric_entfernen_ein']) || (string) $cfg['fabric_entfernen_ein'] !== '1') {
+                return array(0, mt_t('ANLERN.M_FABRIC_AUS'));
+            }
+            $fi = isset($_POST['fabric_index']) && is_string($_POST['fabric_index']) ? $_POST['fabric_index'] : '';
+            if (!preg_match('/^[1-9][0-9]{0,2}$/', $fi) || (int) $fi > 254) {
+                return array(0, mt_t('ANLERN.M_FABRIC_INDEX'));
+            }
+            if (empty($_POST['fabric_entfernen_ja'])) {
+                return array(0, sprintf(mt_t('ANLERN.M_FABRIC_HAKEN'), (int) $fi));
+            }
+            return mt_befehl_absetzen(array('aktion' => 'fabric_entfernen', 'knoten' => $knoten,
+                                            'fabric_index' => (int) $fi), 90);
 
         case 'anstupsen':
             if ($knoten === 0) {

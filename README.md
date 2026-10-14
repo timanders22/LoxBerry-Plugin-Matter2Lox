@@ -10,6 +10,65 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
 > geprüft ist*.
 
+## Neu in 0.9.39
+
+Kopplungsfenster mit QR-Bild, Dauer und „Fenster schließen“, die Liste der gekoppelten Systeme je
+Gerät – und zuerst ein Sicherheitsbefund. Gebaut gegen eine Attrappe beider Matter-Server
+(python-matter-server und matterjs-server), **nicht am Gerät**: im Haus gibt es kein Matter-Gerät.
+
+* **Sicherheitsbefund: der Kopplungscode stand im Protokoll.** Seit 0.9.10 schrieb der Dienst beim
+  Öffnen eines Kopplungsfensters den manuellen Code und den QR-Text in `matter2lox.log` (Zeile
+  „Befehl … (fenster): ok=1 Kopplungsfenster geoeffnet. Manueller Code: …“), und beide reisten in
+  der Einmalmeldung nach dem Knopfdruck. Ein solcher Code gilt nur, solange das Fenster offen ist
+  (der Server erzeugt je Fenster einen neuen) – er bleibt aber ein Zugang auf Zeit, und das
+  Protokoll hängt oft an Fehlerberichten. Seit 0.9.39 stehen die Codes nur noch strukturiert in der
+  Antwort des Dienstes (Datei 0600, nach dem Lesen gelöscht) und in `fenster.json` im Datenordner
+  (0600, gelöscht bei Ablauf oder „Fenster schließen“), nie in einer Meldung. Dazu maskiert ein
+  Schutzfilter am Protokoll jeden MT:-Text und jeden 11- oder 21-stelligen Code, und `antworten/`
+  ist wie `befehle/` 0700 mit Dateien 0600. **Empfehlung: alte Protokolle löschen** – Reiter
+  *Logdateien*, *Logdatei leeren*. Die neue Zeile *Steht ein Kopplungscode im Protokoll?* im Reiter
+  *Test* zeigt, ob noch etwas darin steht.
+* **QR-Bild.** Das Kopplungsfenster zeigt den Code als Bild zum Scannen, als Zahl zum Abtippen
+  (`1234-567-8901`) und als QR-Text – sofort nach dem Öffnen, oben im Reiter *Geräte anlernen*,
+  darüber ein gelber Sicherheitshinweis („Der Code ist ein Schlüssel …“). Das Bild entsteht auf dem
+  LoxBerry (`bin/qr_svg.py`, Text über die Standardeingabe, nie über die Kommandozeile), als SVG
+  direkt in der geschützten Seite, ohne Fremdquelle und ohne JavaScript. Gelingt es nicht, steht
+  „Bild nicht erzeugt – bitte den Code unten abtippen“ da.
+* **Dauer wählbar:** 3, 5, 10 oder 15 Minuten, Vorgabe 5. Die Dauer geht immer an den Server
+  (`timeout`); bis 0.9.38 nahm er seine eigene Vorgabe. Die **Restzeit** läuft auf der Seite mit,
+  ohne Nachfragen beim LoxBerry; ohne JavaScript steht „Offen bis 21:47:30 Uhr“ da. Nach dem
+  Neuladen (F5) ist das Fenster weiter zu sehen, bis es abläuft; bis 0.9.38 waren die Codes nach
+  120 s weg, während das Fenster noch offen war. War das Fenster schon offen, gilt die alte
+  Restzeit weiter, und die Seite sagt es.
+* **Fenster schließen:** schließt das Fenster sofort (Matter-Befehl `RevokeCommissioning`) – und
+  jedes andere, das am Gerät gerade offen ist, auch das eines fremden Systems. War keines mehr offen,
+  sagt es die Meldung.
+* **Gekoppelte Systeme anzeigen** (grün, liest nur, ohne Steuerungsfreigabe): eine Tabelle mit
+  Nummer, System (Herstellername vom Matter-Server, sonst aus einer kleinen eigenen Liste), Hersteller-ID
+  und Bezeichnung; die Zeile *dieses Plugin* ist Matter2Lox selbst. Gelesen wird bei jedem Druck frisch
+  vom Gerät (Attribute `0/62/1` und `0/62/5`, ungefiltert), mit beiden Servern auf demselben Weg.
+* **Fremdes System trennen – nicht am Gerät erprobt.** Mit dem neuen Haken *Fremde Systeme vom Gerät
+  trennen zulassen (nicht am Gerät erprobt)* (Reiter *Einstellungen*, ab Werk aus) bekommt jede
+  fremde Zeile ein Häkchen und den Knopf *System trennen*. Der Dienst liest die Liste unmittelbar
+  davor neu, weist die eigene Verbindung hart ab und meldet danach, was die neu gelesene Liste zeigt.
+  Belegt ist der Weg im Quelltext beider Server; erprobt hat ihn niemand.
+* **Kopplungsfenster am Gerät:** liefert der Matter-Server den Fensterzustand des Geräts (Cluster 60),
+  steht im Reiter, ob gerade ein Fenster offen ist und wer es geöffnet hat – auch ein fremdes. Liefert
+  er ihn nicht, fehlt die Zeile.
+* **Rohweg und Endpunkt bleiben zu.** Die Sperre der Cluster 31, 48, 49, 60, 62 und 63 im Rohweg ist
+  unverändert, der Endpunkt kennt keine der neuen Aktionen. Die Knöpfe gehen über einen eigenen Weg,
+  der genau zwei Befehle annimmt (`60/RevokeCommissioning`, `62/RemoveFabric`); die Zeile *Bleiben
+  Fabrics und Kopplungsfenster für Rohweg und Endpunkt gesperrt?* im Reiter *Test* prüft das.
+* **Rohdurchreichung ohne Fabrics:** mit *Unbekannte Attribute roh weiterreichen* gingen bis 0.9.38
+  auch die Cluster 31 (Zugriffsrechte), 60 (Kopplungsfenster), 62 (Fabrics, Zertifikate) und 63
+  (Gruppenschlüssel) auf den Broker und in das Abbild des Endpunkts (`aktion=roh`). Seit 0.9.39 nicht
+  mehr – wie schon der Cluster 29.
+* **Neue Zeile im Reiter *Test*:** *Kann das Plugin QR-Bilder erzeugen?* (mit der Zeit, die das Bild
+  braucht).
+* **Fremdbestandteil:** `bin/vendor/qrcodegen-1.8.0-py3-none-any.whl` – QR Code generator library von
+  Project Nayuki, MIT-Lizenz, unverändert von PyPI (sha256
+  `06bf87021bc351f1c6e722ac67db8a059c4fe27bbfbca39ed7a9a2364abdd7a6`, geprüft vor jedem Laden).
+
 ## Neu in 0.9.38
 
 Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
@@ -1223,12 +1282,17 @@ das Dataset auch danach erst auf Knopfdruck; der Abruf schaltet nichts ein.
     templates/matter_cluster.json   die Übersetzungstabelle — EINE Datei
                               für Dienst und Oberfläche
     webfrontend/htmlauth/     Oberfläche (sechs Reiter)
+    bin/qr_svg.py             QR-Bild (SVG) für das Kopplungsfenster, Text
+                              über die Standardeingabe (seit 0.9.39)
     webfrontend/html/         Endpunkt für den Miniserver + Bibliothek
 
 Im venv liegt genau **ein** Paket: `websockets` (reines Python, keine
 Übersetzung nötig, ab Python 3.9). Seit 0.9.35 bringt das Plugin es selbst mit
 (`bin/vendor/websockets-15.0.1-py3-none-any.whl`, Prüfsumme in
 `postinstall.sh`); eine Aktualisierung braucht kein Internet mehr.
+Seit 0.9.39 liegt daneben `qrcodegen-1.8.0-py3-none-any.whl` für das QR-Bild.
+Es wird nicht installiert: `bin/qr_svg.py` prüft die Prüfsumme und lädt die
+Bibliothek direkt aus dem Wheel.
 
 ## Was übersetzt wird
 
@@ -1375,7 +1439,10 @@ Plugins. Ist beides angegeben, gewinnt `&knoten=`.
 
 Im Rohzugriff gesperrt sind die Cluster 31, 48, 49, 60, 62 und 63
 (Zugriffsrechte, Inbetriebnahme, Netzzugang, Anlernfenster, Fabrics,
-Gruppenschlüssel): 403 `GRUND=CLUSTER_GESPERRT`.
+Gruppenschlüssel): 403 `GRUND=CLUSTER_GESPERRT`. Kopplungsfenster und
+gekoppelte Systeme gibt es nur in der angemeldeten Oberfläche, nie am
+Endpunkt. Seit 0.9.39 reicht auch die Rohdurchreichung die Cluster 31, 60, 62
+und 63 nicht mehr weiter, weder auf den Broker noch in `aktion=roh`.
 
 **Ein Strich als Wert** heißt: dieses Feld gibt es bei diesem Gerät nicht. Es
 wird bewusst keine 0 gesendet — eine 0 wäre eine stille Falschaussage.
@@ -1390,7 +1457,9 @@ seit 0.9.35 seine **IP-Adresse** dazu angeben – dann nur mit dem Ziffern-Code.
 
 Ein Gerät kann **in mehreren Fabrics gleichzeitig** sein: wer es schon in Apple
 Home oder Google Home hat, lässt dort ein Kopplungsfenster öffnen und benutzt
-den angezeigten Code hier. Umgekehrt geht es genauso.
+den angezeigten Code hier. Umgekehrt geht es genauso: *Kopplungsfenster öffnen*
+im Abschnitt *Angelernte Geräte verwalten* zeigt seit 0.9.39 ein QR-Bild mit
+Restzeit, *Gekoppelte Systeme anzeigen* die Systeme, die das Gerät kennen.
 
 ## Der Datenordner ist heilig
 
@@ -1435,6 +1504,10 @@ länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
 MIT — siehe [LICENSE](LICENSE). Alle Protokollangaben stammen aus
 [python-matter-server](https://github.com/matter-js/python-matter-server)
 (Apache 2.0).
+
+Fremdbestandteile unter `bin/vendor/`, unverändert von PyPI, je mit eigener
+Lizenz im Wheel: `websockets` 15.0.1 (BSD-3-Clause) und `qrcodegen` 1.8.0 von
+Project Nayuki (MIT License, https://www.nayuki.io/page/qr-code-generator-library).
 
 ## Der Matter-Server ist archiviert — was das heißt
 
@@ -1497,6 +1570,13 @@ Damit niemand mehr Verlass in diese Zeilen legt, als sie tragen:
   WebSocket-Schnittstelle benennt.** Belegt ist nur die Spezifikationsseite:
   Feldname `Energy`, Feldnummer 0, Einheit mWh. Das Plugin nimmt beide Formen
   an und gibt lieber nichts zurück als eine erfundene Zahl.
+* **Kopplungsfenster und gekoppelte Systeme (seit 0.9.39)** – gebaut nach dem
+  Quelltext beider Matter-Server und gegen eine Attrappe gemessen. Nicht
+  gemessen: ob Apple, Google oder Alexa den Code annehmen und das QR-Bild vom
+  Bildschirm lesen; welche Fehlermeldung ein Gerät auf „Fenster schließen“
+  gibt, wenn kein Fenster offen ist; wie der matterjs-server ein schon offenes
+  Fenster behandelt; ob `0/62/1` im Bestand des python-matter-server
+  vollständig steht; die Antwort eines Geräts auf *System trennen*.
 * Die Cluster mit `_ungeprueft` in `templates/matter_cluster.json`
   — zurzeit **16 Cluster**. Ihre Nummern stammen aus der Spezifikation,
   gemessen hat sie an einem Gerät niemand. Aufgezählt werden sie nicht hier,

@@ -45,6 +45,7 @@ Ein unbekannter Schalter endet mit Rueckgabe 2 und startet nichts (seit
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -178,6 +179,10 @@ ORDNER_FABRIC = PDATA.parent / (PNAME + ".matter")
 DATEI_ZUSTAND = PDATA / "zustand.json"
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
+# 0.9.39: das offene Kopplungsfenster (Codes, Ende). Geschrieben von der
+# Oberflaeche (0600) aus antwort.daten; der Dienst raeumt sie nur ab, wenn
+# jedes Fenster darin abgelaufen ist (fenster_abraeumen()).
+DATEI_FENSTER = PDATA / "fenster.json"
 DATEI_LOG = PLOG / "matter2lox.log"
 
 VORGABEN = {
@@ -233,6 +238,10 @@ VORGABEN = {
     "lesetoken": "",
     # 0.9.35 (Nr. 19): Adresse fuer die Loxone-Vorlagen; leer = LoxBerry-IP.
     "loxone_adresse": "",
+    # 0.9.39 (Entscheidung 8): fremde Systeme (Fabrics) vom Geraet trennen.
+    # Belegt im Quelltext beider Matter-Server, am Geraet nicht erprobt -
+    # deshalb ein eigener Haken, ab Werk aus (Regeln/04).
+    "fabric_entfernen_ein": 0,
 }
 
 # Wie lange ein Stellbefehl in der Warteschlange gueltig bleibt. Was laenger
@@ -329,6 +338,53 @@ class WachsameRotation(RotatingFileHandler):
 
 
 # ---------------------------------------------------------------------------
+# 0.9.39 (Befund F1): Kopplungscodes gehoeren in kein Protokoll.
+#
+# Bis 0.9.38 trug die Antwort auf "fenster" den manuellen Code und den
+# QR-Text in der Meldung, und _auftrag() schrieb jede Meldung ins Protokoll
+# ("Befehl <kennung> (fenster): ok=1 Kopplungsfenster geoeffnet. Manueller
+# Code: ... | QR-Text: MT:..."). Das Protokoll liest der Logmanager und die
+# Plugin-Seite, und es haengt an Fehlerberichten. Seit 0.9.39 stehen die Codes
+# nur noch in antwort.daten (0600); dieser Filter ist die zweite Linie, falls
+# ein Code doch in einen Text geraet (etwa in die Fehlermeldung eines
+# Servers): MT:-Text, 11- oder 21-stelliger Ziffern-Code (auch gegliedert
+# 1234-567-8901) und eine achtstellige PIN nach dem Wort "pin" werden
+# maskiert, bevor die Zeile geschrieben wird - auch in einer
+# Ablaufverfolgung.
+# ---------------------------------------------------------------------------
+_CODE_QR = re.compile(r"MT:[0-9A-Z.\-]{8,}")
+_CODE_ZIFFERN = re.compile(
+    r"(?<![0-9])(?:[0-9]{4}-[0-9]{3}-[0-9]{4}(?:-[0-9]{5}-[0-9]{5})?|[0-9]{21}|[0-9]{11})(?![0-9])")
+_CODE_PIN = re.compile(r"(?i)(pin[^0-9\n]{0,20})[0-9]{8}(?![0-9])")
+
+
+def codes_maskieren(text: str) -> str:
+    text = _CODE_QR.sub("MT:***", str(text))
+    text = _CODE_ZIFFERN.sub("***", text)
+    return _CODE_PIN.sub(r"\1***", text)
+
+
+class CodeSchutz(logging.Filter):
+    """Maskiert Kopplungscodes in jeder Protokollzeile (F1)."""
+
+    def filter(self, record):
+        try:
+            text = record.getMessage()
+        except Exception:  # noqa: BLE001 - eine kaputte Zeile bleibt, wie sie ist
+            return True
+        if record.exc_info:
+            # Die Ablaufverfolgung bildet der Formatierer erst spaeter; hier
+            # wird sie vorweg gebildet, damit auch sie maskiert ist.
+            text = text + "\n" + logging.Formatter().formatException(record.exc_info)
+            record.exc_info = None
+            record.exc_text = None
+        neu = codes_maskieren(text)
+        record.msg = neu
+        record.args = None
+        return True
+
+
+# ---------------------------------------------------------------------------
 # Protokollierung - ausschliesslich in die Datei. Das Startskript leitet die
 # Ausgabe ohnehin dorthin um; ein zweiter Kanal schriebe jede Zeile doppelt.
 # ---------------------------------------------------------------------------
@@ -343,6 +399,8 @@ def log_einrichten() -> None:
         h = logging.StreamHandler(sys.stderr)
         print(f"Logdatei nicht beschreibbar ({err}) - schreibe nach stderr.", file=sys.stderr)
     h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    # 0.9.39 (F1): am Handler - er sieht jede Zeile, auch eine weitergereichte.
+    h.addFilter(CodeSchutz())
     _LOG.handlers = [h]
     _LOG.propagate = False
 
@@ -374,10 +432,20 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
         # Bis 0.9.30 hiess sie fest <ziel>.tmp; liefen zwei Dienste, griff das
         # os.replace des einen ins Leere, sobald der andere schneller war.
         tmp = pfad.with_suffix(pfad.suffix + ".tmp.%d" % os.getpid())
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(daten, f, ensure_ascii=False, indent=1, default=str)
-        if rechte is not None:
-            os.chmod(tmp, rechte)
+        if rechte is None:
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(daten, f, ensure_ascii=False, indent=1, default=str)
+        else:
+            # 0.9.39 (F1): die Rechte stehen VOR dem Inhalt - wie in
+            # mt_json_schreiben(). Bis 0.9.38 kam das chmod nach dem
+            # Schreiben; dazwischen trug die Nebendatei die Rechte der umask.
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, rechte)
+            try:
+                os.chmod(tmp, rechte)
+            except OSError:
+                pass
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(daten, f, ensure_ascii=False, indent=1, default=str)
         os.replace(tmp, pfad)
         return True
     except (OSError, TypeError, ValueError) as err:
@@ -395,7 +463,7 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
 # Zeichenketten "1", "true", "ja", "on" als ein; alles andere als aus - ein
 # Schutz faellt geschlossen aus.
 HAKEN = ("eigener_container", "mqtt_ein", "roh_ein", "steuerung_ein", "schloss_ein",
-         "tuer_haus", "server_lokal")
+         "tuer_haus", "server_lokal", "fabric_entfernen_ein")
 
 
 def haken(cfg: dict, feld: str) -> bool:
@@ -1186,7 +1254,12 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
             # Aufbau des Geraets, nicht seinen Zustand, und wird oben schon
             # fuer die Geraetetypen ausgewertet. In der Rohdurchreichung
             # waere er nur Rauschen auf dem Broker.
-            if cfg.get("roh_ein") and cl != "29":
+            # 0.9.39 (Entscheidung 10): ebenso 31 AccessControl, 60
+            # AdministratorCommissioning, 62 OperationalCredentials und 63
+            # GroupKeyManagement - Zugriffsrechte, Fensterzustand, Fabrics und
+            # Zertifikate gehoeren weder auf den Broker noch in das Abbild,
+            # das der Endpunkt mit aktion=roh ausliefert.
+            if cfg.get("roh_ein") and cl not in ROH_NIE:
                 roh[str(pfad)] = wert if not isinstance(wert, (dict, list)) else json.dumps(wert)
             continue
         neu = umrechnen(str(feld.get("typ") or "zahl"), wert)
@@ -1246,6 +1319,27 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         if isinstance(druck, (int, float)):
             felder["luftdruck_hpa"] = round(druck * 10, 1)
 
+    # 0.9.39 (Entscheidung 12): Fensterzustand am Geraet - Cluster 60,
+    # WindowStatus (0 zu, 1 Enhanced, 2 Basic), AdminFabricIndex,
+    # AdminVendorId. Nur wenn der Server es im Bestand liefert; sonst fehlt
+    # das Feld, statt "zu" zu behaupten. Es steht im Abbild, nie auf dem
+    # Broker (paare_bilden() liest es nicht).
+    fenster_geraet = None
+    if "0/60/0" in attribute:
+        def _ganz(w):
+            if isinstance(w, bool) or not isinstance(w, (int, float)):
+                return None
+            return int(w)
+        status = _ganz(attribute.get("0/60/0"))
+        vid = _ganz(attribute.get("0/60/2"))
+        if status is not None:
+            fenster_geraet = {
+                "status": status,
+                "admin_fabric": _ganz(attribute.get("0/60/1")),
+                "admin_vendor": vid,
+                "admin_name": HERSTELLER_RUECKFALL.get(vid, "") if vid is not None else "",
+            }
+
     bezeichnung = info.get("bezeichnung") or info.get("produkt") or f"Knoten {node_id}"
     return {
         "node_id": node_id,
@@ -1261,6 +1355,7 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         "endpunkte": endpunkte,
         "typen": typen,
         "roh": roh,
+        "fenster_geraet": fenster_geraet,
         "anzahl_attribute": len(attribute),
         "ts": int(time.time()),
     }
@@ -1748,6 +1843,217 @@ def rohweg_pruefen(cluster_id: int, cfg: dict) -> str:
     return ""
 
 
+# Roh-Durchreichung (roh_ein): diese Cluster nie (0.9.39, Entscheidung 10).
+ROH_NIE = ("29", "31", "60", "62", "63")
+
+# ---------------------------------------------------------------------------
+# 0.9.39: der eigene Verwaltungsweg fuer Kopplungsfenster und Fabrics
+#
+# Die Sperrliste des Rohwegs (ROHWEG_GESPERRT) bleibt unveraendert - fuer
+# Endpunkt und Token aendert sich nichts. Die neuen Knoepfe der Oberflaeche
+# gehen nicht durch aktion "befehl"/"attribut", sondern durch
+# verwaltungsbefehl(), und der nimmt GENAU diese zwei Paare an. Jedes andere
+# wirft, bevor irgendetwas gesendet wird. So entsteht keine allgemeine
+# Hintertuer (Entwurf 2.3, Entscheidung 9).
+#   60 RevokeCommissioning  schliesst jedes offene Kopplungsfenster (timed)
+#   62 RemoveFabric         trennt ein System (FabricIndex) vom Geraet
+# ---------------------------------------------------------------------------
+VERWALTUNGSBEFEHLE = {
+    (60, "RevokeCommissioning"): 5000,
+    (62, "RemoveFabric"): None,
+}
+# CommissioningTimeout laut Matter-Spezifikation: mindestens 180 s, hoechstens
+# 900 s (Entwurf 2.2). Werte ausserhalb werden abgewiesen, nicht gerundet.
+FENSTER_DAUER_MIN = 180
+FENSTER_DAUER_MAX = 900
+# Fallback fuer Herstellernamen, wenn der Server keinen liefert (offline).
+# Gegen die CSA-DCL geprueft am 14.10.2026 (vendorinfo/vendors/<id>).
+HERSTELLER_RUECKFALL = {
+    0x1349: "Apple Home",
+    0x6006: "Google",
+    0x1217: "Amazon Alexa",
+}
+# Je Knoten das zuletzt geoeffnete Fenster: (Pruefwert des Codes, Ende, Dauer,
+# Beginn). Nur der Pruefwert, nie der Code. python-matter-server liefert bei
+# einem noch offenen Fenster DIESELBEN Codes und setzt die Dauer nicht neu.
+_FENSTER_MERK: dict = {}
+# RevokeCommissioning ohne offenes Fenster: Status WindowNotOpen (4). Wie der
+# Server das im Fehlertext nennt, ist am Geraet nicht gemessen - beide
+# Schreibweisen werden angenommen.
+_FENSTER_NICHT_OFFEN = re.compile(r"(?i)window\s*not\s*open|cluster[\s_-]*status[^0-9]{0,4}4(?![0-9])")
+
+
+def verwaltungsbefehl_erlaubt(cluster_id, name) -> bool:
+    try:
+        return (int(cluster_id), str(name)) in VERWALTUNGSBEFEHLE
+    except (TypeError, ValueError):
+        return False
+
+
+async def verwaltungsbefehl(v, node_id: int, cluster_id: int, name: str, nutzlast: dict):
+    """device_command auf Endpunkt 0 - NUR fuer die Paare der Erlaubnisliste."""
+    if not verwaltungsbefehl_erlaubt(cluster_id, name):
+        raise ValueError(f"Verwaltungsweg: {cluster_id}/{name} ist nicht freigegeben. "
+                         "Erlaubt sind nur 60/RevokeCommissioning und 62/RemoveFabric.")
+    args = {"node_id": int(node_id), "endpoint_id": 0, "cluster_id": int(cluster_id),
+            "command_name": str(name), "payload": dict(nutzlast)}
+    timed = VERWALTUNGSBEFEHLE[(int(cluster_id), str(name))]
+    if timed is not None:
+        args["timed_request_timeout_ms"] = int(timed)
+    return await v.senden("device_command", args, zeit=60)
+
+
+def _feld(e: dict, *namen):
+    for n in namen:
+        if n in e:
+            return e[n]
+    return None
+
+
+def fabric_eintraege(roh) -> list:
+    """FabricDescriptorStruct in beiden Formen: mit Feldnummern (so reicht
+    python-matter-server Strukturen weiter, wie DeviceTypeStruct seit 0.9.35)
+    und mit Feldnamen (Nachfolger, Attrappe). 1 RootPublicKey, 2 VendorID,
+    3 FabricID, 4 NodeID, 5 Label, 254 FabricIndex. Gezeigt werden nur
+    Index, Hersteller und Bezeichnung."""
+    aus = []
+    if not isinstance(roh, list):
+        return aus
+    for e in roh:
+        if not isinstance(e, dict):
+            continue
+        idx = _feld(e, "254", "fabricIndex", "fabric_index", "FabricIndex")
+        vid = _feld(e, "2", "vendorID", "vendorId", "vendor_id", "VendorID")
+        label = _feld(e, "5", "label", "fabric_label", "Label")
+        if isinstance(idx, bool):
+            continue
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= idx <= 254:
+            continue
+        try:
+            vid = None if isinstance(vid, bool) else int(vid)
+        except (TypeError, ValueError):
+            vid = None
+        label = re.sub(r"[\x00-\x1f\x7f]", "", str(label or ""))[:32]
+        aus.append({"index": idx, "hersteller_id": vid, "bezeichnung": label})
+    return sorted(aus, key=lambda x: x["index"])
+
+
+def _ganzzahl(w):
+    if isinstance(w, bool):
+        return None
+    try:
+        return int(w)
+    except (TypeError, ValueError):
+        return None
+
+
+async def fabrics_lesen(v, node_id: int, frisch: bool = False):
+    """Rueckgabe: (liste, eigener FabricIndex oder None, Quelle 'geraet' oder
+    'bestand'). Gelesen wird UNGEFILTERT (fabric_filtered=False), sonst kaeme
+    nur die eigene Fabric. Mit frisch=True kein Rueckgriff auf den Bestand -
+    so vor und nach dem Trennen."""
+    pfade = ["0/62/1", "0/62/5"]
+    erg = await v.senden("read_attribute", {"node_id": int(node_id), "attribute_path": pfade,
+                                            "fabric_filtered": False}, zeit=60)
+    werte = erg if isinstance(erg, dict) else {}
+    if not isinstance(erg, dict):
+        # Ein Server, der je Aufruf nur einen Pfad beantwortet.
+        for p in pfade:
+            e = await v.senden("read_attribute", {"node_id": int(node_id), "attribute_path": p,
+                                                  "fabric_filtered": False}, zeit=60)
+            werte[p] = e.get(p) if isinstance(e, dict) and p in e else e
+    roh = werte.get("0/62/1")
+    eigen = _ganzzahl(werte.get("0/62/5"))
+    quelle = "geraet"
+    if not isinstance(roh, list) and not frisch:
+        bestand = ((v.knoten.get(int(node_id)) or {}).get("attributes") or {})
+        if isinstance(bestand.get("0/62/1"), list):
+            roh = bestand.get("0/62/1")
+            quelle = "bestand"
+            if eigen is None:
+                eigen = _ganzzahl(bestand.get("0/62/5"))
+    if not isinstance(roh, list):
+        raise RuntimeError("der Matter-Server hat die Liste der gekoppelten Systeme (0/62/1) "
+                           "nicht geliefert")
+    return fabric_eintraege(roh), eigen, quelle
+
+
+async def herstellernamen(v, ids) -> dict:
+    """get_vendor_names - die Liste haelt der SERVER (CSA-DCL, zwischen-
+    gespeichert). Scheitert die Frage, bleibt es bei der Rueckfalltabelle."""
+    ids = sorted({i for i in ids if isinstance(i, int) and not isinstance(i, bool)})
+    if not ids:
+        return {}
+    try:
+        erg = await v.senden("get_vendor_names", {"filter_vendors": ids}, zeit=20)
+    except Exception:  # noqa: BLE001 - ohne Namen geht die Liste trotzdem
+        return {}
+    aus = {}
+    if isinstance(erg, dict):
+        for k, n in erg.items():
+            try:
+                aus[int(k)] = re.sub(r"[\x00-\x1f\x7f]", "", str(n))[:60]
+            except (TypeError, ValueError):
+                continue
+    return aus
+
+
+async def fabric_daten(v, node_id: int, liste: list, eigen, quelle: str) -> dict:
+    namen = await herstellernamen(v, [e["hersteller_id"] for e in liste])
+    for e in liste:
+        vid = e["hersteller_id"]
+        if vid in namen and namen[vid]:
+            e["hersteller"], e["name_quelle"] = namen[vid], "server"
+        elif vid in HERSTELLER_RUECKFALL:
+            e["hersteller"], e["name_quelle"] = HERSTELLER_RUECKFALL[vid], "rueckfall"
+        else:
+            e["hersteller"], e["name_quelle"] = "", ""
+        e["eigen"] = 1 if eigen is not None and e["index"] == eigen else 0
+    return {"knoten": int(node_id), "liste": liste, "eigen": eigen, "quelle": quelle,
+            "ts": int(time.time())}
+
+
+def noc_status(erg):
+    """statusCode der NOCResponse auf RemoveFabric - beide Formen. None =
+    keine Angabe (dann entscheidet die neu gelesene Liste)."""
+    if not isinstance(erg, dict):
+        return None
+    w = _feld(erg, "statusCode", "status_code", "StatusCode", "0")
+    return _ganzzahl(w)
+
+
+def _dauer_lesen(roh):
+    """Ganze Zahl oder Ziffernkette - nichts anderes (nicht gerundet)."""
+    if isinstance(roh, bool):
+        return None
+    if isinstance(roh, int):
+        return roh
+    if isinstance(roh, str) and roh.isdigit() and len(roh) <= 4:
+        return int(roh)
+    return None
+
+
+async def fabrics_aktion(v, b: dict):
+    """Aktion 'fabrics': liest nur - ohne Steuerungsfreigabe, wie 'abruf'
+    (Entscheidung 7). Ergebnis in antwort.daten, die Meldung nennt die Zahl."""
+    node_id = _ganzzahl(b.get("knoten"))
+    if node_id is None:
+        return (0, "Es fehlt die Knotennummer.")
+    if node_id not in v.knoten:
+        return (0, f"Knoten {node_id} ist dem Matter-Server nicht bekannt. "
+                   f"Bekannt sind: {', '.join(str(k) for k in sorted(v.knoten)) or 'keine'}.")
+    try:
+        liste, eigen, quelle = await fabrics_lesen(v, node_id)
+    except Exception as err:  # noqa: BLE001
+        return (0, f"Schritt read_attribute 0/62/1 fuer Knoten {node_id}: " + fehlertext(err))
+    daten = await fabric_daten(v, node_id, liste, eigen, quelle)
+    return (1, f"Knoten {node_id}: {len(liste)} gekoppelte Systeme gelesen.", daten)
+
+
 async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
     """Rueckgabe: (ok, Meldung)."""
     aktion = str(b.get("aktion") or "")
@@ -1794,6 +2100,10 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
         except Exception as err:  # noqa: BLE001
             return (0, f"Schritt interview_node fuer Knoten {node_id}: " + fehlertext(err))
         return (1, f"Knoten {node_id} wurde neu ausgelesen.")
+
+    # 0.9.39 (Entscheidung 7): die Liste der gekoppelten Systeme liest nur.
+    if aktion == "fabrics":
+        return await fabrics_aktion(v, b)
 
     if not cfg.get("steuerung_ein"):
         return (0, "Die Steuerung ist ausgeschaltet. Reiter Einstellungen, "
@@ -1878,16 +2188,114 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
         return (1, f"Knoten {node_id} aus der Fabric entfernt.")
 
     if aktion == "fenster":
-        erg = await v.senden("open_commissioning_window", {"node_id": node_id}, zeit=60)
-        erg = erg or {}
-        # Die Antwort traegt drei Felder: setup_pin_code, setup_manual_code und
-        # setup_qr_code. Bis 0.9.9 wurde nur der manuelle Code gelesen und der
-        # QR-Code verworfen - dabei ist er der bequemere Weg, weil ihn jede
-        # Matter-App einlesen kann.
-        teile = [f"Manueller Code: {erg.get('setup_manual_code')}"]
-        if erg.get("setup_qr_code"):
-            teile.append(f"QR-Text: {erg.get('setup_qr_code')}")
-        return (1, "Kopplungsfenster geoeffnet. " + " | ".join(teile))
+        # 0.9.39 (Entscheidungen 2 und 3): die Dauer kommt immer mit
+        # (timeout) - die Vorgabe des matterjs-server ist nicht belegt; die
+        # des python-matter-server ist 300 s. Die Codes gehen NICHT in die
+        # Meldung (sie landete bis 0.9.38 im Protokoll, Befund F1), sondern in
+        # antwort.daten; die Oberflaeche legt sie in fenster.json (0600).
+        dauer = _dauer_lesen(b.get("dauer"))
+        if dauer is None or not FENSTER_DAUER_MIN <= dauer <= FENSTER_DAUER_MAX:
+            return (0, f"Die Dauer des Kopplungsfensters muss eine ganze Zahl von "
+                       f"{FENSTER_DAUER_MIN} bis {FENSTER_DAUER_MAX} Sekunden sein. "
+                       "Es wurde nichts gesendet.")
+        erg = await v.senden("open_commissioning_window",
+                             {"node_id": node_id, "timeout": dauer}, zeit=60)
+        erg = erg if isinstance(erg, dict) else {}
+        # Die Antwort traegt setup_pin_code, setup_manual_code und
+        # setup_qr_code (matterjs-server dazu commissioning_timeout). Die PIN
+        # wird nicht gebraucht und nicht weitergegeben.
+        manuell = re.sub(r"[\s\-]", "", str(erg.get("setup_manual_code") or ""))
+        qr = str(erg.get("setup_qr_code") or "").strip()
+        if not re.match(r"^([0-9]{11}|[0-9]{21})$", manuell):
+            return (0, f"Kopplungsfenster fuer Knoten {node_id}: der Matter-Server hat keinen "
+                       "gueltigen Code geliefert. Ob das Fenster offen ist, ist unklar - im "
+                       "Zweifel 'Fenster schliessen' druecken.")
+        if not re.match(r"^MT:[0-9A-Z.\-]{5,60}$", qr):
+            qr = ""
+        jetzt = int(time.time())
+        gesetzt = _ganzzahl(erg.get("commissioning_timeout"))
+        dauer_ist = gesetzt if gesetzt is not None and 0 < gesetzt <= 3600 else dauer
+        pruef = hashlib.sha256(manuell.encode("ascii")).hexdigest()
+        alt = _FENSTER_MERK.get(node_id)
+        if alt and alt[0] == pruef and alt[1] > jetzt:
+            # Schon offen, der Server hat seine zwischengespeicherten Codes
+            # geliefert: die alte Restzeit gilt (Entwurf 2.2).
+            wieder, ende, dauer_ist, beginn = 1, alt[1], alt[2], alt[3]
+        else:
+            wieder, ende, beginn = 0, jetzt + dauer_ist, jetzt
+            _FENSTER_MERK[node_id] = (pruef, ende, dauer_ist, beginn)
+        daten = {"knoten": node_id, "manuell": manuell, "qr": qr, "geoeffnet": beginn,
+                 "ende": ende, "dauer": dauer_ist, "wiederverwendet": wieder}
+        if wieder:
+            return (1, f"Kopplungsfenster fuer Knoten {node_id} war schon offen; die Restzeit "
+                       f"({max(0, ende - jetzt)} s) gilt weiter.", daten)
+        return (1, f"Kopplungsfenster fuer Knoten {node_id} geoeffnet, {dauer_ist} s.", daten)
+
+    if aktion == "fenster_zu":
+        # 0.9.39 (Entscheidung 5): 60/RevokeCommissioning schliesst JEDES
+        # offene Fenster am Geraet, auch das eines anderen Systems.
+        try:
+            await verwaltungsbefehl(v, node_id, 60, "RevokeCommissioning", {})
+        except Exception as err:  # noqa: BLE001
+            text = fehlertext(err)
+            if _FENSTER_NICHT_OFFEN.search(text):
+                _FENSTER_MERK.pop(node_id, None)
+                return (1, f"Knoten {node_id}: es war kein Kopplungsfenster mehr offen.",
+                        {"knoten": node_id, "zu": 1, "war_offen": 0})
+            return (0, f"Schritt device_command 60/RevokeCommissioning fuer Knoten {node_id}: "
+                       + text)
+        _FENSTER_MERK.pop(node_id, None)
+        return (1, f"Kopplungsfenster fuer Knoten {node_id} geschlossen.",
+                {"knoten": node_id, "zu": 1, "war_offen": 1})
+
+    if aktion == "fabric_entfernen":
+        # 0.9.39 (Entscheidung 8): nicht am Geraet erprobt - eigener Haken,
+        # ab Werk aus; die eigene Fabric wird hart abgewiesen (der
+        # matterjs-server prueft das in remove_matter_fabric NICHT); vorher
+        # und nachher frisch gelesen.
+        if not cfg.get("fabric_entfernen_ein"):
+            return (0, "Fremde Systeme zu trennen ist ausgeschaltet. Reiter Einstellungen, "
+                       "Haken Fremde Systeme vom Geraet trennen zulassen (nicht am Geraet "
+                       "erprobt). Es wurde nichts gesendet.")
+        idx = _dauer_lesen(b.get("fabric_index"))
+        if idx is None or not 1 <= idx <= 254:
+            return (0, "Die Nummer des Systems (FabricIndex) muss eine ganze Zahl von 1 bis 254 "
+                       "sein. Es wurde nichts gesendet.")
+        try:
+            liste, eigen, _quelle = await fabrics_lesen(v, node_id, frisch=True)
+        except Exception as err:  # noqa: BLE001
+            return (0, "Vor dem Trennen liess sich die Liste nicht lesen (read_attribute 0/62/1, "
+                       f"0/62/5): {fehlertext(err)}. Es wurde nichts gesendet.")
+        if eigen is None:
+            return (0, "Die eigene Verbindung (CurrentFabricIndex, 0/62/5) liess sich nicht "
+                       "bestimmen. Ohne sie wird nichts getrennt.")
+        if idx == eigen:
+            return (0, f"System {idx} ist die Verbindung dieses Plugins. Die eigene Verbindung "
+                       "entfernt der Knopf 'Geraet aus der Fabric entfernen'. Es wurde nichts "
+                       "gesendet.")
+        if idx not in [e["index"] for e in liste]:
+            return (0, f"System {idx} steht nicht in der eben gelesenen Liste von Knoten "
+                       f"{node_id}. Es wurde nichts gesendet.")
+        try:
+            erg = await verwaltungsbefehl(v, node_id, 62, "RemoveFabric", {"fabricIndex": idx})
+        except Exception as err:  # noqa: BLE001
+            return (0, f"Schritt device_command 62/RemoveFabric fuer Knoten {node_id}: "
+                       + fehlertext(err))
+        status = noc_status(erg)
+        if status not in (None, 0):
+            return (0, f"Das Geraet hat das Trennen von System {idx} abgelehnt (NOCResponse, "
+                       f"Status {status}).")
+        try:
+            neu, eigen_neu, quelle_neu = await fabrics_lesen(v, node_id, frisch=True)
+        except Exception as err:  # noqa: BLE001
+            return (2, f"Abgesetzt; Ergebnis unbekannt: die Liste liess sich danach nicht lesen "
+                       f"({fehlertext(err)}).")
+        daten = await fabric_daten(v, node_id, neu, eigen_neu, quelle_neu)
+        if idx in [e["index"] for e in neu]:
+            return (0, f"Abgesetzt; Ergebnis laut neu gelesener Liste: System {idx} steht noch "
+                       "da.", daten)
+        return (1, f"Abgesetzt; Ergebnis laut neu gelesener Liste: System {idx} ist nicht mehr "
+                   f"dabei ({len(neu)} Systeme).", daten)
 
     if aktion == "anstupsen":
         erg = await v.senden("ping_node", {"node_id": node_id}, zeit=60)
@@ -2603,16 +3011,53 @@ def zustand_schreiben(**felder) -> None:
     json_schreiben(DATEI_ZUSTAND, z)
 
 
+_FENSTER_GEPRUEFT = {"zuletzt": 0.0}
+
+
+def fenster_abraeumen(jetzt: float | None = None) -> None:
+    """0.9.39: fenster.json loeschen, sobald jedes Fenster darin abgelaufen
+    ist - auch wenn niemand die Seite oeffnet. Hoechstens alle 30 s. Der
+    Dienst schreibt die Datei nie; er loescht sie nur."""
+    jetzt = time.time() if jetzt is None else jetzt
+    if abs(jetzt - _FENSTER_GEPRUEFT["zuletzt"]) < 30:
+        return
+    _FENSTER_GEPRUEFT["zuletzt"] = jetzt
+    if not DATEI_FENSTER.is_file():
+        return
+    alle = json_lesen(DATEI_FENSTER).get("fenster")
+    alle = alle if isinstance(alle, dict) else {}
+    offen = [f for f in alle.values() if isinstance(f, dict)
+             and isinstance(f.get("ende"), (int, float)) and not isinstance(f.get("ende"), bool)
+             and f["ende"] > jetzt]
+    if not offen:
+        try:
+            DATEI_FENSTER.unlink()
+            _LOG.info("Abgelaufenes Kopplungsfenster: fenster.json geloescht.")
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Warteschlange
 # ---------------------------------------------------------------------------
-def antwort_schreiben(kennung: str, ok: int, meldung: str, ist=None) -> None:
-    ORDNER_ANTWORTEN.mkdir(parents=True, exist_ok=True)
+def antwort_schreiben(kennung: str, ok: int, meldung: str, ist=None, nutzdaten=None) -> None:
+    # 0.9.39 (F1): wie befehle/ - Ordner 0700, Dateien 0600 (Rechte vor dem
+    # Inhalt, json_schreiben()). Bis 0.9.38 galt die umask, und die Antwort
+    # auf "fenster" trug die Codes in der Meldung.
+    ORDNER_ANTWORTEN.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(ORDNER_ANTWORTEN, 0o700)
+    except OSError:
+        pass
     daten = {"ok": int(ok), "meldung": str(meldung), "ts": int(time.time())}
     if ist is not None:
         # 0.9.35 (E4): Ist-Wert nach dem Befehl, sofern er sich bestimmen laesst.
         daten["ist"] = ist
-    json_schreiben(ORDNER_ANTWORTEN / f"{kennung}.json", daten)
+    if nutzdaten is not None:
+        # 0.9.39: strukturiertes Ergebnis (Kopplungsfenster, Fabric-Liste).
+        # Die Oberflaeche liest es und loescht die Datei danach.
+        daten["daten"] = nutzdaten
+    json_schreiben(ORDNER_ANTWORTEN / f"{kennung}.json", daten, rechte=0o600)
     grenze = time.time() - 900
     for alt in ORDNER_ANTWORTEN.glob("*.json"):
         try:
@@ -2726,7 +3171,7 @@ def _datei_weg(pfad: Path) -> None:
 async def _auftrag(v: "MatterVerbindung", kennung: str, arbeit: Path, b: dict, cfg: dict,
                    tab: dict, eintrag, fertig) -> None:
     sperre = v.sperren.setdefault(befehl_sperrschluessel(b), asyncio.Lock())
-    ok, meldung, ist = 0, "", None
+    ok, meldung, ist, nutzdaten = 0, "", None, None
     abgebrochen = False
     try:
         async with sperre:
@@ -2738,7 +3183,10 @@ async def _auftrag(v: "MatterVerbindung", kennung: str, arbeit: Path, b: dict, c
                 if gruppe is not None and v.offen_gruppen.get(gruppe) is eintrag:
                     v.offen_gruppen.pop(gruppe, None)
                 async with v.gleichzeitig:
-                    ok, meldung = await befehl_ausfuehren(v, b, cfg, tab)
+                    # 0.9.39: (ok, Meldung) oder (ok, Meldung, Daten).
+                    erg = await befehl_ausfuehren(v, b, cfg, tab)
+                    ok, meldung = erg[0], erg[1]
+                    nutzdaten = erg[2] if len(erg) > 2 else None
                     if ok == 1:
                         ist = await ist_ermitteln(v, b)
     except asyncio.CancelledError:
@@ -2747,7 +3195,7 @@ async def _auftrag(v: "MatterVerbindung", kennung: str, arbeit: Path, b: dict, c
                           "aufgebaut oder endet. Ob der Befehl schon wirkte, ist offen.")
     except Exception as err:  # noqa: BLE001
         ok, meldung = 0, fehlertext(err)
-    antwort_schreiben(kennung, ok, meldung, ist)
+    antwort_schreiben(kennung, ok, meldung, ist, nutzdaten)
     _datei_weg(arbeit)
     _LOG.info("Befehl %s (%s): ok=%s %s", kennung, b.get("aktion"), ok, meldung)
     if fertig is not None:
@@ -2989,6 +3437,7 @@ async def dienst(einmal: bool = False) -> int:
                 except Exception as err:  # noqa: BLE001
                     _LOG.error("Warteschlange: %s", fehlertext(err))
                 jetzt = time.time()
+                fenster_abraeumen(jetzt)
                 if praefix_pflegen(c):
                     # M5: neues Praefix - dort sofort der volle Satz samt
                     # Lebenszeichen; das alte hat praefix_pflegen() abgeraeumt.
@@ -3076,6 +3525,7 @@ async def dienst(einmal: bool = False) -> int:
                 _LAUF = False
                 break
             jetzt = time.time()
+            fenster_abraeumen(jetzt)
             if hz and jetzt - letzter_herzschlag >= hz:
                 herzschlag_senden(cfg, 0)
                 letzter_herzschlag = jetzt
@@ -3736,6 +4186,30 @@ def selbsttest() -> int:
                           f"Bluetooth {'ja' if srv.get('bluetooth_enabled') else 'nein'}")
     else:
         zeilen.append("[INFO] Der Dienst hat noch nie verbunden")
+
+    # 0.9.39: Rohweg, Verwaltungsweg und Protokollschutz (Entwurf, Abschnitt 4,
+    # Probe 3; Befund F1). Gemessen an den Funktionen selbst, nicht am Text.
+    if rohweg_pruefen(60, cfg) and rohweg_pruefen(62, cfg):
+        zeilen.append("[OK]   Rohweg sperrt die Cluster 60 und 62 weiter")
+    else:
+        fehler += 1
+        zeilen.append("[FEHL] Der Rohweg laesst Cluster 60 oder 62 durch")
+    fremd = [p for p in ((60, "OpenCommissioningWindow"), (62, "AddNOC"), (6, "On"))
+             if verwaltungsbefehl_erlaubt(*p)]
+    if sorted(VERWALTUNGSBEFEHLE) == [(60, "RevokeCommissioning"), (62, "RemoveFabric")] \
+            and not fremd:
+        zeilen.append("[OK]   Verwaltungsweg nimmt nur 60/RevokeCommissioning und "
+                      "62/RemoveFabric")
+    else:
+        fehler += 1
+        zeilen.append("[FEHL] Verwaltungsweg nimmt mehr als die zwei freigegebenen Befehle: "
+                      f"{sorted(VERWALTUNGSBEFEHLE)} {fremd}")
+    probe = codes_maskieren("Code 3497-011-2332 | QR-Text: MT:Y.K9042C00KA0648G00 | 34970112332")
+    if re.search(r"[0-9]{4}-[0-9]{3}-[0-9]{4}|MT:[0-9A-Z.\-]{5}|[0-9]{11}", probe):
+        fehler += 1
+        zeilen.append("[FEHL] Der Protokollschutz laesst einen Kopplungscode durch")
+    else:
+        zeilen.append("[OK]   Protokollschutz maskiert Kopplungscodes (QR-Text und Ziffern-Code)")
 
     zeilen.append("")
     zeilen.append("Nicht geprueft, weil dafuer ein laufender Matter-Server und echte")

@@ -143,6 +143,8 @@ function mt_paths()
             'log'       => $home . '/log/plugins/' . $dir . '/matter2lox.log',
             /* O1: die Einmalmeldung nach der Umleitung (Regeln/04). */
             'einmal'    => $home . '/data/plugins/' . $dir . '/einmalmeldung.json',
+            /* 0.9.39: das offene Kopplungsfenster (Codes, Ende), 0600. */
+            'fenster'   => $home . '/data/plugins/' . $dir . '/fenster.json',
             /* M5: jedes je benutzte MQTT-Praefix, NEBEN dem Konfigordner. */
             'praefixe'  => $home . '/config/plugins/' . $dir . '.mqtt_praefixe.json',
             /* Tuer-1: die je unter haus/tuer/ gesendeten Themen (DATEI_HAUS im
@@ -168,6 +170,7 @@ function mt_paths()
             'logdir'    => $basis . '/log',
             'log'       => $basis . '/log/matter2lox.log',
             'einmal'    => $basis . '/data/einmalmeldung.json',
+            'fenster'   => $basis . '/data/fenster.json',
             'praefixe'  => $basis . '/config/matter2lox.mqtt_praefixe.json',
             'haus'      => $basis . '/config/matter2lox.haus_themen.json',
             'tabelle'   => $basis . '/templates/matter_cluster.json',
@@ -282,6 +285,9 @@ function mt_vorgaben()
         /* 0.9.35 (Nr. 1): Adresse fuer die Loxone-Vorlagen (Host/IP[:Port]);
          * leer = IP des LoxBerry. */
         'loxone_adresse'    => '',
+        /* 0.9.39 (Entscheidung 8): fremde Systeme (Fabrics) vom Geraet
+         * trennen - nicht am Geraet erprobt, eigener Haken, ab Werk aus. */
+        'fabric_entfernen_ein' => 0,
     );
 }
 
@@ -722,7 +728,8 @@ function mt_sicherung_neue_schluessel()
 {
     /* 0.9.35 (Nr. 1): die vier neuen Schluessel duerfen in einer Sicherung
      * bis 0.9.34 fehlen; sie behalten dann ihre Vorgabe. */
-    return array('tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse');
+    return array('tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse',
+                 /* 0.9.39 */ 'fabric_entfernen_ein');
 }
 
 /**
@@ -776,7 +783,9 @@ function mt_eingabe_felder()
                                   'wartezeit' => 'text', 'sendetakt' => 'text', 'herzschlag' => 'text',
                                   'steuerung_ein' => 'haken', 'schloss_ein' => 'haken',
                                   // 0.9.35 (Nr. 1)
-                                  'server_lokal' => 'haken', 'primary_interface' => 'text'),
+                                  'server_lokal' => 'haken', 'primary_interface' => 'text',
+                                  // 0.9.39 (Entscheidung 8)
+                                  'fabric_entfernen_ein' => 'haken'),
         'save_mqtt'      => array('mqtt_ein' => 'haken', 'mqtt_topic' => 'text', 'mqtt_nur' => 'text',
                                   'roh_ein' => 'haken', 'tuer_haus' => 'haken'),
         'netz_speichern' => array('wlan_ssid' => 'text', 'wlan_passwort' => 'geheim',
@@ -789,7 +798,9 @@ function mt_eingabe_felder()
          * Beanstandung. Der Code vom Geraet reist nie mit (ein zweiter Druck
          * soll ihn nicht unbemerkt erneut senden). */
         'anlernen'       => array('code' => 'geheim', 'anlern_ip' => 'text', 'nur_netz' => 'haken'),
-        'verwalten'      => array('test_geraet' => 'text', 'geraetename' => 'text'),
+        'verwalten'      => array('test_geraet' => 'text', 'geraetename' => 'text',
+                                  // 0.9.39 (Entscheidung 3): die gewaehlte Dauer
+                                  'fenster_dauer' => 'text'),
         'schalten'       => array('test_geraet' => 'text', 'test_endpunkt' => 'text', 'test_wert' => 'text'),
     );
 }
@@ -1413,6 +1424,10 @@ function mt_dienst($befehl)
  * 0.9.35 (Nr. 2): drittes Element "ist" - der Ist-Wert nach dem Befehl, wenn
  * die Antwortdatei ihn traegt, sonst null. list() mit zwei Elementen liest
  * weiter nur ok und Meldung.
+ * 0.9.39: viertes Element "daten" - das strukturierte Ergebnis des Dienstes
+ * (Kopplungsfenster mit Codes, Liste der gekoppelten Systeme), sonst null.
+ * Traegt die Antwort Daten, wird die Antwortdatei nach dem Lesen geloescht:
+ * die Codes eines Fensters sollen nicht 15 Minuten in antworten/ liegen.
  * 0.9.35 (Nr. 3): $cfg - wer die Konfiguration schon gelesen hat (der
  * unangemeldete Endpunkt mit mt_config(false)), gibt sie mit. Ohne sie las
  * diese Funktion mt_config() MIT Schreibrecht - aus dem Endpunkt heraus
@@ -1477,8 +1492,12 @@ function mt_befehl_absetzen($befehl, $wartezeit = null, $cfg = null)
             $ok = 0;
         }
         $ist = isset($a['ist']) && (is_scalar($a['ist'])) ? $a['ist'] : null;
+        $daten = isset($a['daten']) && is_array($a['daten']) ? $a['daten'] : null;
+        if ($daten !== null) {
+            @unlink($pfad);
+        }
         return array($ok, (string) (isset($a['meldung']) && is_scalar($a['meldung']) ? $a['meldung'] : ''),
-                     $ist);
+                     $ist, $daten);
     };
     for ($i = 0; $i < $wartezeit * 10; $i++) {
         if (is_file($antwort)) {
@@ -4366,7 +4385,7 @@ function mt_haken()
 {
     // 0.9.35 (Nr. 1): server_lokal neu im Haken-Satz (Vertrag, HAKEN im Dienst).
     return array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein',
-                 'tuer_haus', 'server_lokal');
+                 'tuer_haus', 'server_lokal', 'fabric_entfernen_ein');
 }
 
 /**
@@ -4628,6 +4647,8 @@ function mt_retain_text($thema)
  * wird dabei geloescht, VOR der Anzeige. Zugangsdaten stehen nie darin: die
  * Meldungen sind fertige Saetze, und die Ausgaben von Selbsttest und
  * Containerprotokoll reisen gar nicht mit - sie werden beim GET neu gebildet.
+ * Bis 0.9.38 reisten hier allerdings die Codes eines Kopplungsfensters mit
+ * (Befund F1); seit 0.9.39 stehen sie nur in fenster.json (0600).
  * ================================================================== */
 
 function mt_einmal_schreiben($daten)
@@ -4653,6 +4674,325 @@ function mt_einmal_lesen()
         return array();
     }
     return $d;
+}
+
+
+/* ==================================================================
+ * 0.9.39: Kopplungsfenster und gekoppelte Systeme (Entwurf
+ * Pruefung-Matter2Lox-0.9.39/entwurf_kopplungsfenster.md)
+ *
+ * Die Codes eines offenen Fensters stehen NUR in fenster.json im
+ * Datenordner (0600, Rechte vor dem Inhalt, mt_json_schreiben()): je Knoten
+ * Geraetenummer, Codes, Beginn, Ende, Dauer. Bis 0.9.38 reisten sie in der
+ * Einmalmeldung (hoechstens 120 s, danach waren sie weg, waehrend das
+ * Fenster noch offen war) und standen im Protokoll (Befund F1). Die Datei
+ * verschwindet, sobald jedes Fenster darin abgelaufen oder geschlossen ist -
+ * beim Lesen hier und im Takt des Dienstes. Keine Anfrage per GET liefert
+ * die Codes aus; die Restzeit rechnet die Seite aus dem Ende.
+ * ================================================================== */
+
+/** Die waehlbaren Dauern in Minuten. Vorgabe 5 (= 300 s, die Vorgabe des
+ *  python-matter-server); der Dienst nimmt 180 bis 900 s. */
+function mt_fenster_dauern()
+{
+    return array(3, 5, 10, 15);
+}
+
+/** Ganze Zahl aus JSON (Zahl oder Ziffernkette), sonst null. */
+function mt_ganz($w)
+{
+    if (is_int($w)) {
+        return $w;
+    }
+    return (is_string($w) && preg_match('/^[0-9]{1,12}$/', $w)) ? (int) $w : null;
+}
+
+/** Einen Eintrag aus fenster.json oder antwort.daten pruefen; null = unbrauchbar. */
+function mt_fenster_eintrag($f)
+{
+    if (!is_array($f)) {
+        return null;
+    }
+    $z = array();
+    foreach (array('knoten', 'nr', 'geoeffnet', 'ende', 'dauer') as $k) {
+        $z[$k] = mt_ganz(isset($f[$k]) ? $f[$k] : null);
+        if ($z[$k] === null) {
+            return null;
+        }
+    }
+    $manuell = isset($f['manuell']) && is_string($f['manuell']) ? $f['manuell'] : '';
+    $qr = isset($f['qr']) && is_string($f['qr']) ? $f['qr'] : '';
+    if (!preg_match('/^([0-9]{11}|[0-9]{21})$/', $manuell)
+            || ($qr !== '' && !preg_match('/^MT:[0-9A-Z.\-]{5,60}$/', $qr))
+            || $z['ende'] <= $z['geoeffnet'] || $z['dauer'] < 1 || $z['dauer'] > 3600) {
+        return null;
+    }
+    $bauart = isset($f['server_bauart'])
+        && in_array($f['server_bauart'], array('python', 'matterjs', 'fremd'), true) ? $f['server_bauart'] : '';
+    return array('knoten' => $z['knoten'], 'nr' => $z['nr'], 'manuell' => $manuell, 'qr' => $qr,
+                 'geoeffnet' => $z['geoeffnet'], 'ende' => $z['ende'], 'dauer' => $z['dauer'],
+                 'wiederverwendet' => !empty($f['wiederverwendet']) ? 1 : 0, 'server_bauart' => $bauart);
+}
+
+/** Alle offenen Fenster (Knoten => Eintrag). Abgelaufene werden dabei entfernt. */
+function mt_fenster_lesen()
+{
+    $datei = mt_paths()['fenster'];
+    if (!is_file($datei)) {
+        return array();
+    }
+    $d = mt_json_lesen($datei);
+    $alle = isset($d['fenster']) && is_array($d['fenster']) ? $d['fenster'] : array();
+    $jetzt = time();
+    $offen = array();
+    foreach ($alle as $k => $f) {
+        $f = mt_fenster_eintrag($f);
+        if ($f !== null && (string) $f['knoten'] === (string) $k && $f['ende'] > $jetzt) {
+            $offen[(string) $k] = $f;
+        }
+    }
+    if (count($offen) !== count($alle) || !$offen) {
+        mt_fenster_schreiben($offen);
+    }
+    return $offen;
+}
+
+/** fenster.json schreiben (0600) - oder loeschen, wenn kein Fenster mehr offen ist. */
+function mt_fenster_schreiben($alle)
+{
+    $datei = mt_paths()['fenster'];
+    if (!$alle) {
+        return !is_file($datei) || @unlink($datei);
+    }
+    return mt_json_schreiben($datei, array('fenster' => $alle), 0600);
+}
+
+/**
+ * Ein eben geoeffnetes Fenster ablegen. Liefert der Server fuer ein noch
+ * offenes Fenster dieselben Codes (python-matter-server), gilt das alte Ende
+ * weiter - auch wenn der Dienst inzwischen neu gestartet ist.
+ */
+function mt_fenster_merken($daten, $nr, $bauart)
+{
+    if (!is_array($daten)) {
+        return false;
+    }
+    $f = mt_fenster_eintrag(array_merge($daten, array('nr' => (int) $nr, 'server_bauart' => (string) $bauart)));
+    if ($f === null || $f['ende'] <= time()) {
+        return false;
+    }
+    $alle = mt_fenster_lesen();
+    $k = (string) $f['knoten'];
+    if (isset($alle[$k]) && $alle[$k]['manuell'] === $f['manuell']) {
+        $f['geoeffnet'] = $alle[$k]['geoeffnet'];
+        $f['ende'] = $alle[$k]['ende'];
+        $f['dauer'] = $alle[$k]['dauer'];
+        $f['wiederverwendet'] = 1;
+    }
+    $alle[$k] = $f;
+    return mt_fenster_schreiben($alle);
+}
+
+function mt_fenster_vergessen($knoten)
+{
+    $alle = mt_fenster_lesen();
+    unset($alle[(string) (int) $knoten]);
+    return mt_fenster_schreiben($alle);
+}
+
+/** Der manuelle Code gegliedert, wie er auf Geraeten steht (1234-567-8901). */
+function mt_code_gegliedert($c)
+{
+    $c = (string) $c;
+    if (preg_match('/^([0-9]{4})([0-9]{3})([0-9]{4})$/', $c, $m)) {
+        return $m[1] . '-' . $m[2] . '-' . $m[3];
+    }
+    if (preg_match('/^([0-9]{4})([0-9]{3})([0-9]{4})([0-9]{5})([0-9]{5})$/', $c, $m)) {
+        return implode('-', array_slice($m, 1));
+    }
+    return $c;
+}
+
+/** Sieht der Text nach einem Kopplungscode aus? (MT:-Text, 11 oder 21
+ *  Ziffern, gegliedert 1234-567-8901) - dieselbe Form, die der Schutzfilter
+ *  des Dienstes maskiert (codes_maskieren()). */
+function mt_code_im_text($t)
+{
+    $t = (string) $t;
+    return preg_match('/MT:[0-9A-Z.\-]{8,}/', $t) === 1
+        || preg_match('/(?<![0-9])(?:[0-9]{4}-[0-9]{3}-[0-9]{4}|[0-9]{21}|[0-9]{11})(?![0-9])/', $t) === 1;
+}
+
+/** Das Python fuer Hilfsskripte: die venv des Plugins, sonst python3 im Pfad. */
+function mt_python()
+{
+    $py = mt_paths()['bindir'] . '/venv/bin/python3';
+    if (is_file($py) && is_executable($py)) {
+        return $py;
+    }
+    $gef = array();
+    @exec('command -v python3 2>/dev/null', $gef);
+    $py = isset($gef[0]) ? trim($gef[0]) : '';
+    return ($py !== '' && is_file($py)) ? $py : '';
+}
+
+/**
+ * 0.9.39 (Entscheidung 1): ein Matter-Kopplungstext als QR-Bild (SVG).
+ *
+ * bin/qr_svg.py bekommt den Text ueber die Standardeingabe - nie ueber die
+ * Kommandozeile (Prozessliste, Regeln/05). Frist 5 s. Die Antwort wird vor
+ * der Ausgabe gegen genau die Form geprueft, die qr_svg.py schreibt (svg,
+ * rect, path, Ziffern, hoechstens 64 kB) - was davon abweicht, kommt nicht
+ * in die Seite. Rueckgabe '' ohne Bild; $grund sagt dann, warum.
+ * Nicht an das Kopplungsfenster gebunden (spaeter auch fuer die Bridge).
+ */
+function mt_qr_svg($text, &$grund = null)
+{
+    $grund = '';
+    $text = (string) $text;
+    if (!preg_match('/^MT:[0-9A-Z.\-]{5,60}$/', $text)) {
+        $grund = 'Text';
+        return '';
+    }
+    if (!function_exists('proc_open')) {
+        $grund = 'proc_open';
+        return '';
+    }
+    $skript = mt_paths()['bindir'] . '/qr_svg.py';
+    if (!is_file($skript)) {
+        $grund = $skript;
+        return '';
+    }
+    $py = mt_python();
+    if ($py === '') {
+        $grund = 'python3';
+        return '';
+    }
+    $rohre = array();
+    $proc = @proc_open(array($py, '-I', '-B', $skript),
+                       array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+                       $rohre);
+    if (!is_resource($proc)) {
+        $grund = 'proc_open';
+        return '';
+    }
+    @fwrite($rohre[0], $text . "\n");
+    @fclose($rohre[0]);
+    stream_set_blocking($rohre[1], false);
+    $aus = '';
+    $zuviel = false;
+    $ende = microtime(true) + 5.0;
+    while (!feof($rohre[1])) {
+        $rest = $ende - microtime(true);
+        if ($rest <= 0) {
+            break;
+        }
+        $lesen = array($rohre[1]);
+        $schreiben = null;
+        $sonst = null;
+        $n = @stream_select($lesen, $schreiben, $sonst, 0, (int) min(200000, $rest * 1000000));
+        if ($n === false) {
+            break;
+        }
+        if ($n > 0) {
+            $teil = (string) @fread($rohre[1], 65536);
+            $aus .= $teil;
+            if (strlen($aus) > 65536) {
+                $zuviel = true;
+                break;
+            }
+        }
+    }
+    $fertig = feof($rohre[1]);
+    @fclose($rohre[1]);
+    @fclose($rohre[2]);
+    if (!$fertig || $zuviel) {
+        @proc_terminate($proc, 9);
+        @proc_close($proc);
+        $grund = $zuviel ? '64 kB' : '5 s';
+        return '';
+    }
+    $rc = @proc_close($proc);
+    $svg = trim($aus);
+    if ($rc !== 0 || $svg === '') {
+        $grund = 'rc ' . (int) $rc;
+        return '';
+    }
+    if (strlen($svg) > 65536 || !preg_match('~^<svg xmlns="http://www\.w3\.org/2000/svg" viewBox="0 0 ([0-9]{2,3}) \1" '
+            . 'width="([0-9]{2,4})" height="\2" shape-rendering="crispEdges"><rect width="\1" height="\1" '
+            . 'fill="#ffffff"/>(?:<path d="[Mhvz0-9,\-]++" fill="#000000"/>)++</svg>$~', $svg)) {
+        $grund = 'Form';
+        return '';
+    }
+    return $svg;
+}
+
+/** Ein Text auf hoechstens $n Zeichen (UTF-8), ohne Steuerzeichen. */
+function mt_kurz($s, $n)
+{
+    $s = preg_replace('/[\x00-\x1F\x7F]/', '', (string) $s);
+    return preg_match('/^.{0,' . (int) $n . '}/us', (string) $s, $m) === 1 ? $m[0] : '';
+}
+
+/**
+ * Die Liste der gekoppelten Systeme aus antwort.daten pruefen - sie reist
+ * mit der Einmalmeldung (sie traegt keine Zugangsdaten: Index, Hersteller,
+ * Bezeichnung). RootPublicKey, NodeID und FabricID liefert der Dienst gar
+ * nicht erst. Rueckgabe null, wenn unbrauchbar.
+ */
+function mt_fabric_liste_pruefen($d)
+{
+    if (!is_array($d) || !isset($d['liste']) || !is_array($d['liste'])) {
+        return null;
+    }
+    $knoten = mt_ganz(isset($d['knoten']) ? $d['knoten'] : null);
+    if ($knoten === null) {
+        return null;
+    }
+    $liste = array();
+    foreach (array_slice($d['liste'], 0, 32) as $e) {
+        $idx = is_array($e) ? mt_ganz(isset($e['index']) ? $e['index'] : null) : null;
+        if ($idx === null || $idx < 1 || $idx > 254) {
+            continue;
+        }
+        $vid = isset($e['hersteller_id']) ? mt_ganz($e['hersteller_id']) : null;
+        if ($vid !== null && $vid > 65535) {
+            $vid = null;
+        }
+        $liste[] = array(
+            'index'         => $idx,
+            'hersteller_id' => $vid,
+            'hersteller'    => mt_kurz(isset($e['hersteller']) && is_string($e['hersteller']) ? $e['hersteller'] : '', 60),
+            'name_quelle'   => isset($e['name_quelle']) && in_array($e['name_quelle'], array('server', 'rueckfall'), true)
+                               ? $e['name_quelle'] : '',
+            'bezeichnung'   => mt_kurz(isset($e['bezeichnung']) && is_string($e['bezeichnung']) ? $e['bezeichnung'] : '', 32),
+            'eigen'         => !empty($e['eigen']) ? 1 : 0,
+        );
+    }
+    $ts = mt_ganz(isset($d['ts']) ? $d['ts'] : null);
+    return array(
+        'knoten' => $knoten,
+        'nr'     => (int) mt_ganz(isset($d['nr']) ? $d['nr'] : 0),
+        'liste'  => $liste,
+        'eigen'  => isset($d['eigen']) ? mt_ganz($d['eigen']) : null,
+        'quelle' => isset($d['quelle']) && $d['quelle'] === 'bestand' ? 'bestand' : 'geraet',
+        'ts'     => $ts !== null ? $ts : time(),
+    );
+}
+
+/** Der Herstellername einer Zeile, oder "Name unbekannt". */
+function mt_hersteller_text($e)
+{
+    if ($e['hersteller'] !== '') {
+        return $e['hersteller'] . ($e['name_quelle'] === 'rueckfall' ? ' ' . mt_t('ANLERN.NAME_RUECKFALL') : '');
+    }
+    return mt_t('ANLERN.NAME_UNBEKANNT');
+}
+
+/** Der Endpunkt fuer den Miniserver (liegt neben dieser Bibliothek). */
+function mt_endpunkt_datei()
+{
+    return __DIR__ . '/index.php';
 }
 
 

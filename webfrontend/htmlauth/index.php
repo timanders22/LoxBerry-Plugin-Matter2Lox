@@ -89,6 +89,9 @@ $mt_fehler = array();
  * der beanstandeten Felder - sie reisen mit der Einmalmeldung. */
 $mt_eingaben = array();
 $mt_bean = array();
+/* 0.9.39: die Liste der gekoppelten Systeme nach "Gekoppelte Systeme
+ * anzeigen" - sie reist mit der Einmalmeldung (keine Zugangsdaten). */
+$mt_fabrics = null;
 
 /* ---------------------------------------------------------------- *
  * Der Wachposten - EIN Posten, vor allen Handlern.
@@ -458,6 +461,8 @@ if ($mt_post && isset($_POST['speichern'])) {
     $mt_cfg['eigener_container'] = isset($_POST['eigener_container']) ? 1 : 0;
     $mt_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $mt_cfg['schloss_ein'] = isset($_POST['schloss_ein']) ? 1 : 0;
+    // 0.9.39 (Entscheidung 8): fremde Systeme trennen (nicht am Geraet erprobt).
+    $mt_cfg['fabric_entfernen_ein'] = isset($_POST['fabric_entfernen_ein']) ? 1 : 0;
     // 0.9.35 (Nr. 1): nur auf 127.0.0.1 lauschen (eigener Container).
     $mt_cfg['server_lokal'] = isset($_POST['server_lokal']) ? 1 : 0;
 
@@ -891,20 +896,43 @@ if ($mt_post && isset($_POST['log_leeren'])) {
 /* ---------------- Aktionen aus Test und Anlernen ---------------- */
 if ($mt_post && isset($_POST['test'])) {
     $mt_tw = is_string($_POST['test']) ? $_POST['test'] : '';   // Liste: unbekannte Aktion
-    list($mt_stand, $mt_text) = mt_test_aktion($mt_tw);
+    $mt_terg = mt_test_aktion($mt_tw);
+    $mt_stand = (int) $mt_terg[0];
+    $mt_text = (string) $mt_terg[1];
+    /* 0.9.39: das strukturierte Ergebnis (antwort.daten). Die Codes eines
+     * Fensters gehen in fenster.json (0600), NIE in die Einmalmeldung und
+     * nie in eine Meldung (Befund F1). */
+    $mt_tdaten = isset($mt_terg[3]) && is_array($mt_terg[3]) ? $mt_terg[3] : null;
     if ($mt_stand === 1) {
         $mt_meldungen[] = mt_e($mt_text);
     } else {
         $mt_fehler[] = mt_e($mt_text);
     }
-    $mt_tab = in_array($mt_tw, array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster', 'name'), true)
+    $mt_tnr = isset($_POST['test_geraet']) && is_string($_POST['test_geraet'])
+        && preg_match('/^[0-9]{1,3}$/', $_POST['test_geraet']) ? (int) $_POST['test_geraet'] : 0;
+    if ($mt_tw === 'fenster' && $mt_stand === 1 && $mt_tdaten !== null) {
+        $mt_hcfg = mt_config();
+        $mt_bauart = (string) $mt_hcfg['eigener_container'] === '1'
+            ? mt_abbild_bauart($mt_hcfg['container_abbild']) : 'fremd';
+        if (!mt_fenster_merken($mt_tdaten, $mt_tnr, $mt_bauart)) {
+            $mt_fehler[] = mt_e(mt_t('ANLERN.M_FENSTER_NICHT_GEMERKT'));
+        }
+    } elseif ($mt_tw === 'fenster_zu' && $mt_stand === 1 && $mt_tdaten !== null
+              && isset($mt_tdaten['knoten']) && mt_ganz($mt_tdaten['knoten']) !== null) {
+        mt_fenster_vergessen(mt_ganz($mt_tdaten['knoten']));
+    } elseif (($mt_tw === 'fabrics' || $mt_tw === 'fabric_entfernen') && $mt_tdaten !== null) {
+        $mt_fabrics = mt_fabric_liste_pruefen(array_merge($mt_tdaten, array('nr' => $mt_tnr)));
+    }
+    $mt_tab = in_array($mt_tw, array('anlernen', 'wlan', 'thread', 'entfernen', 'fenster', 'name',
+                                     'fenster_zu', 'fabrics', 'fabric_entfernen'), true)
         ? 'tab-commission' : 'tab-test';
     /* 0.9.35 (Nr. 4): Geraet, Endpunkt, Wert (bzw. Name, IP) bleiben nach der
      * Umleitung stehen - bis 0.9.34 sprangen sie bei jedem Druck auf 1/1/50
      * zurueck. Gereist wird mit der Einmalmeldung (mt_eingabe_felder()). */
     if ($mt_tw === 'anlernen') {
         $mt_eingaben = mt_eingaben_sammeln('anlernen', array());
-    } elseif (in_array($mt_tw, array('entfernen', 'fenster', 'name'), true)) {
+    } elseif (in_array($mt_tw, array('entfernen', 'fenster', 'name', 'fenster_zu', 'fabrics',
+                                     'fabric_entfernen'), true)) {
         $mt_eingaben = mt_eingaben_sammeln('verwalten', array());
     } elseif (!in_array($mt_tw, array('wlan', 'thread'), true)) {
         $mt_eingaben = mt_eingaben_sammeln('schalten', array());
@@ -1034,7 +1062,8 @@ if ($mt_post && isset($_POST['mt_zurueck'])) {
  * Einmalmeldung wird NUR beim GET gelesen (Regeln/04). */
 if ($mt_post) {
     if (mt_einmal_schreiben(array('meldungen' => $mt_meldungen, 'fehler' => $mt_fehler,
-                                  'zeige' => $mt_zeige, 'eingaben' => $mt_eingaben))) {
+                                  'zeige' => $mt_zeige, 'eingaben' => $mt_eingaben,
+                                  'fabrics' => $mt_fabrics))) {
         header('Location: index.php?form=' . substr($mt_tab, 4), true, 303);
         exit;
     }
@@ -1051,6 +1080,8 @@ if ($mt_post) {
     }
     // X-2: mt_eingabe() und mt_markierung() lesen sie von hier.
     $mt_eingaben = mt_eingaben_pruefen(isset($mt_einmal['eingaben']) ? $mt_einmal['eingaben'] : null);
+    // 0.9.39: die Liste der gekoppelten Systeme (nur Index, Hersteller, Bezeichnung).
+    $mt_fabrics = isset($mt_einmal['fabrics']) ? mt_fabric_liste_pruefen($mt_einmal['fabrics']) : null;
     if (isset($mt_einmal['zeige']) && in_array($mt_einmal['zeige'], array('selbsttest', 'containerlog'), true)) {
         $mt_zeige = $mt_einmal['zeige'];
     }
@@ -1082,6 +1113,13 @@ if ($mt_zeige === 'selbsttest' && $mt_tab === 'tab-test') {
 /* ---------------- Laden ---------------- */
 $mt_token = mt_token();
 $mt_geraete = mt_geraete();
+/* 0.9.39 (Entscheidung 4): offene Kopplungsfenster aus fenster.json -
+ * Abgelaufenes wird dabei geloescht. Solange eines gezeigt wird, darf weder
+ * der Browser noch ein Zwischenspeicher die Seite aufheben. */
+$mt_fenster = mt_fenster_lesen();
+if ($mt_fenster) {
+    header('Cache-Control: no-store');
+}
 $mt_srv = mt_serverinfo();
 $mt_zustand = mt_zustand();
 $mt_alter = mt_alter();
@@ -1667,6 +1705,14 @@ if ($mt_eigener) {
   </label>
   <div class="sm-hilfe"><?= mt_t('EINST.H_SCHLOSS_EIN') ?></div>
 </div>
+<?php /* 0.9.39 (Entscheidung 8, Regeln/04): nicht am Geraet erprobt - eigener Haken, ab Werk aus. */ ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="fabric_entfernen_ein" value="1" <?= !empty(mt_eingabe('speichern', 'fabric_entfernen_ein', $mt_cfg['fabric_entfernen_ein'])) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('EINST.L_FABRIC_ENTFERNEN_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= mt_t('EINST.H_FABRIC_ENTFERNEN_EIN') ?></div>
+</div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
@@ -1818,6 +1864,100 @@ $mt_geraet_feld = function ($id, $formular) use ($mt_geraete) {
 <?php if (empty($mt_cfg['steuerung_ein'])) { ?>
 <div class="sm-warnung"><?= mt_t('ANLERN.STEUERUNG_GESPERRT') ?></div>
 <?php } ?>
+<?php
+/* 0.9.39 (Entscheidungen 4, 5, 11): jedes offene Kopplungsfenster oben im
+ * Reiter - QR-Bild und Codes sofort sichtbar, darueber der gelbe Hinweis,
+ * daneben "Fenster schliessen". Die Restzeit rechnet ein kleines Skript aus
+ * data-ende (keine Abfrage); ohne JavaScript steht die Uhrzeit da. */
+foreach ($mt_fenster as $mt_f) {
+    $mt_fname = isset($mt_geraete[(string) $mt_f['nr']]['name']) && is_scalar($mt_geraete[(string) $mt_f['nr']]['name'])
+        ? (string) $mt_geraete[(string) $mt_f['nr']]['name'] : '?';
+    $mt_qrgrund = '';
+    $mt_qrsvg = $mt_f['qr'] !== '' ? mt_qr_svg($mt_f['qr'], $mt_qrgrund) : '';
+?>
+<div class="mt-fenster" data-ende="<?= (int) $mt_f['ende'] ?>">
+<h2><?= mt_e(sprintf(mt_t('ANLERN.FENSTER_TITEL'), $mt_f['nr'] . ' - ' . $mt_fname, (int) $mt_f['knoten'])) ?></h2>
+<div class="sm-warnung"><?= mt_t('ANLERN.FENSTER_SICHERHEIT') ?></div>
+<div class="mt-fenster-geheim">
+<?php if ($mt_qrsvg !== '') { ?>
+<div class="mt-qr" role="img" aria-label="<?= mt_e(mt_t('ANLERN.QR_ALT')) ?>" style="margin:10px 0;"><?= $mt_qrsvg ?></div>
+<?php } else { ?>
+<p><?= mt_e(mt_t('ANLERN.FENSTER_KEIN_BILD')) ?></p>
+<?php } ?>
+<table class="sm-tbl">
+<tr><td><?= mt_e(mt_t('ANLERN.L_MANUELL')) ?></td><td><span class="sm-mono"><?= mt_e(mt_code_gegliedert($mt_f['manuell'])) ?></span></td></tr>
+<?php if ($mt_f['qr'] !== '') { ?>
+<tr><td><?= mt_e(mt_t('ANLERN.L_QRTEXT')) ?></td><td><span class="sm-mono"><?= mt_e($mt_f['qr']) ?></span></td></tr>
+<?php } ?>
+</table>
+</div>
+<p class="mt-fenster-zeit"><?= mt_e(sprintf(mt_t('ANLERN.FENSTER_BIS'), date('H:i:s', (int) $mt_f['ende']))) ?> <span class="mt-rest"></span></p>
+<p class="mt-fenster-ab" hidden><b><?= mt_e(mt_t('ANLERN.FENSTER_ABGELAUFEN')) ?></b></p>
+<?php if (!empty($mt_f['wiederverwendet'])) { ?>
+<div class="sm-hinweis"><?= mt_e(mt_t('ANLERN.FENSTER_WIEDER')) ?></div>
+<?php } ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-commission">
+<input data-role="none" type="hidden" name="test_geraet" value="<?= (int) $mt_f['nr'] ?>">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="fenster_zu"><?= mt_e(mt_t('ANLERN.K_FENSTER_ZU')) ?></button>
+</div>
+<div class="sm-hilfe"><?= mt_t('ANLERN.H_FENSTER_ZU') ?></div>
+</form>
+</div>
+<?php }
+
+/* 0.9.39 (Entscheidungen 6 bis 8): die gekoppelten Systeme eines Geraets,
+ * frisch gelesen beim Druck auf "Gekoppelte Systeme anzeigen". Trennen nur
+ * mit dem Haken in den Einstellungen und bekannter eigener Fabric; die
+ * eigene Zeile hat nie einen Knopf. */
+if (is_array($mt_fabrics)) {
+    $mt_fbname = isset($mt_geraete[(string) $mt_fabrics['nr']]['name']) && is_scalar($mt_geraete[(string) $mt_fabrics['nr']]['name'])
+        ? (string) $mt_geraete[(string) $mt_fabrics['nr']]['name'] : '?';
+    $mt_trennen = (string) $mt_cfg['fabric_entfernen_ein'] === '1' && !empty($mt_cfg['steuerung_ein'])
+        && $mt_fabrics['eigen'] !== null;
+?>
+<h2><?= mt_e(sprintf(mt_t('ANLERN.H_FABRICS'), $mt_fabrics['nr'] . ' - ' . $mt_fbname, (int) $mt_fabrics['knoten'])) ?></h2>
+<div class="sm-hinweis"><?= mt_t('ANLERN.FABRICS_ERKLAERUNG') ?></div>
+<?php if ($mt_fabrics['quelle'] === 'bestand') { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('ANLERN.FABRICS_BESTAND')) ?></div>
+<?php } ?>
+<?php if ($mt_trennen) { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<?php } ?>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('ANLERN.T_NR')) ?></th><th><?= mt_e(mt_t('ANLERN.T_SYSTEM')) ?></th><th><?= mt_e(mt_t('ANLERN.T_HERSTELLER_ID')) ?></th><th><?= mt_e(mt_t('ANLERN.T_BEZEICHNUNG')) ?></th><th><?= mt_e(mt_t('ANLERN.T_TRENNEN')) ?></th></tr>
+<?php foreach ($mt_fabrics['liste'] as $mt_fe) { ?>
+<tr><td><?= (int) $mt_fe['index'] ?></td>
+    <td><?= mt_e(mt_hersteller_text($mt_fe)) ?></td>
+    <td><span class="sm-mono"><?= $mt_fe['hersteller_id'] === null ? '-' : mt_e(sprintf('0x%04X', $mt_fe['hersteller_id'])) ?></span></td>
+    <td><?= $mt_fe['bezeichnung'] !== '' ? mt_e($mt_fe['bezeichnung']) : '-' ?></td>
+    <td><?php if (!empty($mt_fe['eigen'])) { ?><b><?= mt_e(mt_t('ANLERN.T_DIESES')) ?></b><?php } elseif ($mt_trennen) { ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-commission">
+<input data-role="none" type="hidden" name="test_geraet" value="<?= (int) $mt_fabrics['nr'] ?>">
+<input data-role="none" type="hidden" name="fabric_index" value="<?= (int) $mt_fe['index'] ?>">
+<label style="display:flex;align-items:center;gap:6px;margin:0 0 6px;font-size:0.9em;">
+  <input data-role="none" type="checkbox" name="fabric_entfernen_ja" value="1"> <?= mt_e(mt_t('ANLERN.L_FABRIC_JA')) ?></label>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="fabric_entfernen"><?= mt_e(mt_t('ANLERN.K_FABRIC_ENTFERNEN')) ?></button>
+</form>
+<?php } else { ?><?= mt_e(mt_t('ANLERN.FABRIC_AUS')) ?><?php } ?></td></tr>
+<?php } ?>
+</table>
+<?php if ($mt_trennen) { ?>
+<div class="sm-hilfe"><?= mt_t('ANLERN.H_FABRIC_ENTFERNEN') ?></div>
+<?php } ?>
+<p class="sm-hilfe"><?= sprintf(mt_t('ANLERN.FABRICS_STAND'), mt_e(date('H:i:s', (int) $mt_fabrics['ts']))) ?></p>
+<?php } ?>
 
 <div class="sm-step"><b><?= mt_e(mt_t('ANLERN.S1_TITEL')) ?></b><br>
 <?= mt_t('ANLERN.S1_TEXT') ?>
@@ -1908,6 +2048,7 @@ if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset
 </div>
 </form>
 <div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
@@ -1948,6 +2089,7 @@ if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset
   <div class="sm-hilfe"><?= mt_t('ANLERN.H_IP') ?></div>
 </div>
 <div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION_ANLERNEN') ?></span>
 </div>
 <div class="sm-knopfreihe">
@@ -1965,7 +2107,12 @@ if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset
   <?= $mt_geraet_feld('test_geraet2', 'verwalten') ?>
 </div>
 <div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<?php /* 0.9.39 (Entscheidungen 6 und 7): liest nur - gruen, ohne Steuerungsfreigabe. */ ?>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="fabrics"><?= mt_e(mt_t('ANLERN.K_FABRICS')) ?></button>
 </div>
 <div class="sm-feld">
   <label for="geraetename"><?= mt_e(mt_t('ANLERN.L_NAME')) ?></label>
@@ -1974,6 +2121,19 @@ if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="name"><?= mt_e(mt_t('ANLERN.K_NAME')) ?></button>
+</div>
+<?php /* 0.9.39 (Entscheidung 3): Dauer 3, 5, 10 oder 15 Minuten, Vorgabe 5. */
+$mt_dwahl = (string) mt_eingabe('verwalten', 'fenster_dauer', '5'); ?>
+<div class="sm-feld">
+  <label for="fenster_dauer"><?= mt_e(mt_t('ANLERN.L_FENSTER_DAUER')) ?></label>
+  <select data-role="none" id="fenster_dauer" name="fenster_dauer">
+<?php foreach (mt_fenster_dauern() as $mt_dm) { ?>
+    <option value="<?= (int) $mt_dm ?>"<?= (string) $mt_dm === $mt_dwahl ? ' selected' : '' ?>><?= mt_e(sprintf(mt_t('ANLERN.O_FENSTER_MIN'), $mt_dm)) ?></option>
+<?php } ?>
+  </select>
+  <div class="sm-hilfe"><?= mt_t('ANLERN.H_FENSTER_DAUER') ?></div>
+</div>
+<div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="fenster"><?= mt_e(mt_t('ANLERN.K_FENSTER')) ?></button>
 </div>
 <?php /* 0.9.35 (Nr. 4): Pflichthaken fuer das Entfernen (Muster geraet_leeren). */ ?>
@@ -1984,6 +2144,42 @@ if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset
 </div>
 </form>
 <div class="sm-hilfe"><?= mt_t('ANLERN.VERWALTEN_HILFE') ?></div>
+<h3><?= mt_e(mt_t('ANLERN.H3_FENSTER_WAS')) ?></h3>
+<p class="sm-hilfe"><?= mt_t('ANLERN.FENSTER_WAS') ?></p>
+<p class="sm-hilfe"><?= mt_t('ANLERN.FENSTER_WOFUER') ?></p>
+<p class="sm-hilfe"><?= mt_t('ANLERN.FENSTER_FREMD') ?></p>
+<?php
+/* 0.9.39 (Entscheidung 12): Fensterzustand am Geraet (Cluster 60), auch ein
+ * fremdes Fenster - nur fuer Geraete, fuer die der Server ihn liefert. Fehlt
+ * die Angabe, fehlt die Zeile, statt "geschlossen" zu behaupten. */
+$mt_fz = array();
+foreach ($mt_geraete as $mt_fznr => $mt_fzg) {
+    $mt_fs = isset($mt_fzg['fenster_geraet']) && is_array($mt_fzg['fenster_geraet']) ? $mt_fzg['fenster_geraet'] : null;
+    if ($mt_fs === null || !isset($mt_fs['status']) || !is_int($mt_fs['status'])) {
+        continue;
+    }
+    if ($mt_fs['status'] === 0) {
+        $mt_fztext = mt_t('ANLERN.FENSTER_GERAET_ZU');
+    } else {
+        $mt_fzvon = isset($mt_fs['admin_name']) && is_string($mt_fs['admin_name']) && $mt_fs['admin_name'] !== ''
+            ? $mt_fs['admin_name']
+            : (isset($mt_fs['admin_vendor']) && is_int($mt_fs['admin_vendor'])
+               ? sprintf('0x%04X', $mt_fs['admin_vendor']) : mt_t('ANLERN.FENSTER_GERAET_UNBEKANNT'));
+        $mt_fztext = sprintf(mt_t('ANLERN.FENSTER_GERAET_OFFEN'), $mt_fzvon);
+    }
+    $mt_fz[] = array($mt_fznr . ' - ' . (isset($mt_fzg['name']) && is_scalar($mt_fzg['name']) ? (string) $mt_fzg['name'] : '?'),
+                     $mt_fztext, $mt_fs['status'] !== 0);
+}
+if ($mt_fz) { ?>
+<h3><?= mt_e(mt_t('ANLERN.H3_FENSTER_GERAET')) ?></h3>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('ANLERN.T_GERAET')) ?></th><th><?= mt_e(mt_t('ANLERN.T_FENSTER')) ?></th></tr>
+<?php foreach ($mt_fz as $mt_fzz) { ?>
+<tr><td><?= mt_e($mt_fzz[0]) ?></td><td class="<?= $mt_fzz[2] ? 'sm-aus' : 'sm-an' ?>"><?= mt_e($mt_fzz[1]) ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?= mt_e(mt_t('ANLERN.FENSTER_GERAET_HINWEIS')) ?></div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -2507,6 +2703,42 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 </div>
 
 </div><!-- /sm-wrap -->
+
+<?php if ($mt_fenster) { ?>
+<script>
+/* 0.9.39 (Entscheidung 11): Restzeit des Kopplungsfensters - nur aus
+ * data-ende gerechnet, keine Abfrage beim LoxBerry. Der Abstand zwischen der
+ * Uhr des LoxBerry und der des Browsers wird beim Laden einmal bestimmt. Bei
+ * 0 verschwinden Bild und Codes aus der Seite. Ohne JavaScript steht die
+ * Uhrzeit "Offen bis" da. */
+(function () {
+	var kaesten = document.querySelectorAll('.mt-fenster[data-ende]');
+	if (!kaesten.length) { return; }
+	var abstand = <?= (int) time() ?> * 1000 - Date.now();
+	var noch = <?= json_encode(mt_t('ANLERN.FENSTER_NOCH'), JSON_UNESCAPED_UNICODE) ?>;
+	function zwei(n) { return (n < 10 ? '0' : '') + n; }
+	function takt() {
+		var jetzt = Date.now() + abstand;
+		kaesten.forEach(function (k) {
+			var rest = Math.floor((parseInt(k.getAttribute('data-ende'), 10) * 1000 - jetzt) / 1000);
+			var anzeige = k.querySelector('.mt-rest');
+			if (rest > 0) {
+				if (anzeige) { anzeige.textContent = '(' + noch + ' ' + Math.floor(rest / 60) + ':' + zwei(rest % 60) + ')'; }
+				return;
+			}
+			var geheim = k.querySelector('.mt-fenster-geheim');
+			if (geheim) { geheim.parentNode.removeChild(geheim); }
+			var zeit = k.querySelector('.mt-fenster-zeit');
+			if (zeit) { zeit.hidden = true; }
+			var ab = k.querySelector('.mt-fenster-ab');
+			if (ab) { ab.hidden = false; }
+		});
+	}
+	takt();
+	setInterval(takt, 1000);
+})();
+</script>
+<?php } ?>
 
 <script>
 (function () {
