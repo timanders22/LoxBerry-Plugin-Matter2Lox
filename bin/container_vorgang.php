@@ -15,6 +15,9 @@
  * Kein Takt und kein Hakenskript ruft diese Datei.
  *
  * Aufruf: php container_vorgang.php einrichten|holen|aktualisieren|uebernehmen
+ *         |bridge_einrichten|bridge_uebernehmen|bridge_neustart
+ * 0.9.42 (Bridge, Beta): die drei bridge_-Auftraege laufen im selben Vorgang
+ * und unter derselben Sperre (mt_br_vorgang() in mt_bridge.php).
  * Rueckgabewert: 0 erledigt, 1 nicht gelungen, 2 falscher Aufruf,
  * 3 es laeuft schon ein Vorgang.
  *
@@ -57,8 +60,9 @@ ini_set('display_errors', '0');
 ini_set('error_log', $mt_p['logdir'] . '/container_vorgang.err');
 
 $mt_auftrag = isset($argv[1]) ? (string) $argv[1] : '';
-if (!in_array($mt_auftrag, array('einrichten', 'holen', 'aktualisieren', 'uebernehmen'), true) || count($argv) !== 2) {
-    fwrite(STDERR, "Unbekannter Auftrag - erlaubt sind nur: einrichten, holen, aktualisieren, uebernehmen\n");
+if (!in_array($mt_auftrag, array('einrichten', 'holen', 'aktualisieren', 'uebernehmen',
+                                'bridge_einrichten', 'bridge_uebernehmen', 'bridge_neustart'), true) || count($argv) !== 2) {
+    fwrite(STDERR, "Unbekannter Auftrag - erlaubt sind nur: einrichten, holen, aktualisieren, uebernehmen, bridge_einrichten, bridge_uebernehmen, bridge_neustart\n");
     exit(2);
 }
 

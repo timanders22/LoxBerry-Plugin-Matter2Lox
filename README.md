@@ -4,11 +4,56 @@ Bindet **Matter-Geräte** an Loxone an — Lampen, Steckdosen, Sensoren,
 Thermostate, Behänge. Übersetzt Matter-Attribute in sprechende MQTT-Themen und
 nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 
-> **Ungeprüft am echten Gerät.** Gebaut ohne Matter-Hardware und ohne
-> laufenden Matter-Server; geprüft gegen eine Attrappe, die das dokumentierte
-> Protokoll nachbildet. Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer
-> echten Anlage messen lässt, steht am Ende dieser Datei unter *Was nicht
-> geprüft ist*.
+> **Am echten Gerät geprüft (15.10.2026):** der python-matter-server mit einem
+> Shelly 2PM Gen3 und Amazon Alexa – Kopplung per QR-Code, Schalten, *Fenster
+> schließen*, *System trennen*. **Nur gegen Attrappen geprüft:** die übrigen
+> Cluster, der matterjs-server und die Matter-Bridge (Beta, seit 0.9.42).
+> Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
+> lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
+
+## Neu in 0.9.42: Matter-Bridge (Beta)
+
+Neuer Reiter **Bridge (Loxone → Alexa/Google/Apple)**: ausgewählte
+Loxone-Bausteine erscheinen in Alexa, Google Home und Apple Home – die
+Gegenrichtung zu *Geräte anlernen*. **Ab Werk aus, nicht am Gerät erprobt.**
+
+* **Container:** `luligu/matterbridge:3.10.13` (feste Fassung, nicht `latest`)
+  mit eigenem Label `de.loxberry.plugin.bridge=<ordner>`. Der Matter-Server
+  trägt weiter `de.loxberry.plugin.folder=`; kein bestehender Knopf und auch
+  *Einstellungen übernehmen* fasst die Bridge nicht an. Aufruf mit
+  `--bind 127.0.0.1`, `--novirtual`, `--port 5550`,
+  `--vendorId 65521 --productId 32768` (0xFFF1/0x8000 – dezimal, weil
+  matterbridge Hex als 0 liest), eigenem Healthcheck, Speichergrenze 640 MB
+  und Docker-Protokoll 2 × 2 MB.
+* **Plugin:** matterbridge-loxone 2.1.1 über `npm ci` mit der mitgelieferten
+  Sperrdatei (`bin/bridge_npm/`, 8 Pakete, Prüfsummen der npm-Registry) in den
+  Bridge-Ordner, Registrierung mit `matterbridge --add`. Danach braucht die
+  Bridge kein Internet mehr.
+* **Loxone-Benutzer:** eigener Benutzer mit Recht *Webseite/Apps*. Das
+  Kennwort wird einmal beim Speichern geprüft (ein Abruf der Strukturdatei) und
+  steht nur in `bridge_zugang.json` und der abgeleiteten Plugin-Konfiguration
+  (beide 0600), nie im Protokoll oder in der Oberfläche.
+* **Wächter gegen die Anmeldesperre** in drei Stufen: kein Start ohne
+  gelungene Testanmeldung; Stopp beim 2. Anmeldefehler in den ersten 120 s;
+  Stopp beim 3. seit dem letzten Erfolg im Minutentakt. Netzfehler zählen nie.
+  Danach Sperrmerker, rote Ampel, eine Benachrichtigung – und kein Takt startet
+  neu.
+* **Bausteinwahl** aus der Strukturdatei mit Vorschlag des Matter-Typs
+  (Schalter → `outlet`, Lichtkreise → `lightoutput`, Jalousie → `shade`,
+  Sensoren); Raumregler, Tore, Türen und Alarm sind ausgegraut, mit Grund.
+* **Koppeln:** QR-Bild und Code im Reiter (nie im Protokoll, Protokollfilter
+  für Codes, QR-Adresse und QR-Grafik), Kopplungsfenster für ein weiteres
+  System (Alexa **und** Google), Liste der gekoppelten Systeme, Anleitung für
+  die Google Home Developer Console. Google braucht einen Matter-Hub wie den
+  Google Home Speaker oder einen Nest-Lautsprecher; ein Chromecast allein
+  genügt nicht.
+* **Sicherung** der Kopplungsdaten vor jedem Neuanlegen und Abbau (ohne das
+  Loxone-Kennwort), Zurückspielen wie bei der Fabric; die Deinstallation
+  entfernt nur Container mit dem Bridge-Label.
+
+Außerdem: Spalte *Matter-Softwarestand (Angabe des Geräts)* in *Erkannte
+Geräte*; öffnet die eigene Verbindung ein Kopplungsfenster am Gerät, heißt der
+Öffner jetzt „Matter2Lox“.
 
 ## Neu in 0.9.41
 
@@ -1607,6 +1652,14 @@ Damit niemand mehr Verlass in diese Zeilen legt, als sie tragen:
   gibt, wenn kein Fenster offen ist; wie der matterjs-server ein schon offenes
   Fenster behandelt und ein System trennt; ob `0/62/1` im Bestand des
   python-matter-server vollständig steht.
+* **Die Matter-Bridge (Beta, seit 0.9.42)** – nur gegen Attrappen für Docker,
+  die matterbridge-Schnittstelle und den Miniserver gemessen. Am Gerät offen:
+  ob `npm link` beim lokalen Plugin ohne Netz gelingt, ob `--bind 127.0.0.1`
+  auch den WebSocket bindet, die genauen Protokollzeilen bei falschem Kennwort
+  und gesperrtem Benutzer (Muster in `bin/bridge_muster.json`), ab wie vielen
+  Fehlversuchen der Miniserver sperrt, ob Alexa und Google die Bridge über das
+  Kopplungsfenster gemeinsam annehmen und ob eine zurückgespielte Sicherung
+  ohne neue Kopplung trägt. Messplan: Entwurf 0.9.42, Abschnitte 5.3 und 5.4.
 * Die Cluster mit `_ungeprueft` in `templates/matter_cluster.json`
   — zurzeit **16 Cluster**. Ihre Nummern stammen aus der Spezifikation,
   gemessen hat sie an einem Gerät niemand. Aufgezählt werden sie nicht hier,

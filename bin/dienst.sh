@@ -493,6 +493,15 @@ case "$1" in
         if marke_gilt; then
             exit 0
         fi
+        # 0.9.42 (Bridge, Beta): Stufe 3 des Bridge-Waechters - unabhaengig
+        # vom Sollmerker des Brueckendienstes, nur aus der Installation und
+        # nur, wenn die Bridge je eingeschaltet wurde (bridge.json). Er
+        # startet nie etwas, er haelt hoechstens an. Frist 50 s, damit sich
+        # zwei Minutenlaeufe nicht ueberholen; Fehler nach bridge_waechter.err.
+        if [ "$INSTALLIERT" = "1" ] && [ -f "$PBIN/bridge_waechter.php" ] && [ -f "$PCONFIG/bridge.json" ]; then
+            ordner_anlegen
+            timeout -k 5 50 php "$PBIN/bridge_waechter.php" >/dev/null 2>>"$PLOG/bridge_waechter.err"
+        fi
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten. Nur aus der Installation:
         # sonst schriebe ein Waechter aus einem Archiv seine Zeile in das

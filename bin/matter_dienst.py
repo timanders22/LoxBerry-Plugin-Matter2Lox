@@ -239,8 +239,9 @@ VORGABEN = {
     # 0.9.35 (Nr. 19): Adresse fuer die Loxone-Vorlagen; leer = LoxBerry-IP.
     "loxone_adresse": "",
     # 0.9.39 (Entscheidung 8): fremde Systeme (Fabrics) vom Geraet trennen.
-    # Belegt im Quelltext beider Matter-Server, am Geraet nicht erprobt -
-    # deshalb ein eigener Haken, ab Werk aus (Regeln/04).
+    # Eigener Haken, ab Werk aus (Regeln/04). Am Geraet erprobt am 15.10.2026
+    # mit dem python-matter-server (Shelly 2PM Gen3, Alexa); mit dem
+    # matterjs-server nur gegen die Attrappe.
     "fabric_entfernen_ein": 0,
 }
 
@@ -1333,11 +1334,18 @@ def knoten_abbilden(node: dict, tab: dict, cfg: dict) -> dict:
         status = _ganz(attribute.get("0/60/0"))
         vid = _ganz(attribute.get("0/60/2"))
         if status is not None:
+            admin = _ganz(attribute.get("0/60/1"))
+            # 0.9.42 (Bericht 0.9.41, offen Nr. 4): hat die EIGENE Verbindung
+            # das Fenster geoeffnet (AdminFabricIndex = CurrentFabricIndex
+            # 0/62/5), nennt die Oberflaeche den Oeffner "Matter2Lox" - die
+            # Rueckfalltabelle kennt die Test-ID 0xFFF1 nicht.
+            eigen = _ganz(attribute.get("0/62/5"))
             fenster_geraet = {
                 "status": status,
-                "admin_fabric": _ganz(attribute.get("0/60/1")),
+                "admin_fabric": admin,
                 "admin_vendor": vid,
                 "admin_name": HERSTELLER_RUECKFALL.get(vid, "") if vid is not None else "",
+                "admin_eigen": 1 if admin is not None and eigen is not None and admin == eigen else 0,
             }
 
     bezeichnung = info.get("bezeichnung") or info.get("produkt") or f"Knoten {node_id}"
@@ -2252,8 +2260,8 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
                 {"knoten": node_id, "zu": 1, "war_offen": 1})
 
     if aktion == "fabric_entfernen":
-        # 0.9.39 (Entscheidung 8): nicht am Geraet erprobt - eigener Haken,
-        # ab Werk aus; die eigene Fabric wird hart abgewiesen (der
+        # 0.9.39 (Entscheidung 8): eigener Haken, ab Werk aus (am Geraet
+        # erprobt 15.10.2026, python-matter-server); die eigene Fabric wird hart abgewiesen (der
         # matterjs-server prueft das in remove_matter_fabric NICHT); vorher
         # und nachher frisch gelesen.
         if not cfg.get("fabric_entfernen_ein"):

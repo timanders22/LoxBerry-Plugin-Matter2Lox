@@ -2,8 +2,10 @@
 /**
  * Matter to Loxone - Bedienoberflaeche
  *
- * Reiter: Einstellungen | Geraete anlernen | MQTT | Einbindung in Loxone |
- *         Test | Logdateien
+ * Reiter: Einstellungen | Geraete anlernen | Bridge | MQTT |
+ *         Einbindung in Loxone | Test | Logdateien
+ * 0.9.42: Reiter "Bridge (Loxone -> Alexa/Google/Apple)" - die Matter-Bridge
+ * (Beta, ab Werk aus), die Gegenrichtung zu "Geraete anlernen".
  *
  * Der Reiter "Geraete anlernen" kommt zu den fuenf des Hausstandards hinzu.
  * Er hat einen eigenen Reiter, weil das Anlernen ein einmaliger Vorgang mit
@@ -80,7 +82,7 @@ if ((isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'G
 /* Aktiver Reiter. Die Positivliste MUSS jeden Reiter enthalten - fehlt einer,
  * ist er sichtbar und anklickbar, aber nach jedem Absenden springt die Seite
  * zurueck auf Einstellungen. */
-$mt_muster = '/^tab-(settings|commission|mqtt|loxone|test|log)$/';
+$mt_muster = '/^tab-(settings|commission|bridge|mqtt|loxone|test|log)$/';
 $mt_tab = 'tab-settings';
 
 $mt_meldungen = array();
@@ -461,7 +463,8 @@ if ($mt_post && isset($_POST['speichern'])) {
     $mt_cfg['eigener_container'] = isset($_POST['eigener_container']) ? 1 : 0;
     $mt_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $mt_cfg['schloss_ein'] = isset($_POST['schloss_ein']) ? 1 : 0;
-    // 0.9.39 (Entscheidung 8): fremde Systeme trennen (nicht am Geraet erprobt).
+    // 0.9.39 (Entscheidung 8): fremde Systeme trennen (am Geraet erprobt am
+    // 15.10.2026 mit dem python-matter-server; matterjs nur gegen die Attrappe).
     $mt_cfg['fabric_entfernen_ein'] = isset($_POST['fabric_entfernen_ein']) ? 1 : 0;
     // 0.9.35 (Nr. 1): nur auf 127.0.0.1 lauschen (eigener Container).
     $mt_cfg['server_lokal'] = isset($_POST['server_lokal']) ? 1 : 0;
@@ -1054,6 +1057,275 @@ if ($mt_post && isset($_POST['mt_zurueck'])) {
     }
 }
 
+/* ==================================================================
+ * 0.9.42: Matter-Bridge (Beta) - Reiter "Bridge"
+ * ==================================================================
+ * Entwurf Pruefung-Matter2Lox-0.9.42/entwurf_bridge.md, alle 15
+ * Entscheidungen wie empfohlen. Ab Werk aus. Alle Knoepfe POST mit
+ * Formularmerkmal, danach PRG; Kopplungscodes und Kennwoerter reisen nie in
+ * der Einmalmeldung und stehen nie in mt_log. Die Bridge wird nur aus der
+ * angemeldeten Oberflaeche verwaltet (kein Weg im Endpunkt html/index.php). */
+
+/* Haken "Bridge betreiben" (ab Werk aus). Abhaken haelt eine laufende
+ * eigene Bridge an - sie bleibt angehalten (unless-stopped). */
+if ($mt_post && isset($_POST['br_ein_speichern'])) {
+    $mt_bc = mt_br_cfg();
+    $mt_bc['bridge_ein'] = isset($_POST['bridge_ein']) ? 1 : 0;
+    if (!mt_br_cfg_speichern($mt_bc)) {
+        $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), mt_e(mt_br_pfade()['cfg']));
+    } else {
+        mt_log('Bridge: Haken "Bridge betreiben" ' . ($mt_bc['bridge_ein'] ? 'gesetzt.' : 'abgenommen.'));
+        $mt_meldungen[] = mt_t($mt_bc['bridge_ein'] ? 'BRIDGE.M_EIN' : 'BRIDGE.M_AUS');
+        if (!$mt_bc['bridge_ein'] && mt_docker_da()) {
+            list($mt_be, ) = mt_br_eigen();
+            $mt_bi = $mt_be === 1 ? mt_br_ist() : null;
+            if ($mt_bi !== null && $mt_bi['laeuft']) {
+                list($mt_ok, $mt_ausgabe) = mt_br_anhalten();
+                if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+            }
+        }
+    }
+    $mt_tab = 'tab-bridge';
+}
+
+/* Schritt 2: Zugang speichern und EINMAL pruefen (Entwurf 3.9). Ein leeres
+ * Kennwortfeld aendert nichts; geloescht wird ueber den Haken (Regeln/05:20).
+ * Das Kennwort steht nie im Protokoll, in der Meldung oder im Feld. */
+if ($mt_post && isset($_POST['br_zugang'])) {
+    $mt_bz = mt_br_zugang();
+    $mt_bb = isset($_POST['br_benutzer']) && is_string($_POST['br_benutzer']) ? trim($_POST['br_benutzer']) : null;
+    $mt_bk = isset($_POST['br_kennwort']) && is_string($_POST['br_kennwort']) ? $_POST['br_kennwort'] : '';
+    if ($mt_bb === null || ($mt_bb !== '' && !mt_br_benutzer_gueltig($mt_bb))) {
+        $mt_fehler[] = mt_t('BRIDGE.M_BENUTZER_FORM');
+    } elseif ($mt_bk !== '' && (strlen($mt_bk) > 128 || preg_match('/[\x00-\x1F\x7F]/', $mt_bk) === 1)) {
+        $mt_fehler[] = mt_t('BRIDGE.M_KENNWORT_FORM');
+    } else {
+        $mt_bvor = $mt_bz['benutzer'] . "\n" . $mt_bz['kennwort'];
+        $mt_bz['benutzer'] = $mt_bb;
+        if (!empty($_POST['br_kennwort_loeschen'])) {
+            $mt_bz['kennwort'] = '';
+        } elseif ($mt_bk !== '') {
+            $mt_bz['kennwort'] = $mt_bk;
+        }
+        if ($mt_bvor !== $mt_bz['benutzer'] . "\n" . $mt_bz['kennwort']) {
+            $mt_bz['geaendert'] = time();
+        }
+        if (!mt_br_zugang_speichern($mt_bz)) {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), mt_e(mt_br_pfade()['zugang']));
+        } else {
+            mt_log('Bridge: Zugang gespeichert (Benutzer ' . ($mt_bz['benutzer'] !== '' ? $mt_bz['benutzer'] : '-')
+                   . ', Kennwort ' . ($mt_bz['kennwort'] !== '' ? 'gesetzt' : 'leer') . ').');
+            $mt_bpruefen = $mt_bz['benutzer'] !== '' && $mt_bz['kennwort'] !== '';
+            if (!$mt_bpruefen) {
+                $mt_meldungen[] = mt_t('BRIDGE.M_ZUGANG_UNVOLLSTAENDIG');
+            }
+        }
+    }
+    $mt_tab = 'tab-bridge';
+}
+if ($mt_post && (isset($_POST['br_pruefen']) || !empty($mt_bpruefen))) {
+    list($mt_berg, $mt_bzahl) = mt_br_testanmeldung();
+    if ($mt_berg === 'ok') {
+        $mt_meldungen[] = sprintf(mt_t('BRIDGE.T_OK'), (int) $mt_bzahl);
+    } else {
+        $mt_fehler[] = mt_t('BRIDGE.T_' . strtoupper($mt_berg));
+    }
+    $mt_tab = 'tab-bridge';
+}
+
+/* Schritt 3: Auswahl uebernehmen. Nur Zeilen der Typtabelle, nur erlaubte
+ * Typen (mt_br_auswahl_pruefen). Laeuft die Bridge, startet der Vorgang
+ * bridge_neustart (Konfiguration schreiben, Neustart, 120 s beobachten). */
+if ($mt_post && isset($_POST['br_auswahl'])) {
+    $mt_bwahl = isset($_POST['br_wahl']) && is_array($_POST['br_wahl']) ? $_POST['br_wahl'] : array();
+    $mt_btyp = isset($_POST['br_typ']) && is_array($_POST['br_typ']) ? $_POST['br_typ'] : array();
+    $mt_bzeilen = mt_br_zeilen();
+    $mt_bvors = array();
+    foreach ($mt_bzeilen as $mt_bz2) {
+        $mt_bvors[$mt_bz2['schluessel']] = $mt_bz2['vorschlag'];
+    }
+    $mt_bwunsch = array();
+    foreach (array_slice($mt_bwahl, 0, 2000) as $mt_bk2) {
+        if (!is_string($mt_bk2)) {
+            continue;
+        }
+        $mt_bt2 = isset($mt_btyp[$mt_bk2]) && is_string($mt_btyp[$mt_bk2]) ? $mt_btyp[$mt_bk2]
+            : (isset($mt_bvors[$mt_bk2]) ? $mt_bvors[$mt_bk2] : '');
+        $mt_bwunsch[$mt_bk2] = $mt_bt2;
+    }
+    list($mt_baw, $mt_bweg) = mt_br_auswahl_pruefen($mt_bwunsch, $mt_bzeilen);
+    $mt_bc = mt_br_cfg();
+    $mt_bc['auswahl'] = $mt_baw;
+    if (!mt_br_cfg_speichern($mt_bc)) {
+        $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), mt_e(mt_br_pfade()['cfg']));
+    } else {
+        mt_log('Bridge: Auswahl gespeichert (' . count($mt_baw) . ' Geraete' . ($mt_bweg ? ', ' . $mt_bweg . ' verworfen' : '') . ').');
+        $mt_meldungen[] = sprintf(mt_t('BRIDGE.M_AUSWAHL'), count($mt_baw));
+        if ($mt_bweg) {
+            $mt_fehler[] = sprintf(mt_t('BRIDGE.M_AUSWAHL_VERWORFEN'), (int) $mt_bweg);
+        }
+        if (count($mt_baw) >= 50) {
+            $mt_fehler[] = mt_t('BRIDGE.M_AUSWAHL_50');
+        }
+        if ($mt_bc['bridge_ein'] && mt_docker_da()) {
+            list($mt_be, ) = mt_br_eigen();
+            if ($mt_be === 1) {
+                list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('bridge_neustart');
+                if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+            }
+        }
+    }
+    $mt_tab = 'tab-bridge';
+}
+
+/* Einrichten, Neu starten (auch "Erneut versuchen" nach einer Sperre),
+ * Einstellungen uebernehmen - im Hintergrund. Die Vorbedingungen
+ * (Haken, Testanmeldung, Sperrmerker) prueft mt_br_vorgang() noch einmal. */
+foreach (array('br_einrichten' => 'bridge_einrichten', 'br_neustart' => 'bridge_neustart',
+               'br_uebernehmen' => 'bridge_uebernehmen') as $mt_bknopf => $mt_bauftrag) {
+    if ($mt_post && isset($_POST[$mt_bknopf])) {
+        list($mt_bfrei, $mt_bschl) = mt_br_freigabe();
+        if (mt_br_cfg()['bridge_ein'] !== 1) {
+            $mt_fehler[] = mt_t('BRIDGE.V_AUS');
+        } elseif (!$mt_bfrei) {
+            $mt_fehler[] = mt_t($mt_bschl);
+        } else {
+            list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten($mt_bauftrag);
+            if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+        }
+        $mt_tab = 'tab-bridge';
+    }
+}
+
+if ($mt_post && isset($_POST['br_anhalten'])) {
+    list($mt_ok, $mt_ausgabe) = mt_br_anhalten();
+    if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+    $mt_tab = 'tab-bridge';
+}
+
+/* Abbauen: Pflichthaken; der zweite Haken loescht auch die Kopplungsdaten. */
+if ($mt_post && isset($_POST['br_abbauen'])) {
+    if (empty($_POST['br_abbauen_ja'])) {
+        $mt_fehler[] = mt_t('BRIDGE.M_ABBAUEN_HAKEN');
+    } else {
+        @set_time_limit(300);
+        ignore_user_abort(true);
+        list($mt_ok, $mt_ausgabe) = mt_br_abbauen(!empty($_POST['br_daten_ja']));
+        if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+    }
+    $mt_tab = 'tab-bridge';
+}
+
+/* Kopplungsfenster fuer weitere Systeme (Multi-Admin, Entwurf 3.16). Der
+ * Merker traegt nur das Ende, nie Codes; die Codes zeigt die Seite beim GET.
+ * Nach 10 min schliesst der Waechter. */
+if ($mt_post && isset($_POST['br_fenster_auf'])) {
+    $mt_ba = mt_br_api('fenster_auf');
+    if (!empty($mt_ba['ok'])) {
+        $mt_bende = time() + mt_br_fenster_dauer();
+        mt_json_schreiben(mt_br_pfade()['fenster'], array('ende' => $mt_bende), 0600);
+        mt_log('Bridge: Kopplungsfenster fuer ein weiteres System geoeffnet (bis ' . date('H:i:s', $mt_bende) . ').');
+        $mt_meldungen[] = sprintf(mt_t('BRIDGE.M_FENSTER_AUF'), date('H:i', $mt_bende));
+    } else {
+        $mt_fehler[] = sprintf(mt_t('BRIDGE.M_API_FEHL'), mt_e(isset($mt_ba['fehler']) ? (string) $mt_ba['fehler'] : '-'));
+    }
+    $mt_tab = 'tab-bridge';
+}
+if ($mt_post && isset($_POST['br_fenster_zu'])) {
+    $mt_ba = mt_br_api('fenster_zu');
+    @unlink(mt_br_pfade()['fenster']);
+    mt_log('Bridge: Kopplungsfenster geschlossen (Knopf)' . (!empty($mt_ba['ok']) ? '.' : ', die Bridge antwortete nicht.'));
+    if (!empty($mt_ba['ok'])) {
+        $mt_meldungen[] = mt_t('BRIDGE.M_FENSTER_ZU');
+    } else {
+        $mt_fehler[] = sprintf(mt_t('BRIDGE.M_API_FEHL'), mt_e(isset($mt_ba['fehler']) ? (string) $mt_ba['fehler'] : '-'));
+    }
+    $mt_tab = 'tab-bridge';
+}
+
+/* Protokoll der Bridge - NUR gefiltert (mt_br_log_filter), nie roh. */
+if ($mt_post && isset($_POST['br_log'])) {
+    $mt_zeige = 'bridgelog';
+    $mt_tab = 'tab-bridge';
+}
+if ($mt_post && isset($_POST['br_log_laden'])) {
+    list($mt_ok, $mt_blog) = mt_br_log(2000);
+    header('Content-Type: text/plain; charset=utf-8');
+    header('Content-Disposition: attachment; filename="matter2lox-bridge-' . date('Y-m-d_H-i') . '.log"');
+    header('Cache-Control: no-store');
+    echo $mt_blog . "\n";
+    exit;
+}
+
+/* Sicherung herunterladen (Entscheidung 8: ohne die Plugin-Konfiguration
+ * samt Kennwort; die Kopplungsschluessel sind darin). */
+if ($mt_post && isset($_POST['br_sichern'])) {
+    list($mt_fok, $mt_fwas, $mt_fzahl) = mt_br_packen();
+    if ($mt_fok) {
+        ignore_user_abort(true);
+        $mt_fweg = $mt_fwas;
+        register_shutdown_function(function () use ($mt_fweg) {
+            if (is_file($mt_fweg)) {
+                @unlink($mt_fweg);
+            }
+        });
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="matter2lox-bridge-' . date('Y-m-d_H-i') . '.tar.gz"');
+        header('Content-Length: ' . (int) @filesize($mt_fwas));
+        header('X-Matter2Lox-Dateien: ' . (int) $mt_fzahl);
+        readfile($mt_fwas);
+        @unlink($mt_fwas);
+        exit;
+    }
+    $mt_fehler[] = $mt_fwas;
+    $mt_tab = 'tab-bridge';
+}
+
+/* Sicherung zurueckspielen wie die Fabric; gestartet wird danach ueber den
+ * Vorgang bridge_neustart (Testanmeldung, Beobachtung), wenn die Bridge lief. */
+if ($mt_post && isset($_POST['br_wh'])) {
+    $mt_quelle = isset($_POST['br_wh_quelle']) && is_string($_POST['br_wh_quelle']) ? $_POST['br_wh_quelle'] : '';
+    $mt_archiv = '';
+    if (empty($_POST['br_wh_ja'])) {
+        $mt_fehler[] = mt_t('EINST.FW_HAKEN');
+    } elseif ($mt_quelle === 'upload') {
+        if (!isset($_FILES['br_datei']) || !is_array($_FILES['br_datei'])
+            || !isset($_FILES['br_datei']['tmp_name']) || !is_string($_FILES['br_datei']['tmp_name'])
+            || !@is_uploaded_file($_FILES['br_datei']['tmp_name'])) {
+            $mt_fehler[] = mt_t('EINST.FW_KEINE_DATEI');
+        } elseif ((int) $_FILES['br_datei']['size'] > 64 * 1024 * 1024) {
+            $mt_fehler[] = mt_t('EINST.FW_ZU_GROSS');
+        } else {
+            $mt_archiv = $_FILES['br_datei']['tmp_name'];
+        }
+    } else {
+        foreach (mt_br_sicherungen() as $mt_fs) {
+            if ($mt_fs['name'] === $mt_quelle) {
+                $mt_archiv = $mt_fs['pfad'];
+            }
+        }
+        if ($mt_archiv === '') {
+            $mt_fehler[] = mt_t('EINST.FW_KEINE_DATEI');
+        }
+    }
+    if ($mt_archiv !== '') {
+        @set_time_limit(600);
+        ignore_user_abort(true);
+        list($mt_ok, $mt_ausgabe, $mt_bwar) = mt_br_wiederherstellen($mt_archiv);
+        if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+        if ($mt_ok && $mt_bwar) {
+            list($mt_bfrei, $mt_bschl) = mt_br_freigabe();
+            if ($mt_bfrei) {
+                list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('bridge_neustart');
+                if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+            } else {
+                $mt_fehler[] = mt_t($mt_bschl);
+            }
+        }
+    }
+    $mt_tab = 'tab-bridge';
+}
+
 /* ---------------- Jeder POST endet mit einer Umleitung (O1, PRG) ----------------
  *
  * Auch ein abgewiesener POST (Formularmerkmal falsch). Laesst sich die
@@ -1082,7 +1354,8 @@ if ($mt_post) {
     $mt_eingaben = mt_eingaben_pruefen(isset($mt_einmal['eingaben']) ? $mt_einmal['eingaben'] : null);
     // 0.9.39: die Liste der gekoppelten Systeme (nur Index, Hersteller, Bezeichnung).
     $mt_fabrics = isset($mt_einmal['fabrics']) ? mt_fabric_liste_pruefen($mt_einmal['fabrics']) : null;
-    if (isset($mt_einmal['zeige']) && in_array($mt_einmal['zeige'], array('selbsttest', 'containerlog'), true)) {
+    // 0.9.42: 'bridgelog' = das gefilterte Protokoll der Bridge (Reiter Bridge).
+    if (isset($mt_einmal['zeige']) && in_array($mt_einmal['zeige'], array('selbsttest', 'containerlog', 'bridgelog'), true)) {
         $mt_zeige = $mt_einmal['zeige'];
     }
 }
@@ -1098,7 +1371,9 @@ if ($mt_post) {
 $mt_cfg = mt_config();
 $mt_eigener = (string) $mt_cfg['eigener_container'] === '1';
 $mt_dlage = array('', '');
-if ($mt_eigener || in_array($mt_tab, array('tab-settings', 'tab-test'), true)) {
+// 0.9.42: dazu der Reiter Bridge, sobald die Bridge je eingeschaltet wurde.
+if ($mt_eigener || in_array($mt_tab, array('tab-settings', 'tab-test'), true)
+    || ($mt_tab === 'tab-bridge' && is_file(mt_br_pfade()['cfg']))) {
     $mt_dbeginn = time();
     $mt_dlage = mt_docker_lage(5);
     mt_docker_seite($mt_dlage[0], max(3, 10 - (time() - $mt_dbeginn)));
@@ -1164,6 +1439,33 @@ if ($mt_einst && $mt_dok) {
 /* 0.9.35 (Nr. 12): die automatischen Fabric-Sicherungen (nur eine Liste). */
 $mt_fsicherungen = $mt_einst ? mt_fabric_sicherungen() : array();
 $mt_fabricgroesse = mt_fabric_groesse();
+/* 0.9.42: Bridge (Beta). Gemessen wird nur, wenn der Reiter Bridge
+ * serverseitig offen ist UND die Bridge je eingeschaltet wurde (bridge.json
+ * liegt) - ab Werk also kein einziger Aufruf an Docker oder die Bridge.
+ * Kopplungscodes kommen nur hier in die Seite (GET), nie in eine Meldung;
+ * solange welche gezeigt werden, darf niemand die Seite aufheben. */
+$mt_brc = mt_br_cfg();
+$mt_brf = mt_br_pfade();
+$mt_br_offen = $mt_tab === 'tab-bridge';
+$mt_br_je = is_file($mt_brf['cfg']);
+$mt_bra = ($mt_br_offen && $mt_br_je) ? mt_br_ampel($mt_dlage[0] !== '' ? $mt_dlage : null) : null;
+$mt_brapi = ($mt_bra !== null && is_array($mt_bra['api']) && $mt_bra['api']['ok']) ? $mt_bra['api'] : null;
+$mt_brfenster = mt_br_fenster();
+$mt_brcodes = $mt_brapi !== null && $mt_brapi['manuell'] !== ''
+    && ($mt_brapi['commissioned'] === false || ($mt_brfenster > 0 && $mt_brapi['advertising'] === true));
+if ($mt_brcodes) {
+    header('Cache-Control: no-store');
+}
+$mt_brzeilen = $mt_br_offen ? mt_br_zeilen() : array();
+$mt_brz = mt_br_zugang();
+$mt_brms = $mt_br_offen ? mt_br_miniserver() : null;
+$mt_brsperre = mt_br_gesperrt();
+$mt_brab = ($mt_bra !== null && $mt_bra['zustand'] !== 'kein' && $mt_bra['ist'] !== null) ? mt_br_abweichung($mt_bra['ist']) : null;
+$mt_brlog = '';
+if ($mt_zeige === 'bridgelog' && $mt_br_offen && $mt_dlage[0] === 'ok') {
+    list(, $mt_brlog) = mt_br_log(300);
+}
+$mt_brsich = $mt_br_offen ? mt_br_sicherungen() : array();
 /* 0.9.35 (Nachtrag Hauptbearbeiter): Adressen fuer Loxone ueber
  * mt_endpunkt_basis()/mt_endpunkt_host() (loxone_adresse -> IP des LoxBerry
  * -> Host-Kopf), nicht mehr ueber den Host-Kopf des Browsers. Lesende
@@ -1365,6 +1667,7 @@ if ($mt_rahmen) {
 <div class="sm-tabs">
 	<a class="sm-tab<?= $mt_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= mt_e(mt_t('REITER.EINSTELLUNGEN')) ?></a>
 	<a class="sm-tab<?= $mt_tab === 'tab-commission' ? ' sm-active' : '' ?>" data-ziel="tab-commission" href="index.php?form=commission"><?= mt_e(mt_t('REITER.ANLERNEN')) ?></a>
+	<a class="sm-tab<?= $mt_tab === 'tab-bridge' ? ' sm-active' : '' ?>" data-ziel="tab-bridge" href="index.php?form=bridge"><?= mt_e(mt_t('REITER.BRIDGE')) ?></a>
 	<a class="sm-tab<?= $mt_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?form=mqtt"><?= mt_e('MQTT') ?></a>
 	<a class="sm-tab<?= $mt_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone" href="index.php?form=loxone"><?= mt_e(mt_t('REITER.LOXONE')) ?></a>
 	<a class="sm-tab<?= $mt_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test" href="index.php?form=test"><?= mt_e(mt_t('REITER.TEST')) ?></a>
@@ -1705,7 +2008,8 @@ if ($mt_eigener) {
   </label>
   <div class="sm-hilfe"><?= mt_t('EINST.H_SCHLOSS_EIN') ?></div>
 </div>
-<?php /* 0.9.39 (Entscheidung 8, Regeln/04): nicht am Geraet erprobt - eigener Haken, ab Werk aus. */ ?>
+<?php /* 0.9.39 (Entscheidung 8, Regeln/04): eigener Haken, ab Werk aus. Am Geraet erprobt am
+   15.10.2026 mit dem python-matter-server (Shelly 2PM Gen3, Alexa). */ ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="fabric_entfernen_ein" value="1" <?= !empty(mt_eingabe('speichern', 'fabric_entfernen_ein', $mt_cfg['fabric_entfernen_ein'])) ? 'checked' : '' ?>>
@@ -1767,6 +2071,7 @@ $mt_leer_knopf = function ($nr) {
 <table class="sm-tbl">
 <tr><th>#</th><th><?= mt_e(mt_t('EINST.T_NAME')) ?></th><th><?= mt_e(mt_t('EINST.T_KNOTEN')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_HERSTELLER')) ?></th><th><?= mt_e(mt_t('EINST.T_PRODUKT')) ?></th>
+    <th><?= mt_e(mt_t('EINST.T_SOFTWARESTAND')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_TYP')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_WERTE')) ?></th><th><?= mt_e(mt_t('EINST.T_ERREICHBAR')) ?></th>
     <th><?= mt_e(mt_t('EINST.T_ZULETZT')) ?></th><th><?= mt_e(mt_t('EINST.T_THEMEN')) ?></th></tr>
@@ -1774,6 +2079,9 @@ $mt_leer_knopf = function ($nr) {
 <tr><td><?= mt_e($mt_nr) ?></td><td><?= mt_e($mt_feld($mt_g, 'name')) ?></td>
     <td><?= (int) $mt_feld($mt_g, 'node_id', 0) ?></td>
     <td><?= mt_e($mt_feld($mt_g, 'hersteller', '—')) ?></td><td><?= mt_e($mt_feld($mt_g, 'produkt', '—')) ?></td>
+    <?php /* 0.9.42: Matter-Softwarestand (SoftwareVersionString, 0/40/10) - die
+       Angabe des Geraets, nicht unbedingt die Firmware des Herstellers. */ ?>
+    <td><?= is_scalar($mt_feld($mt_g, 'firmware', '—')) ? mt_e($mt_feld($mt_g, 'firmware', '—')) : '&mdash;' ?></td>
     <td><?php
       /* Der Dienst rechnet die Geraetetypen je Endpunkt aus und schreibt sie
        * ins Abbild; die Tabelle fuehrt dreizehn uebersetzte Namen dafuer.
@@ -1802,7 +2110,7 @@ $mt_leer_knopf = function ($nr) {
 <?php foreach ($mt_entfernt as $mt_enr => $mt_eknoten) { ?>
 <tr><td><?= (int) $mt_enr ?></td><td><i><?= mt_e(mt_t('EINST.GERAET_ENTFERNT')) ?></i></td>
     <td><?= (int) $mt_eknoten ?></td>
-    <td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
+    <td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
     <td><?= mt_e(mt_zuletzt_text(isset($mt_zuletzt[(string) $mt_eknoten]) ? $mt_zuletzt[(string) $mt_eknoten] : 0)) ?></td>
     <td><?= $mt_leer_knopf($mt_enr) ?></td></tr>
 <?php } ?>
@@ -2164,10 +2472,15 @@ foreach ($mt_geraete as $mt_fznr => $mt_fzg) {
     if ($mt_fs['status'] === 0) {
         $mt_fztext = mt_t('ANLERN.FENSTER_GERAET_ZU');
     } else {
-        $mt_fzvon = isset($mt_fs['admin_name']) && is_string($mt_fs['admin_name']) && $mt_fs['admin_name'] !== ''
+        /* 0.9.42 (Bericht 0.9.41, offen Nr. 4): oeffnete die EIGENE Fabric das
+         * Fenster (AdminFabricIndex = CurrentFabricIndex, admin_eigen vom
+         * Dienst), heisst der Oeffner "Matter2Lox" - wie in der Liste der
+         * gekoppelten Systeme. */
+        $mt_fzvon = !empty($mt_fs['admin_eigen']) ? mt_t('ANLERN.NAME_EIGEN')
+            : (isset($mt_fs['admin_name']) && is_string($mt_fs['admin_name']) && $mt_fs['admin_name'] !== ''
             ? $mt_fs['admin_name']
             : (isset($mt_fs['admin_vendor']) && is_int($mt_fs['admin_vendor'])
-               ? sprintf('0x%04X', $mt_fs['admin_vendor']) : mt_t('ANLERN.FENSTER_GERAET_UNBEKANNT'));
+               ? sprintf('0x%04X', $mt_fs['admin_vendor']) : mt_t('ANLERN.FENSTER_GERAET_UNBEKANNT')));
         $mt_fztext = sprintf(mt_t('ANLERN.FENSTER_GERAET_OFFEN'), $mt_fzvon);
     }
     $mt_fz[] = array($mt_fznr . ' - ' . (isset($mt_fzg['name']) && is_scalar($mt_fzg['name']) ? (string) $mt_fzg['name'] : '?'),
@@ -2182,6 +2495,380 @@ if ($mt_fz) { ?>
 <?php } ?>
 </table>
 <div class="sm-hilfe"><?= mt_e(mt_t('ANLERN.FENSTER_GERAET_HINWEIS')) ?></div>
+<?php } ?>
+</div>
+
+<!-- ================= Reiter: Bridge (0.9.42, Beta) ================= -->
+<div class="sm-seite<?= $mt_tab === 'tab-bridge' ? ' sm-active' : '' ?>" id="tab-bridge">
+<h2><?= mt_e(mt_t('BRIDGE.H_TITEL')) ?></h2>
+<div class="sm-warnung"><b><?= mt_e(mt_t('BRIDGE.BETA_TITEL')) ?></b> <?= mt_t('BRIDGE.BETA_TEXT') ?></div>
+<p><?= mt_t('BRIDGE.EINLEITUNG') ?></p>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.GRENZEN') ?></p>
+<?php if (!$mt_br_offen) { ?>
+<p class="sm-hilfe"><?= mt_e(mt_t('BRIDGE.NUR_HIER')) ?></p>
+<?php } else {
+    $mt_brvakt = in_array($mt_vorgang['zustand'], array('gestartet', 'laeuft'), true);
+    $mt_brvanz = (isset($mt_vorgang['vorgang']) && strpos((string) $mt_vorgang['vorgang'], 'bridge_') === 0)
+        ? mt_ct_vorgang_anzeige($mt_vorgang) : null;
+    $mt_bfarbe = array('gruen' => 'sm-ampel sm-ampel-gruen', 'rot' => 'sm-ampel sm-ampel-rot', 'grau' => 'sm-ampel sm-ampel-grau');
+?>
+<div id="mt-vorgang-br" data-aktiv="<?= $mt_brvakt ? '1' : '0' ?>">
+<?php if ($mt_brvanz !== null && $mt_brvanz[0] === 'sm-hinweis') { ?>
+<div class="sm-hinweis"><?= $mt_brvanz[1] ?> <span id="mt-vorgang-br-stand"></span></div>
+<?php } elseif ($mt_brvanz !== null) { ?>
+<div class="sm-warnung"><?= $mt_brvanz[1] ?></div>
+<?php } elseif ($mt_brvakt) { ?>
+<div class="sm-hinweis"><?= mt_e(mt_t('BRIDGE.ANDERER_VORGANG')) ?> <span id="mt-vorgang-br-stand"></span></div>
+<?php } ?>
+</div>
+
+<?php if ($mt_brsperre !== null) { ?>
+<div class="sm-fehler"><b><?= mt_e(mt_t('BRIDGE.SPERRE_TITEL')) ?></b><br>
+<?= sprintf(mt_t('BRIDGE.SPERRE_TEXT'), mt_e($mt_brz['benutzer'] !== '' ? $mt_brz['benutzer'] : '-'),
+            mt_e(date('d.m.Y H:i', (int) $mt_brsperre['ts']))) ?>
+<?php if (isset($mt_brsperre['zeile']) && is_string($mt_brsperre['zeile']) && $mt_brsperre['zeile'] !== '') { ?>
+<br><span class="sm-mono"><?= mt_e(mt_br_log_filter($mt_brsperre['zeile'])) ?></span>
+<?php } ?>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_neustart" value="1"<?= $mt_brvakt ? ' disabled' : '' ?>><?= mt_e(mt_t('BRIDGE.K_ERNEUT')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.H_ERNEUT') ?></div>
+</div>
+<?php } ?>
+
+<?php if ($mt_bra !== null) { ?>
+<table class="sm-tbl">
+<tr><th style="width:2.5em;"></th><th><?= mt_e(mt_t('EINST.A_FRAGE')) ?></th><th><?= mt_e(mt_t('EINST.A_BEFUND')) ?></th></tr>
+<?php foreach (array('container' => 'BRIDGE.A_CONTAINER', 'anmeldung' => 'BRIDGE.A_ANMELDUNG', 'geraete' => 'BRIDGE.A_GERAETE', 'kopplung' => 'BRIDGE.A_KOPPLUNG') as $mt_bak => $mt_bab) {
+    $mt_baf = isset($mt_bfarbe[$mt_bra[$mt_bak][0]]) ? $mt_bfarbe[$mt_bra[$mt_bak][0]] : $mt_bfarbe['grau']; ?>
+<tr><td style="text-align:center;"><i class="<?= $mt_baf ?>" title="<?= mt_e($mt_bra[$mt_bak][0]) ?>"></i></td>
+    <td><?= mt_e(mt_t($mt_bab)) ?></td><td><?= $mt_bra[$mt_bak][1] ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+
+<div class="sm-step"><b><?= mt_e(mt_t('BRIDGE.S1_TITEL')) ?></b><br>
+<?= mt_t('BRIDGE.S1_TEXT') ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+  <div class="sm-feld">
+    <label style="display:inline-flex;align-items:center;gap:8px;">
+      <input data-role="none" type="checkbox" name="bridge_ein" value="1"<?= $mt_brc['bridge_ein'] ? ' checked' : '' ?>>
+      <?= mt_e(mt_t('BRIDGE.L_EIN')) ?>
+    </label>
+    <div class="sm-hilfe"><?= mt_t('BRIDGE.H_EIN') ?></div>
+  </div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_ein_speichern" value="1"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+  </div>
+</form>
+<?php if ($mt_brc['bridge_ein'] && $mt_bra !== null) {
+    $mt_brlaeuft = $mt_bra['zustand'] === 'laeuft'; ?>
+<table class="sm-tbl">
+<tr><th style="width:36px;">&nbsp;</th><th><?= mt_e(mt_t('BRIDGE.T_VORAUSSETZUNG')) ?></th></tr>
+<?php foreach (mt_br_voraussetzungen($mt_dlage[0] !== '' ? $mt_dlage : null, $mt_brlaeuft) as $mt_bv) { ?>
+<tr><td style="text-align:center;"><?php
+    if ($mt_bv[0] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
+    elseif ($mt_bv[0] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
+    else { echo '<span style="color:#888;">&#9679;</span>'; } ?></td><td><?= $mt_bv[1] ?></td></tr>
+<?php } ?>
+</table>
+<?php if ($mt_bra['zustand'] === 'kein') { ?>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_einrichten" value="1"<?= $mt_brvakt ? ' disabled' : '' ?>><?= mt_e(mt_t('BRIDGE.K_EINRICHTEN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.H_EINRICHTEN') ?></div>
+<?php } ?>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b><?= mt_e(mt_t('BRIDGE.S2_TITEL')) ?></b><br>
+<div class="sm-hinweis"><?= mt_t('BRIDGE.S2_BENUTZER') ?></div>
+<div class="sm-warnung"><?= mt_t('BRIDGE.S2_SPERRE') ?></div>
+<p class="sm-hilfe"><?= $mt_brms !== null
+    ? sprintf(mt_t('BRIDGE.S2_MS'), mt_e($mt_brms['host'] . ':' . $mt_brms['port']))
+    : mt_t('BRIDGE.S2_KEIN_MS') ?></p>
+<form action="index.php" method="post" autocomplete="off">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+  <div class="sm-feld">
+    <label for="br_benutzer"><?= mt_e(mt_t('BRIDGE.L_BENUTZER')) ?></label>
+    <input data-role="none" type="text" id="br_benutzer" name="br_benutzer" value="<?= mt_e($mt_brz['benutzer']) ?>" maxlength="64" placeholder="matterbridge">
+  </div>
+  <div class="sm-feld">
+    <label for="br_kennwort"><?= mt_e(mt_t('BRIDGE.L_KENNWORT')) ?></label>
+    <input data-role="none" type="password" autocomplete="new-password" id="br_kennwort" name="br_kennwort" value=""
+           placeholder="<?= $mt_brz['kennwort'] !== '' ? mt_e(mt_t('ANLERN.PW_GESETZT')) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
+    <label style="display:flex;align-items:center;gap:6px;margin:6px 0 0;font-size:0.85em;">
+      <input data-role="none" type="checkbox" name="br_kennwort_loeschen" value="1"> <?= mt_e(mt_t('BRIDGE.L_KENNWORT_LOESCHEN')) ?></label>
+  </div>
+  <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_zugang" value="1"><?= mt_e(mt_t('BRIDGE.K_ZUGANG')) ?></button>
+  </div>
+</form>
+<?php if ($mt_brz['benutzer'] !== '' && $mt_brz['kennwort'] !== '') { ?>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_pruefen" value="1"><?= mt_e(mt_t('BRIDGE.K_PRUEFEN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.H_PRUEFEN') ?></div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b><?= mt_e(mt_t('BRIDGE.S3_TITEL')) ?></b><br>
+<?= mt_t('BRIDGE.S3_TEXT') ?>
+<?php if (!$mt_brzeilen) { ?>
+<div class="sm-hinweis"><?= mt_e(mt_t('BRIDGE.S3_LEER')) ?></div>
+<?php } else {
+    $mt_brzahl = 0;
+    foreach ($mt_brzeilen as $mt_bzl) {
+        if (isset($mt_brc['auswahl'][$mt_bzl['schluessel']])) { $mt_brzahl++; }
+    } ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+  <div class="sm-breit">
+  <table class="sm-tbl">
+  <tr><th style="width:2.5em;"></th><th><?= mt_e(mt_t('BRIDGE.T_RAUM')) ?></th><th><?= mt_e(mt_t('BRIDGE.T_NAME')) ?></th>
+      <th><?= mt_e(mt_t('BRIDGE.T_LOXTYP')) ?></th><th><?= mt_e(mt_t('BRIDGE.T_MATTERTYP')) ?></th><th><?= mt_e(mt_t('BRIDGE.T_HINWEIS')) ?></th></tr>
+<?php foreach ($mt_brzeilen as $mt_bi2 => $mt_bzl) {
+    $mt_bgrau = $mt_bzl['vorschlag'] === '';
+    $mt_bist = isset($mt_brc['auswahl'][$mt_bzl['schluessel']]) ? $mt_brc['auswahl'][$mt_bzl['schluessel']] : ''; ?>
+  <tr<?= $mt_bgrau ? ' style="color:#888;"' : '' ?>>
+    <td style="text-align:center;"><input data-role="none" type="checkbox" name="br_wahl[]" id="brw<?= (int) $mt_bi2 ?>" value="<?= mt_e($mt_bzl['schluessel']) ?>"<?= $mt_bist !== '' ? ' checked' : '' ?><?= $mt_bgrau ? ' disabled' : '' ?>></td>
+    <td><?= mt_e($mt_bzl['raum'] !== '' ? $mt_bzl['raum'] : '-') ?></td>
+    <td><label for="brw<?= (int) $mt_bi2 ?>"><?= mt_e($mt_bzl['name']) ?></label></td>
+    <td><span class="sm-mono"><?= mt_e($mt_bzl['loxone_typ']) ?></span></td>
+    <td><?php if ($mt_bgrau) { ?>&mdash;<?php } elseif (count($mt_bzl['wahl']) === 1) { ?><span class="sm-mono"><?= mt_e($mt_bzl['wahl'][0]) ?></span><?php } else { ?>
+      <select data-role="none" name="br_typ[<?= mt_e($mt_bzl['schluessel']) ?>]">
+<?php foreach ($mt_bzl['wahl'] as $mt_bw) { ?>
+        <option value="<?= mt_e($mt_bw) ?>"<?= ($mt_bist !== '' ? $mt_bist : $mt_bzl['vorschlag']) === $mt_bw ? ' selected' : '' ?>><?= mt_e($mt_bw) ?></option>
+<?php } ?>
+      </select><?php } ?></td>
+    <td><?= $mt_bgrau ? mt_e(mt_t($mt_bzl['grund'])) : ($mt_bzl['hinweis'] !== '' ? mt_e(mt_t($mt_bzl['hinweis'])) : '') ?></td></tr>
+<?php } ?>
+  </table>
+  </div>
+  <p class="<?= $mt_brzahl >= 50 ? 'sm-aus' : 'sm-hilfe' ?>"><?= mt_e(sprintf(mt_t($mt_brzahl >= 50 ? 'BRIDGE.ZAHL_50' : 'BRIDGE.ZAHL'), $mt_brzahl)) ?></p>
+  <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_auswahl" value="1"<?= $mt_brvakt ? ' disabled' : '' ?>><?= mt_e(mt_t('BRIDGE.K_AUSWAHL')) ?></button>
+  </div>
+</form>
+<?php } ?>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.S3_FEHLT') ?></div>
+</div>
+
+<div class="sm-step"><b><?= mt_e(mt_t('BRIDGE.S4_TITEL')) ?></b><br>
+<p class="sm-hilfe"><?= mt_e(sprintf(mt_t('BRIDGE.KENNUNGEN'), mt_br_matter_port())) ?></p>
+<?php if ($mt_brapi === null) { ?>
+<div class="sm-hinweis"><?= mt_e(mt_t('BRIDGE.S4_OHNE')) ?></div>
+<?php } else {
+    if ($mt_brcodes) {
+        $mt_bqrgrund = '';
+        $mt_bqrsvg = $mt_brapi['qr'] !== '' ? mt_qr_svg($mt_brapi['qr'], $mt_bqrgrund) : ''; ?>
+<div class="mt-fenster"<?= $mt_brfenster > 0 && $mt_brapi['commissioned'] !== false ? ' data-ende="' . (int) $mt_brfenster . '"' : '' ?>>
+<div class="sm-warnung"><?= mt_t('BRIDGE.CODE_SICHERHEIT') ?></div>
+<div class="mt-fenster-geheim">
+<?php if ($mt_bqrsvg !== '') { ?>
+<div class="mt-qr" role="img" aria-label="<?= mt_e(mt_t('ANLERN.QR_ALT')) ?>" style="margin:10px 0;"><?= $mt_bqrsvg ?></div>
+<?php } else { ?>
+<p><?= mt_e(mt_t('ANLERN.FENSTER_KEIN_BILD')) ?></p>
+<?php } ?>
+<table class="sm-tbl">
+<tr><td><?= mt_e(mt_t('ANLERN.L_MANUELL')) ?></td><td><span class="sm-mono"><?= mt_e(mt_code_gegliedert($mt_brapi['manuell'])) ?></span></td></tr>
+</table>
+</div>
+<?php if ($mt_brfenster > 0 && $mt_brapi['commissioned'] !== false) { ?>
+<p class="mt-fenster-zeit"><?= mt_e(sprintf(mt_t('ANLERN.FENSTER_BIS'), date('H:i:s', $mt_brfenster))) ?> <span class="mt-rest"></span></p>
+<p class="mt-fenster-ab" hidden><b><?= mt_e(mt_t('ANLERN.FENSTER_ABGELAUFEN')) ?></b></p>
+<?php } ?>
+<p><?= mt_t('BRIDGE.KOPPELN_ANLEITUNG') ?></p>
+</div>
+<?php } elseif ($mt_brapi['commissioned'] === true) { ?>
+<div class="sm-hinweis"><?= mt_e(mt_t('BRIDGE.S4_GEKOPPELT')) ?></div>
+<?php } ?>
+<?php if ($mt_brapi['commissioned'] === true) { ?>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+<?php if ($mt_brfenster > 0) { ?>
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_fenster_zu" value="1"><?= mt_e(mt_t('ANLERN.K_FENSTER_ZU')) ?></button>
+  </form>
+<?php } else { ?>
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_fenster_auf" value="1"><?= mt_e(mt_t('BRIDGE.K_FENSTER_AUF')) ?></button>
+  </form>
+<?php } ?>
+</div>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.H_FENSTER') ?></div>
+<?php } ?>
+<?php if ($mt_brapi['fabrics']) { ?>
+<h3><?= mt_e(mt_t('BRIDGE.H_SYSTEME')) ?></h3>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('ANLERN.T_NR')) ?></th><th><?= mt_e(mt_t('ANLERN.T_SYSTEM')) ?></th><th><?= mt_e(mt_t('ANLERN.T_HERSTELLER_ID')) ?></th><th><?= mt_e(mt_t('ANLERN.T_BEZEICHNUNG')) ?></th></tr>
+<?php foreach ($mt_brapi['fabrics'] as $mt_bfb) { ?>
+<tr><td><?= (int) $mt_bfb['index'] ?></td>
+    <td><?= mt_e($mt_bfb['hersteller'] !== '' ? $mt_bfb['hersteller'] : mt_t('ANLERN.NAME_UNBEKANNT')) ?></td>
+    <td><span class="sm-mono"><?= $mt_bfb['hersteller_id'] === null ? '-' : mt_e(sprintf('0x%04X', $mt_bfb['hersteller_id'])) ?></span></td>
+    <td><?= $mt_bfb['bezeichnung'] !== '' ? mt_e($mt_bfb['bezeichnung']) : '-' ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?= mt_e(mt_t('BRIDGE.SYSTEME_HILFE')) ?></div>
+<?php } ?>
+<?php } ?>
+<details class="sm-step"><summary><b><?= mt_e(mt_t('BRIDGE.H_GOOGLE')) ?></b></summary>
+<?= mt_t('BRIDGE.GOOGLE_TEXT') ?>
+<ol>
+<li><?= mt_t('BRIDGE.GOOGLE_1') ?></li>
+<li><?= mt_t('BRIDGE.GOOGLE_2') ?></li>
+<li><?= mt_t('BRIDGE.GOOGLE_3') ?></li>
+<li><?= mt_t('BRIDGE.GOOGLE_4') ?></li>
+<li><?= mt_t('BRIDGE.GOOGLE_5') ?></li>
+<li><?= mt_t('BRIDGE.GOOGLE_6') ?></li>
+</ol>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.GOOGLE_PROJEKT') ?></p>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.GOOGLE_HUB') ?></p>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.GOOGLE_ANDROID') ?></p>
+</details>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.ALEXA_HINWEIS') ?></p>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.TEILEN_HINWEIS') ?></p>
+</div>
+
+<div class="sm-step"><b><?= mt_e(mt_t('BRIDGE.S5_TITEL')) ?></b><br>
+<?php if (is_array($mt_brab) && $mt_brab && !$mt_brvakt) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('BRIDGE.AB_TITEL')) ?>
+<ul style="margin:6px 0 6px 18px;padding:0;">
+<?php foreach ($mt_brab as $mt_babz) { ?><li><span class="sm-mono"><?= mt_e($mt_babz) ?></span></li><?php } ?>
+</ul>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_uebernehmen" value="1"><?= mt_e(mt_t('EINST.K_UEBERNEHMEN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.H_UEBERNEHMEN') ?></div>
+</div>
+<?php } ?>
+<?php if ($mt_bra !== null && in_array($mt_bra['zustand'], array('laeuft', 'steht'), true)) { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= mt_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_neustart" value="1"<?= $mt_brvakt ? ' disabled' : '' ?>><?= mt_e(mt_t($mt_bra['zustand'] === 'laeuft' ? 'BRIDGE.K_NEUSTART' : 'BRIDGE.K_STARTEN')) ?></button>
+  </form>
+<?php if ($mt_bra['zustand'] === 'laeuft') { ?>
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_anhalten" value="1"><?= mt_e(mt_t('BRIDGE.K_ANHALTEN')) ?></button>
+  </form>
+<?php } ?>
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="br_log" value="1"><?= mt_e(mt_t('BRIDGE.K_LOG')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="br_log_laden" value="1"><?= mt_e(mt_t('BRIDGE.K_LOG_LADEN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.H_LOG') ?></div>
+<?php if ($mt_brlog !== '') { ?>
+<div class="sm-pre"><?= mt_e($mt_brlog) ?></div>
+<?php } ?>
+<?php } ?>
+<?php if ($mt_bra !== null && $mt_bra['zustand'] !== 'fremd' && $mt_bra['zustand'] !== 'unklar'
+          && ($mt_bra['zustand'] !== 'kein' || is_dir($mt_brf['ordner']))) { ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+  <label style="display:flex;align-items:center;gap:6px;margin:8px 0 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="br_abbauen_ja" value="1"> <?= mt_e(mt_t('BRIDGE.L_ABBAUEN_JA')) ?></label>
+  <label style="display:flex;align-items:center;gap:6px;margin:4px 0 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="br_daten_ja" value="1"> <?= mt_e(mt_t('BRIDGE.L_DATEN_JA')) ?></label>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_abbauen" value="1"<?= $mt_brvakt ? ' disabled' : '' ?>><?= mt_e(mt_t('BRIDGE.K_ABBAUEN')) ?></button>
+  </div>
+</form>
+<div class="sm-hilfe"><?= mt_t('BRIDGE.H_ABBAUEN') ?></div>
+<?php } ?>
+</div>
+
+<?php if (is_dir($mt_brf['ordner']) || $mt_brsich) { ?>
+<details class="sm-step"><summary><b><?= mt_e(mt_t('BRIDGE.H_SICHERUNG')) ?></b></summary>
+<div class="sm-warnung"><?= mt_t('BRIDGE.SICHERUNG_TEXT') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo mt_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="br_sichern" value="1"><?= mt_e(mt_t('BRIDGE.K_SICHERN')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= sprintf(mt_t('BRIDGE.S_AUTO'), mt_e($mt_brf['sicherungen'])) ?></div>
+<form action="index.php" method="post" enctype="multipart/form-data">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+  <table class="sm-tbl">
+  <tr><th style="width:2.5em;"></th><th><?= mt_e(mt_t('EINST.FS_T_QUELLE')) ?></th><th><?= mt_e(mt_t('EINST.FS_T_GROESSE')) ?></th></tr>
+<?php foreach ($mt_brsich as $mt_bsi => $mt_bss) { ?>
+  <tr><td style="text-align:center;"><input data-role="none" type="radio" name="br_wh_quelle" id="bwq<?= (int) $mt_bsi ?>" value="<?= mt_e($mt_bss['name']) ?>"<?= $mt_bsi === 0 ? ' checked' : '' ?>></td>
+      <td><label for="bwq<?= (int) $mt_bsi ?>"><span class="sm-mono"><?= mt_e($mt_bss['name']) ?></span> (<?= mt_e(date('d.m.Y H:i', $mt_bss['zeit'])) ?>)</label></td>
+      <td><?= (int) round($mt_bss['groesse'] / 1024) ?> kB</td></tr>
+<?php } ?>
+  <tr><td style="text-align:center;"><input data-role="none" type="radio" name="br_wh_quelle" id="bwqup" value="upload"<?= $mt_brsich ? '' : ' checked' ?>></td>
+      <td><label for="bwqup"><?= mt_e(mt_t('EINST.FS_UPLOAD')) ?></label>
+          <input data-role="none" type="file" name="br_datei" accept=".gz,.tgz,application/gzip"></td>
+      <td>&mdash;</td></tr>
+  </table>
+  <label style="display:flex;align-items:center;gap:6px;margin:8px 0;font-size:0.9em;">
+    <input data-role="none" type="checkbox" name="br_wh_ja" value="1"> <?= mt_e(mt_t('BRIDGE.L_WH_JA')) ?></label>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_wh" value="1"<?= $mt_brvakt ? ' disabled' : '' ?>><?= mt_e(mt_t('BRIDGE.K_WH')) ?></button>
+  </div>
+</form>
+</details>
+<?php } ?>
+
+<details class="sm-step"><summary><b><?= mt_e(mt_t('EINST.H_FORTGESCHRITTEN')) ?></b></summary>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('ALLG.EIGENSCHAFT')) ?></th><th><?= mt_e(mt_t('ALLG.WERT')) ?></th></tr>
+<tr><td><?= mt_e(mt_t('EINST.T_AUFRUF')) ?></td><td><span class="sm-mono">docker <?= mt_e(mt_br_befehl()) ?></span></td></tr>
+<tr><td><?= mt_e(mt_t('BRIDGE.T_ORDNER')) ?></td><td><span class="sm-mono"><?= mt_e($mt_brf['ordner']) ?></span></td></tr>
+<tr><td><?= mt_e(mt_t('BRIDGE.T_PLUGIN')) ?></td><td><span class="sm-mono">matterbridge-loxone <?= mt_e(mt_br_plugin_fassung()) ?></span></td></tr>
+</table>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.FRONTEND_LOKAL') ?></p>
+</details>
 <?php } ?>
 </div>
 
@@ -2707,7 +3394,8 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 
 </div><!-- /sm-wrap -->
 
-<?php if ($mt_fenster) { ?>
+<?php /* 0.9.42: auch fuer das Kopplungsfenster der Bridge (Reiter Bridge). */
+if ($mt_fenster || $mt_brcodes) { ?>
 <script>
 /* 0.9.39 (Entscheidung 11): Restzeit des Kopplungsfensters - nur aus
  * data-ende gerechnet, keine Abfrage beim LoxBerry. Der Abstand zwischen der
@@ -2757,7 +3445,8 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 		// Verweis laedt die Seite mit ?form=test, und erst dann laufen die
 		// Pruefungen (Regeln/04). Bis 0.9.30 zeigte ein Klick nur die
 		// Aufforderung, den Reiter aufzurufen (Bericht oberflaeche Nr. 10).
-		if (r.dataset.ziel === 'tab-test') { return; }
+		// 0.9.42: der Reiter Bridge ebenso - er misst nur serverseitig.
+		if (r.dataset.ziel === 'tab-test' || r.dataset.ziel === 'tab-bridge') { return; }
 		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
 	});
 	zeige(<?= json_encode($mt_tab) ?>);
@@ -2768,7 +3457,10 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 	 * Vorgang zu Ende ist - und nur, wenn der Reiter Einstellungen sichtbar
 	 * ist und kein Formularfeld geaendert wurde oder gerade bedient wird.
 	 * Sonst steht ein Hinweis mit Verweis da. */
-	var vg = document.getElementById('mt-vorgang');
+	/* 0.9.42: dieselbe Nachfrage fuer den Reiter Bridge (eigener Kasten
+	 * mt-vorgang-br, Neuladen auf form=bridge). */
+	function beobachte(vgId, standId, tabId, ziel) {
+	var vg = document.getElementById(vgId);
 	if (!vg || vg.getAttribute('data-aktiv') !== '1' || !window.fetch) { return; }
 	var geaendert = false;
 	document.addEventListener('input', function () { geaendert = true; }, true);
@@ -2778,10 +3470,10 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 		return !!(a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName));
 	}
 	function sichtbar() {
-		var t = document.getElementById('tab-settings');
+		var t = document.getElementById(tabId);
 		return !!(t && t.classList.contains('sm-active')) && !document.hidden;
 	}
-	var stand = document.getElementById('mt-vorgang-stand');
+	var stand = document.getElementById(standId);
 	var fertigText = <?= json_encode(mt_t('EINST.V_FERTIG_NEU_LADEN'), JSON_UNESCAPED_UNICODE) ?>;
 	var fertig = false;
 	function frage() {
@@ -2796,11 +3488,11 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 				}
 				fertig = true;
 				if (sichtbar() && !geaendert && !bedient()) {
-					location.href = 'index.php?form=settings';
+					location.href = 'index.php?form=' + ziel;
 				} else if (stand) {
 					stand.innerHTML = '';
 					var a = document.createElement('a');
-					a.href = 'index.php?form=settings';
+					a.href = 'index.php?form=' + ziel;
 					a.textContent = fertigText;
 					stand.appendChild(a);
 				}
@@ -2808,6 +3500,9 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 			.catch(function () { setTimeout(frage, 6000); });
 	}
 	setTimeout(frage, 3000);
+	}
+	beobachte('mt-vorgang', 'mt-vorgang-stand', 'tab-settings', 'settings');
+	beobachte('mt-vorgang-br', 'mt-vorgang-br-stand', 'tab-bridge', 'bridge');
 })();
 </script>
 <?php

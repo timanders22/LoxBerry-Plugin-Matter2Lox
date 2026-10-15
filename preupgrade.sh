@@ -232,6 +232,24 @@ else
     echo "<INFO> Keine Konfiguration vorhanden - nichts zu sichern."
 fi
 
+# ------------------------------- 2b. Bridge-Einstellungen (0.9.42, Beta)
+# bridge.json (Auswahl) und bridge_zugang.json (Loxone-Benutzer, Kennwort,
+# Frontend-Kennwort) liegen im Konfigordner, den purge_installation loescht.
+# Die Oberflaeche schreibt ihre Zweitschrift neben den Ordner bei jedem
+# Speichern; hier wird sie aufgefrischt. postinstall.sh spielt sie zurueck.
+# Der Bridge-Container laeuft durch - sein Ordner liegt neben dem Datenordner.
+for BRF in bridge bridge_zugang; do
+    if [ -f "$PCONFIG/$BRF.json" ]; then
+        if cp "$PCONFIG/$BRF.json" "$BASE/config/plugins/$PFOLDER.backup.$BRF.json" 2>/dev/null; then
+            chmod 600 "$BASE/config/plugins/$PFOLDER.backup.$BRF.json" 2>/dev/null
+            echo "<OK> Bridge-Einstellung gesichert: $PFOLDER.backup.$BRF.json"
+        else
+            echo "<FAIL> Die Bridge-Einstellung $BRF.json liess sich NICHT sichern."
+            FEHLER=1
+        fi
+    fi
+done
+
 # ------------------------------------------- 3. Fabric und Zertifikate
 # Der Umzug geschieht mit mv, nicht mit cp: eine Fabric kann viele Megabyte
 # gross sein, und auf der SD-Karte ist Platz nicht selbstverstaendlich.

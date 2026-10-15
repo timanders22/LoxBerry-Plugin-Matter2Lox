@@ -44,6 +44,15 @@
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="matter2lox"
+# 0.9.42 (Uninstall-Praefix-Falle, am Geraet gemessen 08.10.2026 an
+# zigbee2mqtt/zigbee2mqttng): plugininstall.pl fuehrt beim Deinstallieren JEDES
+# data/system/uninstall/<name>* aus - auch dieses Skript, wenn ein Plugin
+# deinstalliert wird, dessen NAME ein Praefix von "matter2lox" ist. $2 ist dann
+# der Name DES ANDEREN Plugins. Ein fremder Name heisst: nichts anfassen.
+if [ -n "${2:-}" ] && [ "${2:-}" != "matter2lox" ]; then
+    echo "<INFO> Matter2Lox: aufgerufen fuer das Plugin '${2:-}', nicht fuer matter2lox - nichts angefasst."
+    exit 0
+fi
 BASE="${5:-$LBHOMEDIR}"
 # Dritter Rueckfall: vom eigenen Ablageort AUFWAERTS suchen. Bewusst kein
 # fest verdrahteter Systempfad - LoxBerry laesst sich anderswohin
@@ -299,6 +308,87 @@ else
     done
     echo "<INFO> Das Abbild bleibt liegen - es kann von anderen Containern"
     echo "<INFO> genutzt werden. Zum Aufraeumen: docker image prune"
+fi
+
+# ---------------------------------------------------------------- Bridge
+# 0.9.42 (Matter-Bridge, Beta): EIGENES Label de.loxberry.plugin.bridge=<ordner>
+# - dieselbe Regel wie bin/bridge_eigen.sh, hier gespiegelt, weil dieses
+# Skript als root laeuft und nichts aus bin/ ausfuehrt (Bauart oben). Entfernt
+# wird jeder Container mit genau diesem Label (auch ein haengengebliebener
+# Einmal-Container von npm oder --add); ein fremder matterbridge-Container des
+# Anwenders bleibt unberuehrt. Der Bridge-Ordner (Kopplungsdaten) geht nur,
+# wenn KEIN Container mehr etwas daraus einbindet und Docker das sagen kann.
+BRIDGE="$BASE/data/plugins/$PDIR.bridge"
+BR_BELEGT=""
+BR_UNKLAR=0
+BR_NAMEN=""
+BR_WAR=0
+[ -d "$BRIDGE" ] && BR_WAR=1
+if command -v docker >/dev/null 2>&1; then
+    if BR_NAMEN=$(timeout -k 5 30 docker ps -a --filter "label=de.loxberry.plugin.bridge=$PDIR" --format '{{.Names}}' 2>/dev/null); then
+        for N in $BR_NAMEN; do
+            case "$N" in
+                [A-Za-z0-9]*) GRUND="Label de.loxberry.plugin.bridge=$PDIR"; mt_container_weg "$N" ;;
+            esac
+        done
+        [ -z "$BR_NAMEN" ] && echo "<INFO> Kein Container der Matter-Bridge vorhanden."
+    else
+        BR_UNKLAR=1
+        echo "<WARNING> Docker antwortet nicht - ob eine Matter-Bridge dieses Plugins laeuft, liess sich nicht klaeren. Von Hand: docker ps -a --filter label=de.loxberry.plugin.bridge=$PDIR"
+    fi
+    if [ -d "$BRIDGE" ] && [ "$BR_UNKLAR" = 0 ]; then
+        if IDS=$(timeout -k 5 30 docker ps -aq 2>/dev/null); then
+            for ID in $IDS; do
+                QUELLEN=$(timeout -k 5 30 docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' -- "$ID" 2>/dev/null)
+                TREFFER=$(printf '%s\n' "$QUELLEN" | while IFS= read -r Q; do
+                    case "$Q" in "$BRIDGE"|"$BRIDGE"/*) echo x ;; esac
+                done)
+                if [ -n "$TREFFER" ]; then
+                    BR_BELEGT="$BR_BELEGT $(timeout -k 5 30 docker inspect -f '{{.Name}}' -- "$ID" 2>/dev/null | sed 's#^/##')"
+                fi
+            done
+        else
+            BR_UNKLAR=1
+        fi
+    fi
+fi
+if [ ! -d "$BRIDGE" ]; then
+    :
+elif [ -n "$BR_BELEGT" ]; then
+    echo "<WARNING> Die Kopplungsdaten der Matter-Bridge bleiben liegen ($BRIDGE): der Container$BR_BELEGT bindet sie noch ein."
+    echo "<WARNING> Wird er nicht mehr gebraucht: docker rm -f <name> und danach rm -rf '$BRIDGE'"
+elif [ "$BR_UNKLAR" = 1 ]; then
+    echo "<WARNING> Die Kopplungsdaten der Matter-Bridge bleiben liegen ($BRIDGE): Docker antwortet nicht. Von Hand pruefen und danach rm -rf '$BRIDGE'"
+else
+    rm -rf "$BRIDGE" && echo "<OK> Kopplungsdaten der Matter-Bridge entfernt." \
+        || echo "<WARNING> Die Kopplungsdaten der Matter-Bridge liessen sich nicht entfernen: $BRIDGE"
+fi
+for V in "$BRIDGE.vorher-"*; do
+    [ -e "$V" ] || continue
+    rm -rf "$V" && echo "<OK> Beiseitegelegter Bridge-Ordner entfernt: $(basename "$V")"
+done
+for BRF in "$BASE/data/plugins/$PDIR.bridge_sicherungen" "$BASE/data/plugins/$PDIR.bridge_gesperrt.json" \
+           "$BASE/data/plugins/$PDIR.bridge_anmeldung.json" "$BASE/data/plugins/$PDIR.bridge_waechter.json" \
+           "$BASE/data/plugins/$PDIR.bridge_struktur.json"; do
+    if [ -e "$BRF" ] || [ -L "$BRF" ]; then
+        rm -rf "$BRF" && echo "<OK> Entfernt: $(basename "$BRF")" \
+            || echo "<WARNING> Liess sich nicht entfernen: $BRF"
+    fi
+done
+for BRF in "$BASE/config/plugins/$PDIR.backup.bridge.json" "$BASE/config/plugins/$PDIR.backup.bridge_zugang.json"; do
+    for S in "$BRF" "$BRF.alt"; do
+        if [ -e "$S" ] || [ -L "$S" ]; then
+            rm -f "$S" 2>/dev/null
+            if [ -e "$S" ] || [ -L "$S" ]; then
+                echo "<WARNING> Liegen geblieben (darin stehen Loxone-Benutzer und -Kennwort der Bridge): $S - bitte von Hand entfernen."
+            else
+                echo "<OK> Entfernt: $(basename "$S")"
+            fi
+        fi
+    done
+done
+if [ -n "$BR_NAMEN$BR_BELEGT" ] || [ "$BR_WAR" = 1 ]; then
+    echo "<INFO> In Alexa, Google Home und Apple Home bleiben die Geraete der Bridge als 'antwortet nicht' stehen - dort bitte von Hand entfernen."
 fi
 
 # ------------------------------------------------------------- Sicherung

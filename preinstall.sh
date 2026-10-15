@@ -47,8 +47,11 @@ esac
 
 BEISEITE=""
 FEST=""
+# 0.9.42: dazu die Zweitschriften der Bridge (Loxone-Zugang der Bridge).
 for ZIEL in "$BASE/config/plugins/$PFOLDER.backup.json" \
-            "$BASE/config/plugins/$PFOLDER.backup.json.kaputt"; do
+            "$BASE/config/plugins/$PFOLDER.backup.json.kaputt" \
+            "$BASE/config/plugins/$PFOLDER.backup.bridge.json" \
+            "$BASE/config/plugins/$PFOLDER.backup.bridge_zugang.json"; do
     if [ -e "$ZIEL" ] || [ -L "$ZIEL" ]; then
         rm -rf "${ZIEL:?}.alt" 2>/dev/null
         if mv -f "$ZIEL" "$ZIEL.alt" 2>/dev/null; then
@@ -69,6 +72,11 @@ if [ -d "$FAB" ] && [ -n "$(ls -A "$FAB" 2>/dev/null)" ]; then
     WEITER="$WEITER $FAB"
 fi
 [ -f "$BASE/data/plugins/$PFOLDER.nummern.json" ] && WEITER="$WEITER $BASE/data/plugins/$PFOLDER.nummern.json"
+# 0.9.42: Kopplungsdaten einer frueheren Matter-Bridge werden weiterbenutzt.
+BRD="$BASE/data/plugins/$PFOLDER.bridge"
+if [ -d "$BRD" ] && [ -n "$(ls -A "$BRD" 2>/dev/null)" ]; then
+    WEITER="$WEITER $BRD"
+fi
 # 0.9.35 (E7): die Deinstallation laesst eine letzte Sicherung der Fabric
 # liegen. Sie wird nicht von selbst eingespielt; der Hinweis nennt sie.
 SICHER="$BASE/data/plugins/$PFOLDER.fabric_sicherungen"

@@ -1,0 +1,7 @@
+{
+  "_hinweis": "Matter2Lox 0.9.42 (Beta): Muster des Bridge-Waechters, EINE Tabelle fuer Waechter und Pruefstand. Eine Zeile zaehlt als Anmeldefehler, wenn sie ein Muster aus fehlerzeile UND eines aus anmeldung traegt und keines aus netz. Netzfehler (Miniserver startet neu) zaehlen nie. Eine Zeile aus erfolg setzt den Zaehler zurueck. Regulaere Ausdruecke, Gross-/Kleinschreibung egal. Nicht am Geraet geeicht - nach M8/M9 des Messplans anpassen.",
+  "fehlerzeile": ["error", "fail", "reconnect", "refused", "denied", "reject"],
+  "anmeldung": ["4003", "\\b401\\b", "unauthori[sz]ed", "temporarily blocked", "user blocked", "getjwt", "authenticat", "invalid credentials"],
+  "netz": ["ECONNREFUSED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ECONNRESET", "EAI_AGAIN", "socket hang up", "timed? ?out", "WebSocket upgrade error"],
+  "erfolg": ["Creating devices", "Created device of type"]
+}

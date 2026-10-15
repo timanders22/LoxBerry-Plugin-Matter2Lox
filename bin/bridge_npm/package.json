@@ -1,0 +1,10 @@
+{
+  "name": "matter2lox-bridge-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Matter2Lox: matterbridge-loxone in fester Fassung (npm ci)",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "matterbridge-loxone": "2.1.1"
+  }
+}

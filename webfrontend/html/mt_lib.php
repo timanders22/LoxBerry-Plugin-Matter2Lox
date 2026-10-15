@@ -286,7 +286,9 @@ function mt_vorgaben()
          * leer = IP des LoxBerry. */
         'loxone_adresse'    => '',
         /* 0.9.39 (Entscheidung 8): fremde Systeme (Fabrics) vom Geraet
-         * trennen - nicht am Geraet erprobt, eigener Haken, ab Werk aus. */
+         * trennen - eigener Haken, ab Werk aus. Am Geraet erprobt am
+         * 15.10.2026 mit dem python-matter-server (Shelly 2PM Gen3, Alexa);
+         * mit dem matterjs-server nur gegen die Attrappe. */
         'fabric_entfernen_ein' => 0,
     );
 }
@@ -3051,7 +3053,11 @@ function mt_ct_vorgang_aktiv()
 function mt_ct_vorgang_starten($auftrag)
 {
     // 0.9.35 (Nr. 5): 'uebernehmen' = Einstellungen uebernehmen (neu anlegen).
-    if (!in_array($auftrag, array('einrichten', 'holen', 'aktualisieren', 'uebernehmen'), true)) {
+    /* 0.9.42 (Bridge, Beta): drei Auftraege fuer die Matter-Bridge im SELBEN
+     * Vorgang und unter derselben Sperre - Bridge und Matter-Server werden
+     * nie gleichzeitig angefasst (Entwurf 1.1). */
+    if (!in_array($auftrag, array('einrichten', 'holen', 'aktualisieren', 'uebernehmen',
+                                  'bridge_einrichten', 'bridge_uebernehmen', 'bridge_neustart'), true)) {
         return array(0, mt_t('EINST.FEHLER_CONTAINERBEFEHL'));
     }
     $p = mt_paths();
@@ -3287,6 +3293,9 @@ function mt_ct_vorgang_ausfuehren($auftrag)
         } elseif ($auftrag === 'uebernehmen') {
             // 0.9.35 (Nr. 5)
             list($ok, $satz) = mt_ct_uebernehmen($stand);
+        } elseif (strpos($auftrag, 'bridge_') === 0) {
+            // 0.9.42 (Bridge, Beta): einrichten, uebernehmen, neustart.
+            list($ok, $satz) = mt_br_vorgang(substr($auftrag, 7), $stand);
         } else {
             $stand['schritt'] = 'aktualisieren';
             mt_ct_vorgang_schreiben($stand);
@@ -5410,3 +5419,9 @@ function mt_themen_dienst()
     }
     return array($liste, '');
 }
+
+
+/* 0.9.42: die Matter-Bridge (Beta) - eigene Datei neben dieser Bibliothek,
+ * damit Oberflaeche, Hintergrundvorgang und Waechter dieselben Funktionen
+ * haben. Liegt installiert wie diese Datei unter webfrontend/html/plugins/. */
+require_once __DIR__ . '/mt_bridge.php';

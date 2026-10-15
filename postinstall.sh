@@ -83,7 +83,9 @@ trap 'rm -f "$MARKE" 2>/dev/null' EXIT
 # backup.json, nie .alt).
 if [ "$UPGRADE" = 0 ]; then
     BEISEITE=""
-    for ZIEL in "$BK" "$BK.kaputt"; do
+    # 0.9.42: dazu die Zweitschriften der Bridge (Loxone-Zugang).
+    for ZIEL in "$BK" "$BK.kaputt" "$BASE/config/plugins/$PFOLDER.backup.bridge.json" \
+                "$BASE/config/plugins/$PFOLDER.backup.bridge_zugang.json"; do
         if [ -f "$ZIEL" ] && [ ! -L "$ZIEL" ]; then
             rm -f "$ZIEL.alt" 2>/dev/null
             if mv -f "$ZIEL" "$ZIEL.alt" 2>/dev/null; then
@@ -178,6 +180,29 @@ if [ "$UPGRADE" = 1 ] && [ -f "$BK" ]; then
     fi
 fi
 chmod 600 "$PCONFIG/matter2lox.json"
+
+# ---------- Bridge (0.9.42, Beta) ----------
+# Nur beim Upgrade: bridge.json und bridge_zugang.json aus der Zweitschrift
+# neben dem Konfigordner zurueck (preupgrade.sh). Gestartet wird NICHTS - der
+# Bridge-Container laeuft durch, sein Ordner liegt neben dem Datenordner.
+# Weicht er von der neuen Soll-Gestalt ab, bietet die Oberflaeche
+# "Einstellungen uebernehmen" an.
+if [ "$UPGRADE" = 1 ]; then
+    for BRF in bridge bridge_zugang; do
+        BRB="$BASE/config/plugins/$PFOLDER.backup.$BRF.json"
+        if [ ! -f "$PCONFIG/$BRF.json" ] && [ -f "$BRB" ]; then
+            if cp "$BRB" "$PCONFIG/$BRF.json" 2>/dev/null; then
+                chmod 600 "$PCONFIG/$BRF.json" 2>/dev/null
+                echo "<OK> Bridge-Einstellung zurueckgespielt: $BRF.json"
+            else
+                echo "<WARNING> Die Bridge-Einstellung $BRF.json liess sich nicht zurueckspielen."
+            fi
+        fi
+    done
+fi
+for BRF in bridge bridge_zugang; do
+    [ -f "$PCONFIG/$BRF.json" ] && chmod 600 "$PCONFIG/$BRF.json" 2>/dev/null
+done
 
 # ---------- Architektur ----------
 # 0.9.35 (Nr. 20): massgeblich ist das BENUTZERLAND, nicht der Kern. Raspberry
