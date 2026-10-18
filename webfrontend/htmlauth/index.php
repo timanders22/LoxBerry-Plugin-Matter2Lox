@@ -1581,6 +1581,14 @@ if ($mt_rahmen) {
 .sm-ampel-grau  { background: #9e9e9e; }
 /* 0.9.35 (Nr. 7): grau fuer "fremder Server" (Kachel), weder an noch aus. */
 .sm-grau { color: #757575; font-weight: 700; }
+/* Welle Bild 19 (0.9.43): Seiten, Schritte, Hinweise und Bild je Baustein-Liste (Bauart Sprachsteuerung 0.12.5). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 <div class="sm-wrap">
 
@@ -2504,6 +2512,8 @@ if ($mt_fz) { ?>
 <div class="sm-warnung"><b><?= mt_e(mt_t('BRIDGE.BETA_TITEL')) ?></b> <?= mt_t('BRIDGE.BETA_TEXT') ?></div>
 <p><?= mt_t('BRIDGE.EINLEITUNG') ?></p>
 <p class="sm-hilfe"><?= mt_t('BRIDGE.GRENZEN') ?></p>
+<?php /* Welle Bild 19 (0.9.43, E13): die Seite "Matter2Lox Bridge" steht im Reiter Einbindung, Schritt 7. */ ?>
+<p class="sm-hilfe"><?= mt_t('BRIDGE.MUSTER_VERWEIS') ?></p>
 <?php if (!$mt_br_offen) { ?>
 <p class="sm-hilfe"><?= mt_e(mt_t('BRIDGE.NUR_HIER')) ?></p>
 <?php } else {
@@ -3098,7 +3108,6 @@ foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) 
 </form>
 <div class="sm-hinweis"><?= mt_t('LOX.S3_EINZELN') ?></div>
 <div class="sm-warnung"><?= mt_t('LOX.S3_STRICH') ?></div>
-<div class="sm-warnung"><?= mt_t('LOX.S3_NEU_EINLESEN') ?></div>
 </div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S4_TITEL')) ?></b><br>
@@ -3195,56 +3204,184 @@ foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
 
 <?php
 /**
- * Die komplette Baustein-Liste. Pflicht im Hausstandard.
+ * Die Baustein-Listen des Reiters "Einbindung in Loxone", Schritt 7 - Welle Bild 19 (0.9.43, Hausherr
+ * 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 19
+ * mt, E1-E15, 18.10.2026). DREI Seiten wie im LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt,
+ * Abschnitte "Matter2Lox" 21, "Matter2Lox Geraete" 27, "Matter2Lox Bridge" 3 Zeilen; beide Richtungen
+ * getrennt). Bis 0.9.42 stand hier EINE Liste mit 16 Zeilen (Funktion mt_bausteine). Berichtigt gegen sie: der
+ * Schwellwertschalter "Matter Werte veraltet" (900/600 auf ALTER) entfaellt - ALTER waechst in einem ruhigen
+ * Haus bis etwa 1800 s (das Abbild wird nur bei Aenderung und alle 30 min geschrieben) und ist ein
+ * Lebenszeichen, keine Altersgrenze: jetzt Analogwertvalidierung (E3, E5); "Beleuchtungssteuerung",
+ * "Entprellung" und "Vergleicher" gab es so in Config nicht bzw. ohne Abnehmer (jetzt Dimmer mit Sts/Str,
+ * nur HELLIGKEIT - ein Befehl je Aenderung statt zwei; "folgt nicht" als Statuszeile, E6, E7).
  *
- * Anspruch: Wer die Tabelle von oben nach unten abarbeitet, hat die Funktion
- * nachgebaut, ohne nachzudenken. Loxone Config fuehrt alle Bausteine in der
- * Baustein-Suche (F5).
+ * Jede Zeile ist EIN Sprachschluessel BAUSTEIN.Z<Seite>_<Nr> "Typ | Name | Parameter | Eingaenge" (Zeilen mit
+ * Prozentzeichen dort doppelt und ueber sprintf() geholt, angezeigt mit einem; deutsch wortgleich mit der Liste;
+ * Bausteinnamen auch englisch deutsch). Die Namen sind die des Musterprojekts (Geraet 1 Leselampe, 2 Steckdose
+ * Terrasse, 3 Klimasensor Bad, 4 Taster Flur, 5 Bewegungsmelder); die eigenen Befehlsnamen stehen in Schritt 3.
+ * DIE NAMEN DER GATEWAY-EINGAENGE WERDEN GEBAUT: eine Zeile mit 'gw' traegt den Namen aus dem Praefix
+ * (mt_mqtt_praefix(), Reiter Einstellungen) und dem Thema, "/" und "%" als "_" (gateway_name() im Dienst).
+ * Mit dem Werkspraefix "matter" steht genau der Name der Liste da. Keine Leitung geht ueber eine Seitengrenze.
+ *
+ * Rueckgabe: Liste von array('seite', 'bild', 'zeilen' => array(array(Nr, Typ, Name, Parameter, Eingaenge),
+ * ...), 'schritte', 'hinweise'). Zellen und Schritte sind Klartext (unten maskiert), die Hinweise
+ * freigegebenes HTML aus der Sprachdatei.
  */
-function mt_bausteine()
+function mt_bausteinliste($mt_praefix)
 {
-    return array(
-        // Das Suchmuster kommt aus mt_check() - derselben Funktion, aus der
-        // auch die XML-Vorlage es holt. Bis 0.9.10 stand es hier ein zweites
-        // Mal in den Sprachdateien, und zwar OHNE das fuehrende Semikolon:
-        // wer die Tabelle von Hand nachbaute, bekam das alte, anfaellige
-        // Muster, waehrend die erzeugte Vorlage das richtige trug. Zwei
-        // Quellen fuer dieselbe Angabe sind eine zu viel.
-        array(1,  'BAUSTEIN.T_VE',      'BAUSTEIN.N01',
-              sprintf(mt_t('BAUSTEIN.P01'), mt_check('1_SCHALTER')), '&mdash;'),
-        array(2,  'BAUSTEIN.T_VE',      'BAUSTEIN.N02',
-              sprintf(mt_t('BAUSTEIN.P02'), mt_check('1_HELLIGKEIT')), '&mdash;'),
-        array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03',
-              sprintf(mt_t('BAUSTEIN.P03'), mt_check('ALTER')), '&mdash;'),
-        array(4,  'BAUSTEIN.T_VE',      'BAUSTEIN.N04',
-              sprintf(mt_t('BAUSTEIN.P04'), mt_check('ERREICH')), '&mdash;'),
-        array(5,  'BAUSTEIN.T_VE',      'BAUSTEIN.N05',
-              sprintf(mt_t('BAUSTEIN.P05'), mt_check('OK')), '&mdash;'),
-        array(6,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N06', mt_t('BAUSTEIN.P06'), 'Ausgang von #3'),
-        array(7,  'BAUSTEIN.T_NICHT',   'BAUSTEIN.N07', '',             'Ausgang von #4'),
-        array(8,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N08', '',             'I1 = #6, I2 = #7'),
-        array(9,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N09', mt_t('BAUSTEIN.P09'), 'Ausgang von #8'),
-        array(10, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N10', mt_t('BAUSTEIN.P10'), 'Ausgang von #9'),
-        array(11, 'BAUSTEIN.T_LICHT',   'BAUSTEIN.N11', mt_t('BAUSTEIN.P11'), 'AI &larr; ' . mt_t('BAUSTEIN.TASTER')),
-        array(12, 'BAUSTEIN.T_VA',      'BAUSTEIN.N12', mt_t('BAUSTEIN.P12'), 'Ausgang Q von #11'),
-        array(13, 'BAUSTEIN.T_VA',      'BAUSTEIN.N13', mt_t('BAUSTEIN.P13'), 'Ausgang AQ von #11'),
-        array(14, 'BAUSTEIN.T_ENTPRELL','BAUSTEIN.N14', mt_t('BAUSTEIN.P14'), 'Ausgang AQ von #11'),
-        array(15, 'BAUSTEIN.T_VERGL',   'BAUSTEIN.N15', mt_t('BAUSTEIN.P15'), 'I1 = #1, I2 = Ausgang AQ von #11'),
-        array(16, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N16', mt_t('BAUSTEIN.P16'), 'V1 = #2, V2 = #5'),
+    // Seitenname (= Config-Seite im Musterprojekt, deshalb fest), Bild, Zeilen, Kasten, Hinweise
+    $mt_seiten = array(
+        array('Matter2Lox', 'einbindung_loxone.png', array(
+            array(mt_t('BAUSTEIN.Z1_01')),
+            array(mt_t('BAUSTEIN.Z1_02')),
+            array(mt_t('BAUSTEIN.Z1_03'), 'gw'),
+            array(mt_t('BAUSTEIN.Z1_04')),
+            array(mt_t('BAUSTEIN.Z1_05')),
+            array(mt_t('BAUSTEIN.Z1_06')),
+            array(mt_t('BAUSTEIN.Z1_07')),
+            array(mt_t('BAUSTEIN.Z1_08')),
+            array(mt_t('BAUSTEIN.Z1_09')),
+            array(mt_t('BAUSTEIN.Z1_10')),
+            array(mt_t('BAUSTEIN.Z1_11')),
+            array(mt_t('BAUSTEIN.Z1_12')),
+            array(mt_t('BAUSTEIN.Z1_13')),
+            array(mt_t('BAUSTEIN.Z1_14')),
+            array(mt_t('BAUSTEIN.Z1_15')),
+            array(mt_t('BAUSTEIN.Z1_16')),
+            array(mt_t('BAUSTEIN.Z1_17')),
+            array(mt_t('BAUSTEIN.Z1_18')),
+            array(mt_t('BAUSTEIN.Z1_19')),
+            array(mt_t('BAUSTEIN.Z1_20')),
+            array(mt_t('BAUSTEIN.Z1_21')),
+        ), array(
+            'BAUSTEIN.SEITE1_SCHRITT1',
+            'BAUSTEIN.SEITE1_SCHRITT2',
+            'BAUSTEIN.SEITE1_SCHRITT3',
+            'BAUSTEIN.SEITE1_SCHRITT4',
+            'BAUSTEIN.SEITE1_SCHRITT5',
+            'BAUSTEIN.SEITE1_SCHRITT6',
+        ), array(
+            'BAUSTEIN.SEITE1_H1',
+            'BAUSTEIN.SEITE1_H2',
+            'BAUSTEIN.SEITE1_H3',
+            'BAUSTEIN.SEITE1_H4',
+            'BAUSTEIN.SEITE1_H5',
+            'BAUSTEIN.SEITE1_H6',
+        )),
+        array("Matter2Lox Ger\xc3\xa4te", 'einbindung_loxone_geraete.png', array(
+            array(mt_t('BAUSTEIN.Z2_01')),
+            array(sprintf(mt_t('BAUSTEIN.Z2_02'))),
+            array(mt_t('BAUSTEIN.Z2_03')),
+            array(mt_t('BAUSTEIN.Z2_04'), 'gw'),
+            array(sprintf(mt_t('BAUSTEIN.Z2_05'))),
+            array(sprintf(mt_t('BAUSTEIN.Z2_06'))),
+            array(mt_t('BAUSTEIN.Z2_07')),
+            array(mt_t('BAUSTEIN.Z2_08')),
+            array(mt_t('BAUSTEIN.Z2_09')),
+            array(mt_t('BAUSTEIN.Z2_10')),
+            array(mt_t('BAUSTEIN.Z2_11')),
+            array(sprintf(mt_t('BAUSTEIN.Z2_12'))),
+            array(mt_t('BAUSTEIN.Z2_13')),
+            array(mt_t('BAUSTEIN.Z2_14')),
+            array(mt_t('BAUSTEIN.Z2_15')),
+            array(mt_t('BAUSTEIN.Z2_16'), 'gw'),
+            array(mt_t('BAUSTEIN.Z2_17')),
+            array(mt_t('BAUSTEIN.Z2_18')),
+            array(mt_t('BAUSTEIN.Z2_19')),
+            array(mt_t('BAUSTEIN.Z2_20')),
+            array(sprintf(mt_t('BAUSTEIN.Z2_21'))),
+            array(sprintf(mt_t('BAUSTEIN.Z2_22'))),
+            array(sprintf(mt_t('BAUSTEIN.Z2_23'))),
+            array(mt_t('BAUSTEIN.Z2_24'), 'gw'),
+            array(mt_t('BAUSTEIN.Z2_25')),
+            array(mt_t('BAUSTEIN.Z2_26')),
+            array(mt_t('BAUSTEIN.Z2_27')),
+        ), array(
+            'BAUSTEIN.SEITE2_SCHRITT1',
+            'BAUSTEIN.SEITE2_SCHRITT2',
+            'BAUSTEIN.SEITE2_SCHRITT3',
+            'BAUSTEIN.SEITE2_SCHRITT4',
+            'BAUSTEIN.SEITE2_SCHRITT5',
+        ), array(
+            'BAUSTEIN.SEITE2_H1',
+            'BAUSTEIN.SEITE2_H2',
+            'BAUSTEIN.SEITE2_H3',
+            'BAUSTEIN.SEITE2_H4',
+            'BAUSTEIN.SEITE2_H5',
+            'BAUSTEIN.SEITE2_H6',
+        )),
+        array('Matter2Lox Bridge', 'einbindung_loxone_bridge.png', array(
+            array(mt_t('BAUSTEIN.Z3_01')),
+            array(mt_t('BAUSTEIN.Z3_02')),
+            array(mt_t('BAUSTEIN.Z3_03')),
+        ), array(
+            'BAUSTEIN.SEITE3_SCHRITT1',
+            'BAUSTEIN.SEITE3_SCHRITT2',
+            'BAUSTEIN.SEITE3_SCHRITT3',
+            'BAUSTEIN.SEITE3_SCHRITT4',
+            'BAUSTEIN.SEITE3_SCHRITT5',
+        ), array(
+            'BAUSTEIN.SEITE3_H1',
+            'BAUSTEIN.SEITE3_H2',
+            'BAUSTEIN.SEITE3_H3',
+            'BAUSTEIN.SEITE3_H4',
+        )),
     );
+    $mt_gw = str_replace(array('/', '%'), '_', (string) $mt_praefix);
+    $mt_aus = array();
+    foreach ($mt_seiten as $mt_s) {
+        $mt_zeilen = array();
+        foreach ($mt_s[2] as $mt_i => $mt_z) {
+            $mt_c = array_pad(explode(' | ', $mt_z[0], 4), 4, '');
+            if (isset($mt_z[1]) && $mt_z[1] === 'gw' && strpos($mt_c[1], 'matter_') === 0) {
+                $mt_c[1] = $mt_gw . '_' . substr($mt_c[1], strlen('matter_'));
+            }
+            $mt_zeilen[] = array_merge(array($mt_i + 1), $mt_c);
+        }
+        $mt_aus[] = array('seite' => $mt_s[0], 'bild' => $mt_s[1], 'zeilen' => $mt_zeilen,
+                          'schritte' => array_map('mt_t', $mt_s[3]), 'hinweise' => array_map('mt_t', $mt_s[4]));
+    }
+    return $mt_aus;
 }
-?>
-<div class="sm-step"><b><?= mt_e(mt_t('LOX.S7_TITEL')) ?></b><br>
-<?= mt_t('LOX.S7_TEXT') ?>
+
+/** Eine Seite: Ueberschrift (= Seitenname in Config), Kasten, Tabelle, Hinweise, Bild, Link. */
+function mt_bausteinseite_zeigen($mt_bs, $mt_bs_nr)
+{ ?>
+<h4 class="sm-h4" id="mt-bs-<?= (int) $mt_bs_nr ?>"><?= mt_e($mt_bs['seite']) ?></h4>
+<div class="sm-hinweis"><b><?= mt_e(mt_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($mt_bs['schritte'] as $mt_bx) { ?>
+<li><?= mt_e($mt_bx) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?= mt_e(mt_t('LOX.T_BAUSTEIN')) ?></th><th><?= mt_e(mt_t('LOX.T_NAMENSVORSCHLAG')) ?></th>
     <th><?= mt_e(mt_t('LOX.T_PARAMETER')) ?></th><th><?= mt_e(mt_t('LOX.T_EINGAENGE')) ?></th></tr>
-<?php foreach (mt_bausteine() as $mt_b) { ?>
-<tr><td><?= (int) $mt_b[0] ?></td><td><?= mt_t($mt_b[1]) ?></td><td><?= mt_t($mt_b[2]) ?></td>
-    <td><?= $mt_b[3] !== '' ? $mt_b[3] : '&mdash;' ?></td><td><?= $mt_b[4] ?></td></tr>
+<?php foreach ($mt_bs['zeilen'] as $mt_bz) { ?>
+<tr><td><?= (int) $mt_bz[0] ?></td><td><?= mt_e($mt_bz[1]) ?></td><td><?= mt_e($mt_bz[2]) ?></td>
+    <td><?= mt_e($mt_bz[3]) ?></td><td><?= mt_e($mt_bz[4]) ?></td></tr>
 <?php } ?>
 </table>
-<?= mt_t('LOX.S7_ERLAEUTERUNG') ?>
+</div>
+<div class="sm-warnung"><b><?= mt_e(mt_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($mt_bs['hinweise'] as $mt_bx) { ?>
+<li><?= $mt_bx ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= mt_e($mt_bs['bild']) ?>" alt="<?= mt_e(sprintf(mt_t('LOX.BILD_ALT'), $mt_bs['seite'])) ?>" loading="lazy">
+<figcaption><?= mt_e(sprintf(mt_t('LOX.BILD_UNTERSCHRIFT'), $mt_bs['seite'])) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= mt_t('LOX.MUSTERPROJEKT') ?></p>
+<?php }
+/* Gateway-Namen aus dem Praefix des Reiters Einstellungen ($mt_cfg ist oben gelesen). */
+$mt_bl = mt_bausteinliste(mt_mqtt_praefix($mt_cfg));
+?>
+<div class="sm-step"><b><?= mt_e(mt_t('LOX.S7_TITEL')) ?></b><br>
+<?= mt_t('LOX.S7_TEXT') ?>
+<?php foreach ($mt_bl as $mt_bs_i => $mt_bs) { mt_bausteinseite_zeigen($mt_bs, $mt_bs_i + 1); } ?>
 </div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S8_TITEL')) ?></b><br>

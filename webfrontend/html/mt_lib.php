@@ -1832,7 +1832,14 @@ function mt_xml_virtual_in_http($kopf, $cmds)
         // Die Einheit gehoert an den Eingang, nicht in den Kommentar: Loxone
         // zeigt sie dann am Wert an. Form wortgleich aus den Ausfuhren
         // dieser Anlage (VI_Marstek..._Test.xml): "<v.1> %", "<v.1> °C".
-        $o .= 'Unit="' . mt_x('<v.1>' . (!empty($c['einheit']) ? ' ' . $c['einheit'] : '')) . '" ';
+        // Welle Bild 19 (0.9.43, Entwurf Welle 19 mt E11): ganze Zahlen tragen <v.0>
+        // (Ja/Nein, Zaehler, ALTER "<v.0> s", Helligkeit, Mired, Kelvin, Stufen),
+        // alles mit Nachkommastellen weiter <v.1> (Temperatur, Feuchte, Batterie,
+        // Leistung, Energie, Farbort ...). Bis 0.9.42 stand ueberall <v.1>. Nur die
+        // Anzeige in Loxone aendert sich; Wert, Suchmuster und Grenzen bleiben.
+        $stellen = in_array(isset($c['typ']) ? (string) $c['typ'] : '',
+                            array('bool', 'bit0', 'zahl', 'prozent254', 'struct0'), true) ? '<v.0>' : '<v.1>';
+        $o .= 'Unit="' . mt_x($stellen . (!empty($c['einheit']) ? ' ' . $c['einheit'] : '')) . '" ';
         $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
@@ -4039,7 +4046,9 @@ function mt_vorlage($nummer = 1)
             // mt_endpunkt_host().
             'address' => mt_endpunkt_adresse('status', $nummer),
             'polling' => '60',
-            'comment' => 'Erzeugt vom LoxBerry-Plugin Matter to Loxone (' . date('d.m.Y') . ')',
+            // Welle Bild 19 (E11): Kommentar aus der Sprachdatei, ohne Tagesdatum
+            // (Sprachregel 13.10.2026: Titel fest deutsch, Kommentare uebersetzt).
+            'comment' => mt_t('LOX.VORLAGE_KOMMENTAR'),
         ), mt_vorlage_cmds($nummer, $g, mt_tabelle())),
     );
 }
@@ -4076,12 +4085,14 @@ function mt_vorlage_alle()
     return array(
         'VI_matter_alle.xml',
         mt_xml_virtual_in_http(array(
-            'title'   => 'Matter alle Geraete',
+            // Welle Bild 19 (E11): "Geraete" mit Umlaut - als UTF-8-Bytes, damit
+            // diese Datei in ihrem Code ASCII bleibt. Neuer Behaeltertitel nur bei
+            // einem Neuimport; eingelesene Vorlagen laufen unveraendert weiter.
+            'title'   => "Matter alle Ger\xc3\xa4te",
             // 0.9.35 (Nr. 8/11): Lesetoken, wenn gesetzt.
             'address' => mt_endpunkt_adresse('statusalle'),
             'polling' => '60',
-            'comment' => 'Alle Geraete in einer Datei. Erzeugt vom LoxBerry-Plugin '
-                       . 'Matter to Loxone (' . date('d.m.Y') . ')',
+            'comment' => mt_t('LOX.VORLAGE_KOMMENTAR_ALLE'),
         ), $cmds),
     );
 }
@@ -4201,9 +4212,8 @@ function mt_vorlage_out($nummer = 1)
         mt_xml_virtual_out(array(
             'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . ' Befehle',
             'address' => $adresse,
-            'comment' => 'Schreibende Befehle müssen im Reiter Einstellungen freigegeben '
-                       . 'sein. Erzeugt vom LoxBerry-Plugin Matter to Loxone ('
-                       . date('d.m.Y') . ')',
+            // Welle Bild 19 (E11): bis 0.9.42 fest deutsch mit Tagesdatum im Code.
+            'comment' => mt_t('LOX.VQ_KOMMENTAR'),
         ), $cmds),
     );
 }

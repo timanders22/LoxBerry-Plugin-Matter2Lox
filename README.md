@@ -11,6 +11,37 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.43
+
+Einbindung in Loxone in Vollausstattung: Schritt 7 des Reiters zeigt statt der Baustein-Liste mit 16 Zeilen
+drei fertig verbundene Seiten aus dem LoxBerry-Plugins Musterprojekt – je mit Schritt-für-Schritt-Anleitung
+(„So übernehmen Sie diese Seite“), Tabelle, Hinweisen und Bild (drei Bilder).
+
+* **Seite „Matter2Lox“** (21 Zeilen): Überwachung am Lebenszeichen `MATTER_1_ALTER` (Analogwertvalidierung,
+  Tmc 300 s) und am MQTT-Herzschlag `matter_ts`, 600 s Bestätigung, eigene Meldung „Gerät antwortet nicht“ für
+  Geräte am Netz (gesperrt, solange das Plugin selbst gestört ist), Status „Zustand (Matter)“.
+* **Seite „Matter2Lox Geräte“** (27 Zeilen): dimmbare Leselampe mit Farbtemperatur (Dimmer, nur die Helligkeit
+  geht hinaus – 0 schaltet aus), Steckdose mit Leistung und Zählerstand, Klimasensor, Matter-Taster (kurz und
+  lang) und Bewegungsmelder über das MQTT-Gateway; die Namen der Gateway-Eingänge rechnet der Reiter aus dem
+  Themen-Präfix.
+* **Seite „Matter2Lox Bridge“** (3 Zeilen): die Gegenrichtung – ein Loxone-Schalter und ein Fühler für Alexa,
+  Google Home und Apple Home; der Reiter *Bridge* verweist darauf.
+* **Berichtigt – wer nach der bisherigen Liste gebaut hat, bitte ansehen:** Der Schwellwertschalter „Matter Werte
+  veraltet“ (900/600 auf `ALTER`) entfällt. `ALTER` wächst in einem ruhigen Haus bis etwa 30 Minuten (das Plugin
+  schreibt nur bei Änderungen) und ist ein Lebenszeichen, keine Altersgrenze – zu erwarten waren Fehlalarme und
+  keine Meldung bei stehendem LoxBerry. „Beleuchtungssteuerung“, „Entprellung“ und „Vergleicher“ gab es so in
+  Config nicht (jetzt Dimmer mit Sts/Str, „folgt nicht“ als Statuszeile); die Lampe bekam je Schaltvorgang zwei
+  Befehle, jetzt einen.
+* **Vorlagen (nur die Form):** Einheit `<v.0>` an Ja/Nein-Werten, Zählern und ganzzahligen Feldern, `<v.0> s` an
+  `ALTER` (bisher überall `<v.1>`); die Behälterkommentare kommen aus der Sprachdatei und tragen kein
+  Tagesdatum mehr (englische Oberfläche: englischer Kommentar, die Titel bleiben deutsch); die Sammelvorlage heißt
+  „Matter alle Geräte“ statt „Matter alle Geraete“. **Eingelesene Vorlagen laufen unverändert weiter** – die neue
+  Form bekommt nur, wer neu importiert, bei der Sammelvorlage mit neuem Behältertitel.
+* Reiter Einbindung: Schritt 6 nennt `ALTER` als Lebenszeichen; der überholte Hinweis zum Update auf 0.9.10 ist
+  entfernt; Spaltenkopf „Name“. Englische Oberfläche: die Bausteinnamen stehen deutsch wie im Musterprojekt.
+* Dienst, Endpunkt, Themen und Bridge unverändert. Gerendert unter PHP 7.4, 8.4 und 8.5, Vorlagen gegen das
+  Musterprojekt geprüft; nicht am Gerät.
+
 ## Neu in 0.9.42: Matter-Bridge (Beta)
 
 Neuer Reiter **Bridge (Loxone → Alexa/Google/Apple)**: ausgewählte
@@ -1439,6 +1470,15 @@ lesen Türen in dieser Form, gleich von welchem Plugin.
   Plugin nie an.
 * Der Reiter *Test* sagt, ob die Einstellung an ist und welche Themen
   hinausgingen.
+
+## Fertig verbunden im Musterprojekt
+
+Die Bausteine der drei Baustein-Listen im Reiter *Einbindung in Loxone* (Schritt 7) stehen fertig verbunden
+auf den Seiten „Matter2Lox“ (läuft das Plugin, antworten die Geräte), „Matter2Lox Geräte“ (Matter-Geräte in
+Loxone sehen und schalten) und „Matter2Lox Bridge“ (Loxone-Bausteine in Alexa, Google Home und Apple Home) im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), einer
+gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen. Das Musterprojekt nutzt die Vorlagen je Gerät
+(HTTP) und für Taster, Bewegungsmelder und Herzschlag das MQTT-Gateway.
 
 ## Endpunkte für Loxone
 
