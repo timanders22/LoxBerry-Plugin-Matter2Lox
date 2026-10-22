@@ -178,6 +178,14 @@ DATEI_NUMMERN_ALT = PDATA / "nummern.json"
 ORDNER_FABRIC = PDATA.parent / (PNAME + ".matter")
 DATEI_ZUSTAND = PDATA / "zustand.json"
 ORDNER_BEFEHLE = PDATA / "befehle"
+# F1 (0.9.44, Entwurf Gruppe 8 Abschnitt 2.0, Entscheidung E7): die gemeinsame Befehlsbruecke
+# (bin/befehlsbruecke.php, Stammfassung) legt ihre Dateien in DENSELBEN Ordner: zustand.json (spaetestens
+# alle 30 s), waechter.json, waechter.lock, dienst.lock, mosquitto/. Bis 0.9.43 nahm der Dienst jede *.json
+# darin als Befehl - er verwarf zustand.json/waechter.json beim Start und beanspruchte jede frische
+# zustand.json als "Unbekannte Aktion" (Probe des Entwurfs). Befehle traegt nur, was mt_befehl_absetzen()
+# seit 0.9.35 schreibt: sprintf("%010d%06d_%s", ...) mit vier Zufallsbytes. Aeltere Namen gibt es nicht - der
+# Datenordner wird bei jedem Update geleert. Die Stammfassung bleibt byte-gleich.
+KENNUNG = re.compile(r"^[0-9]{16}_[0-9a-f]{8}$")
 ORDNER_ANTWORTEN = PDATA / "antworten"
 # 0.9.39: das offene Kopplungsfenster (Codes, Ende). Geschrieben von der
 # Oberflaeche (0600) aus antwort.daten; der Dienst raeumt sie nur ab, wenn
@@ -243,6 +251,12 @@ VORGABEN = {
     # mit dem python-matter-server (Shelly 2PM Gen3, Alexa); mit dem
     # matterjs-server nur gegen die Attrappe.
     "fabric_entfernen_ein": 0,
+    # Gruppe 8 (0.9.44, E1-E3): Befehle ueber MQTT annehmen (die gemeinsame Befehlsbruecke), Schloesser ueber
+    # MQTT entsperren, und der HTTP-Endpunkt fuer Loxone (neu 0; ein Update traegt 1 ein, postinstall.sh).
+    # Der Dienst liest sie nicht - beide Seiten fuehren dieselben Vorgaben (Pruefzeile F_VORGABEN).
+    "befehle_mqtt_ein": 0,
+    "befehle_mqtt_entsperren": 0,
+    "endpunkt_ein": 0,
 }
 
 # Wie lange ein Stellbefehl in der Warteschlange gueltig bleibt. Was laenger
@@ -464,7 +478,9 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
 # Zeichenketten "1", "true", "ja", "on" als ein; alles andere als aus - ein
 # Schutz faellt geschlossen aus.
 HAKEN = ("eigener_container", "mqtt_ein", "roh_ein", "steuerung_ein", "schloss_ein",
-         "tuer_haus", "server_lokal", "fabric_entfernen_ein")
+         "tuer_haus", "server_lokal", "fabric_entfernen_ein",
+         # Gruppe 8 (0.9.44): dieselbe Liste wie mt_haken() in mt_lib.php.
+         "befehle_mqtt_ein", "befehle_mqtt_entsperren", "endpunkt_ein")
 
 
 def haken(cfg: dict, feld: str) -> bool:
@@ -806,6 +822,29 @@ MQTT_INFO = ("hersteller", "produkt", "bezeichnung", "firmware")
 # entferntes Geraet - geht EINMAL als "-" zurueckbehalten hinaus, nie als
 # leere Nutzlast und nie als stehenbleibender Altwert.
 OHNE_AUSSAGE = "-"
+# Gruppe 8 (0.9.44, Entwurf 2.3, E10; stehende Entscheidung Gruppe 1/3/4): ueber MQTT meldet ein ZAHLEN-Zustand
+# ohne Aussage -1 (mit Vorzeichen, Tabellenminimum < 0: -999), weil ein Virtueller Eingang aus "-" eine 0
+# macht - eine stille Falschaussage ("aus", "0 %"). Texte (MQTT_INFO, name) bleiben "-", ebenso haus/tuer/...
+# (Hausvereinbarung) und der HTTP-Endpunkt (mt_w(), Bestandsschutz).
+OHNE_AUSSAGE_ALLE = ("-", "-1", "-999")
+
+
+def ohne_aussage(schluessel: str, tab=None) -> str:
+    letzter = str(schluessel).rsplit("/", 1)[-1]
+    if letzter in MQTT_INFO or letzter == "name":
+        return OHNE_AUSSAGE
+    for gruppe in ((tab or {}).get("cluster") or {}).values():
+        for a in ((gruppe or {}).get("attribute") or {}).values():
+            if isinstance(a, dict) and a.get("thema") == letzter:
+                m = a.get("min")
+                if isinstance(m, (int, float)) and not isinstance(m, bool) and m < 0:
+                    return "-999"
+    for g in ("abgeleitete_themen", "ereignisthemen"):
+        a = (((tab or {}).get(g) or {}).get("themen") or {})
+        a = a.get(letzter) if isinstance(a, dict) else None
+        if isinstance(a, dict) and isinstance(a.get("min"), (int, float)) and a["min"] < 0:
+            return "-999"
+    return "-1"
 
 # M4 (Durchgang 30.09.2026, Regeln/07): alle 30 Minuten der volle Satz. Der
 # UDP-Eingang des Gateways verwirft unter Last Datagramme, und sendto()
@@ -1965,14 +2004,28 @@ async def fabrics_lesen(v, node_id: int, frisch: bool = False):
     nur die eigene Fabric. Mit frisch=True kein Rueckgriff auf den Bestand -
     so vor und nach dem Trennen."""
     pfade = ["0/62/1", "0/62/5"]
-    erg = await v.senden("read_attribute", {"node_id": int(node_id), "attribute_path": pfade,
-                                            "fabric_filtered": False}, zeit=60)
+    # M10 (0.9.44, Pruefbericht): ein werfendes senden() (schlafendes oder offline gegangenes Geraet) fuehrt
+    # wie eine ausbleibende Antwort auf den Bestand - ausser frisch (vor und nach dem Trennen). Bis 0.9.43
+    # erreichte der Rueckfall diesen Fall nie, und nach einem Wurf folgte kein zweiter Einzelpfad-Versuch.
+    geworfen = False
+    try:
+        erg = await v.senden("read_attribute", {"node_id": int(node_id), "attribute_path": pfade,
+                                                "fabric_filtered": False}, zeit=60)
+    except Exception:  # noqa: BLE001 - M10: wie eine ausbleibende Antwort, ausser frisch
+        if frisch:
+            raise
+        erg, geworfen = None, True
     werte = erg if isinstance(erg, dict) else {}
-    if not isinstance(erg, dict):
+    if not isinstance(erg, dict) and not geworfen:
         # Ein Server, der je Aufruf nur einen Pfad beantwortet.
         for p in pfade:
-            e = await v.senden("read_attribute", {"node_id": int(node_id), "attribute_path": p,
-                                                  "fabric_filtered": False}, zeit=60)
+            try:
+                e = await v.senden("read_attribute", {"node_id": int(node_id), "attribute_path": p,
+                                                      "fabric_filtered": False}, zeit=60)
+            except Exception:  # noqa: BLE001 - M10
+                if frisch:
+                    raise
+                e = None
             werte[p] = e.get(p) if isinstance(e, dict) and p in e else e
     roh = werte.get("0/62/1")
     eigen = _ganzzahl(werte.get("0/62/5"))
@@ -2696,7 +2749,7 @@ def nummern_zuordnen(knoten_ids) -> dict:
     return karte
 
 
-def paare_bilden(geraete: dict, cfg: dict, ok: int) -> dict:
+def paare_bilden(geraete: dict, cfg: dict, ok: int, tab=None) -> dict:
     """Die Themenpaare eines Abbilds, relativ zum Praefix.
 
     EINE Stelle fuer den Versand (abbild_schreiben()) und fuer die
@@ -2733,7 +2786,7 @@ def paare_bilden(geraete: dict, cfg: dict, ok: int) -> dict:
             paare[f"{basis}/roh/{pfad}"] = wert
     for k, w in list(paare.items()):
         if (w is None or w == "") and ist_zustand(k):
-            paare[k] = OHNE_AUSSAGE
+            paare[k] = ohne_aussage(k, tab)
     return paare
 
 
@@ -2806,7 +2859,7 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
 
     if cfg.get("mqtt_ein"):
         praefix = mqtt_praefix(cfg)
-        paare = paare_bilden(geraete, cfg, ok)
+        paare = paare_bilden(geraete, cfg, ok, tab)
         # Nur senden, was sich geaendert hat. Bis 0.9.9 ging bei JEDEM einzelnen
         # attribute_updated der vollstaendige Bestand aller Geraete erneut
         # hinaus - ein bewegter Dimmer erzeugte damit hunderte Telegramme je
@@ -2828,11 +2881,11 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
         # Broker, Gateway oder Miniserver als aktueller Stand (Bericht mqtt
         # Nr. 2 und 3).
         weg = [k for k in _LETZTE_PAARE
-               if k not in paare and ist_zustand(k) and _LETZTE_PAARE[k] != OHNE_AUSSAGE]
+               if k not in paare and ist_zustand(k) and _LETZTE_PAARE[k] not in OHNE_AUSSAGE_ALLE]
         for k in weg:
-            senden[k] = OHNE_AUSSAGE
+            senden[k] = ohne_aussage(k, tab)
         vergessen = [k for k in _LETZTE_PAARE
-                     if k not in paare and (not ist_zustand(k) or _LETZTE_PAARE[k] == OHNE_AUSSAGE)]
+                     if k not in paare and (not ist_zustand(k) or _LETZTE_PAARE[k] in OHNE_AUSSAGE_ALLE)]
         for k in vergessen:
             _LETZTE_PAARE.pop(k, None)
         # Altwerte der Erreichbarkeit (bis 0.9.28 retained). Steht einer
@@ -2977,10 +3030,20 @@ def abbild_stoerung(cfg: dict, fehler: str) -> None:
             _LETZTE_PAARE["ok"] = "0"
 
 
+# Gruppe 8 (0.9.44, Entwurf 2.2, E9): das Lebenszeichen in Hausform - status/zaehler zaehlt je Herzschlag eins
+# weiter (0..999, laeuft um, im Prozess gezaehlt, Start 0), dazu status/ok und status/ts. Alle drei nie
+# retained (letzter Teil in NIE_RETAINED). online/ok/ts bleiben fuer bestehende Projekte.
+_ZAEHLER: dict = {"n": 0}
+
+
 def herzschlag_paare(ok: int) -> dict:
     """Die Themen des Lebenszeichens - EINE Stelle fuer den Versand und fuer
     die Selbstauskunft --themen."""
-    return {"online": 1, "ok": int(ok), "ts": int(time.time())}
+    jetzt = int(time.time())
+    n = _ZAEHLER["n"]
+    _ZAEHLER["n"] = (n + 1) % 1000
+    return {"online": 1, "ok": int(ok), "ts": jetzt,
+            "status/ok": int(ok), "status/ts": jetzt, "status/zaehler": n}
 
 
 def herzschlag_senden(cfg: dict, ok: int) -> None:
@@ -3208,7 +3271,9 @@ async def _auftrag(v: "MatterVerbindung", kennung: str, arbeit: Path, b: dict, c
         ok, meldung = 0, fehlertext(err)
     antwort_schreiben(kennung, ok, meldung, ist, nutzdaten)
     _datei_weg(arbeit)
-    _LOG.info("Befehl %s (%s): ok=%s %s", kennung, b.get("aktion"), ok, meldung)
+    # Gruppe 8 (0.9.44): die Quelle steht dabei, wenn der Befehl ueber die Befehlsbruecke kam.
+    _LOG.info("Befehl %s (%s%s): ok=%s %s", kennung, b.get("aktion"),
+              ", ueber MQTT" if b.get("quelle") == "mqtt" else "", ok, meldung)
     if fertig is not None:
         try:
             fertig()
@@ -3225,6 +3290,10 @@ async def warteschlange(v: "MatterVerbindung", cfg: dict, tab: dict, fertig=None
     ORDNER_BEFEHLE.mkdir(parents=True, exist_ok=True)
     angenommen = []
     for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
+        # F1 (0.9.44, Entwurf 2.0, E7): nur Befehlsdateien - die Befehlsbruecke legt zustand.json und
+        # waechter.json in DENSELBEN Ordner.
+        if not KENNUNG.match(datei.stem):
+            continue
         kennung = datei.stem
         arbeit = datei.with_suffix(".inarbeit")
         try:
@@ -3245,12 +3314,18 @@ async def warteschlange(v: "MatterVerbindung", cfg: dict, tab: dict, fertig=None
         # keine Stellbefehle.
         bleibt = ("wlan", "thread", "anlernen", "entfernen", "name")
         ts = b.get("ts")
+        # Gruppe 8 (0.9.44, E8): ein ueber MQTT eingereihter Befehl traegt verfall_s (30) - er wirkt nie
+        # spaeter als das. Ohne den Schluessel gilt BEFEHL_VERFALL_S wie bisher.
+        grenze = BEFEHL_VERFALL_S
+        vs = b.get("verfall_s")
+        if isinstance(vs, int) and not isinstance(vs, bool) and 0 < vs < grenze:
+            grenze = vs
         if b.get("aktion") not in bleibt and isinstance(ts, (int, float)):
             alter = time.time() - float(ts)
-            if alter > BEFEHL_VERFALL_S:
+            if alter > grenze:
                 antwort_schreiben(kennung, 0,
                                   f"Verfallen: der Befehl lag {int(alter)} s in der "
-                                  f"Warteschlange (Grenze {BEFEHL_VERFALL_S} s). "
+                                  f"Warteschlange (Grenze {grenze} s). "
                                   "Er wurde NICHT ausgefuehrt.")
                 _LOG.info("Befehl %s (%s) verfallen, Alter %d s - nicht ausgefuehrt.",
                           kennung, b.get("aktion"), alter)
@@ -3297,6 +3372,10 @@ def befehle_beim_start_verwerfen() -> int:
     # nicht zu Ende brachte (Absturz, kill -9). Er wird nicht wiederholt - ob
     # er wirkte, weiss niemand; wiederholt wuerde womoeglich eine Tuer zweimal.
     for datei in sorted(ORDNER_BEFEHLE.glob("*.inarbeit")):
+        # F1 (0.9.44, Entwurf 2.0, E7): nur Befehlsdateien - die Befehlsbruecke legt zustand.json und
+        # waechter.json in DENSELBEN Ordner.
+        if not KENNUNG.match(datei.stem):
+            continue
         b = json_lesen(datei)
         _datei_weg(datei)
         antwort_schreiben(datei.stem, 0, "Abgebrochen: der vorige Dienst endete, waehrend "
@@ -3306,6 +3385,10 @@ def befehle_beim_start_verwerfen() -> int:
                   datei.stem, b.get("aktion"))
         verworfen += 1
     for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
+        # F1 (0.9.44, Entwurf 2.0, E7): nur Befehlsdateien - die Befehlsbruecke legt zustand.json und
+        # waechter.json in DENSELBEN Ordner.
+        if not KENNUNG.match(datei.stem):
+            continue
         b = json_lesen(datei)
         ts = b.get("ts")
         if not isinstance(ts, (int, float)):
@@ -4263,7 +4346,7 @@ def themen_selbstauskunft() -> dict:
         for thema, wert in felder.items():
             if wert is not None:
                 ziel[thema] = wert
-    paare = paare_bilden({"1": g}, dict(VORGABEN, mqtt_ein=1, roh_ein=0), 1)
+    paare = paare_bilden({"1": g}, dict(VORGABEN, mqtt_ein=1, roh_ein=0), 1, tab)
     paare.update(herzschlag_paare(1))
     staemme = sorted({k.rsplit("/", 1)[-1] for k in paare})
     return {"themen": staemme, "retained": [t for t in staemme if ist_zustand(t)]}

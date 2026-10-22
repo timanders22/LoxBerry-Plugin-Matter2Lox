@@ -11,6 +11,43 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.44
+
+Werte und Befehle über MQTT – der Weg des LoxBerry-Plugins Musterprojekts. Der HTTP-Endpunkt mit Token bleibt für
+bestehende Anlagen, hängt aber an einem eigenen Haken.
+
+* **Befehle über MQTT (gemeinsame Befehlsbrücke):** Loxone schaltet Matter-Geräte über den UDP-Eingang des
+  MQTT-Gateways: `matter/befehl/geraet<N>/<Endpunkt>/<Befehl>` – schalter, umschalten, helligkeit, farbtemperatur,
+  farbton, saettigung, loxfarbe, rollo, lamelle, rollo_auf/_zu/_stopp, soll_heizen, soll_kuehlen, betriebsart,
+  luefter, identify, sperren, entsperren – dazu `…/geraet<N>/abruf` und `matter/befehl/abruf`. Jede Antwort kommt als
+  `…/quittung`. Haken *Befehle über MQTT annehmen* (Reiter MQTT, ab Werk aus); schaltende Befehle brauchen wie bisher
+  *Schreibende Befehle zulassen*, Schlösser *Schlösser schalten zulassen*, Entsperren über MQTT zusätzlich *Schlösser
+  über MQTT entsperren erlauben* (ab Werk aus). Dieselbe Prüfung wie der HTTP-Endpunkt (Bereiche, Schlossbremse,
+  derselbe Wert höchstens einmal je Minute); ein über MQTT eingereihter Befehl verfällt nach 30 s, ohne Verbindung
+  zum Matter-Server wird er abgelehnt. Kein Rohweg, keine Kopplung über MQTT. Neu als Abhängigkeit: mosquitto-clients.
+* **HTTP-Endpunkt hinter dem Haken** *HTTP-Endpunkt für Loxone annehmen* (Reiter Einbindung in Loxone): neu
+  installiert aus, **nach dem Update an** – bestehende Projekte laufen unverändert weiter, die Antworten sind
+  byte-gleich. Aus heißt 403 `GRUND=ENDPUNKT_AUS`.
+* **Lebenszeichen** `matter/status/zaehler` (0 bis 999, je Herzschlag), dazu `status/ok` und `status/ts`; `online`,
+  `ok` und `ts` bleiben für bestehende Projekte. Ein Zahlen-Zustand ohne Aussage meldet jetzt **-1** (Sollwerte
+  -999) statt eines Strichs; Texte und `haus/…` unverändert.
+* Reiter **Einbindung in Loxone**: Namenstabelle der Gateway-Eingänge mit Kopierknopf, V2-Hakenliste (Noncached,
+  Resetaftersend), Befehlstabelle, Vorlage *MQTT-Befehle* je Gerät; der HTTP-Weg zugeklappt darunter. Die drei
+  Seiten aus dem Musterprojekt in der neuen Form (Werte als Virtuelle Eingänge, Befehle „Matter2Lox: …“ am Ausgang
+  „LoxBerry MQTT-Gateway“, Statustexte).
+* **Berichtigt:** Der Dienst liest in `befehle/` nur noch Befehlsdateien (sonst hätte er die Dateien der
+  Befehlsbrücke gefressen). Der Rückfall auf die bekannte Liste der gekoppelten Systeme greift auch, wenn das Gerät
+  nicht antwortet. Die Prüfzeile Router-Advertisements warnt auch ohne Thread-Dataset – geteilte Thread-Geräte aus
+  Google Home, Apple Home oder Alexa brauchen die Route trotzdem; der Hilfetext zum Border-Router sagt jetzt, wie man
+  Geräte aus diesen Systemen holt. Ohne php-xml fehlen im Reiter Test keine Zeilen mehr; der Formulartest zählt je
+  Formular; Downloads leeren vorher den Ausgabepuffer; der Bridge-Zugang behält nach einer Beanstandung den
+  eingetippten Namen. Bridge: Frage an die matterbridge mit Gesamtfrist, Pfadvergleich über realpath, ein
+  liegengebliebener eigener Hilfscontainer wird vor dem nächsten Lauf entfernt (ein fremder nicht), kein
+  `curl_close()`-Hinweis unter PHP 8.5. Hakenskripte: einheitliche Prüfung von Wurzel und Ordnername, Sicherung der
+  Bridge-Einstellungen nur mit Inhalt und atomar; Startsperre des Dienstes neben dem Datenordner; Hängergrenze
+  mindestens 180 s.
+* Nicht am Gerät geprüft; Prüfstand unter PHP 7.4, 8.4 und 8.5 (Brücke, Endpunkt, Oberfläche), Hakenskripte in WSL.
+
 ## Neu in 0.9.43
 
 Einbindung in Loxone in Vollausstattung: Schritt 7 des Reiters zeigt statt der Baustein-Liste mit 16 Zeilen

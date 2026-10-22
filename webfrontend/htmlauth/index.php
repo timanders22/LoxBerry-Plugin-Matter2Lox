@@ -157,6 +157,15 @@ if ($mt_post && isset($_POST['vorlage'])) {
     $mt_wunsch = is_string($_POST['vorlage']) ? $_POST['vorlage'] : '';
     if ($mt_wunsch === 'alle') {
         list($mt_name, $mt_inhalt) = mt_vorlage_alle();
+    } elseif (preg_match('/^mqtt([0-9]{1,3})$/', $mt_wunsch, $mt_tr)) {
+        /* Gruppe 8 (0.9.44, Entwurf 3.8): Vorlage MQTT-Befehle - dieselbe Thema-zu-Befehl-Tabelle wie die
+         * Ausgaenge, Adresse /dev/udp/<LoxBerry>/<UDP-Eingang des Gateways>. Ohne schaltbaren Wert keine Datei. */
+        list($mt_name, $mt_inhalt) = mt_vorlage_mqtt_out((int) $mt_tr[1]);
+        if (strpos($mt_inhalt, '<VirtualOutCmd') === false) {
+            $mt_fehler[] = mt_t('LOX.M_VORLAGE_LEER');
+            $mt_tab = 'tab-loxone';
+            $mt_inhalt = null;
+        }
     } elseif (preg_match('/^aus([0-9]{1,3})$/', $mt_wunsch, $mt_tr)) {
         list($mt_name, $mt_inhalt) = mt_vorlage_out((int) $mt_tr[1]);
         /* Ohne bekanntes Geraet enthaelt die Datei NULL Befehle. Sie waere
@@ -189,6 +198,11 @@ if ($mt_post && isset($_POST['vorlage'])) {
         }
     }
     if ($mt_inhalt !== null) {
+        /* M19 (0.9.44, Pruefbericht; Hausform Chromecast C16): den Ausgabepuffer leeren - eine Warnung, ein BOM oder
+         * eine Leerzeile aus einer eingebundenen Datei laege sonst VOR der Datei. */
+        while (ob_get_level() > 0) {
+            @ob_end_clean();
+        }
         header('Content-Type: application/xml; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $mt_name . '"');
         echo $mt_inhalt;
@@ -230,6 +244,11 @@ if ($mt_post && isset($_POST['fabric_sichern'])) {
                 }
             });
             $mt_dname = 'matter-fabric-' . date('Y-m-d_H-i') . '.tar.gz';
+            /* M19 (0.9.44, Pruefbericht; Hausform Chromecast C16): den Ausgabepuffer leeren - eine Warnung, ein BOM oder
+             * eine Leerzeile aus einer eingebundenen Datei laege sonst VOR der Datei. */
+            while (ob_get_level() > 0) {
+                @ob_end_clean();
+            }
             header('Content-Type: application/x-download');
             header('Content-Disposition: attachment; filename="' . $mt_dname . '"');
             header('Content-Length: ' . (int) @filesize($mt_fwas));
@@ -527,6 +546,9 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
      * gesendeten Themen abgeraeumt (unten, nach dem Speichern). */
     $mt_haus_vorher = !empty($mt_mcfg['tuer_haus']);
     $mt_mcfg['tuer_haus'] = isset($_POST['tuer_haus']) ? 1 : 0;
+    /* Gruppe 8 (0.9.44, E1-E3): "Befehle ueber MQTT annehmen" und "Schloesser ueber MQTT entsperren". */
+    $mt_mcfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    $mt_mcfg['befehle_mqtt_entsperren'] = isset($_POST['befehle_mqtt_entsperren']) ? 1 : 0;
     /* O2: nicht still Zeichen entfernen, sondern gegen das Muster pruefen
      * und abweisen (Bericht oberflaeche Nr. 5). */
     $mt_mtopic = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])
@@ -561,6 +583,14 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
         // 0.9.34 entstand daraus "1,,2".
         $mt_mcfg['mqtt_nur'] = preg_replace('/[ ,;]+/', ',', $mt_nur);
     }
+    /* Gruppe 8 (0.9.44, Entwurf 3.9): mit "Befehle ueber MQTT annehmen" muss das Praefix auch fuer die
+     * Befehlsbruecke taugen (bb_praefix_gueltig(): hoechstens fuenf Ebenen zu je 40 Zeichen, keine leere Ebene) -
+     * Matter2Lox selbst erlaubt "a//b" und 64 Zeichen am Stueck. */
+    if (!in_array('mqtt_topic', $mt_bean, true) && !empty($mt_mcfg['befehle_mqtt_ein']) && mt_bruecke_laden()
+        && !bb_praefix_gueltig(mt_mqtt_praefix($mt_mcfg))) {
+        $mt_fehler[] = mt_t('BEFEHL.FEHLER_PRAEFIX');
+        $mt_bean[] = 'mqtt_topic';
+    }
     /* X-2: abgewiesen - die Eingaben reisen zurueck ins Formular. */
     if ($mt_fehler) {
         $mt_eingaben = mt_eingaben_sammeln('save_mqtt', $mt_bean);
@@ -576,6 +606,17 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
                 mt_praefix_merken(array($mt_praefix_vorher, $mt_praefix_nachher));
                 $mt_meldungen[] = mt_e(sprintf(mt_t('MQTT.PRAEFIX_GEWECHSELT'),
                                                $mt_praefix_vorher, $mt_praefix_nachher));
+            }
+            /* Gruppe 8 (0.9.44, Entwurf 3.9): die Befehlsbruecke gleich starten bzw. anhalten (nach einem
+             * Praefixwechsel neu); sonst tut es der Waechter in cron.01min binnen einer Minute. */
+            $mt_bbr = mt_bruecke_schalten($mt_praefix_nachher !== $mt_praefix_vorher);
+            $mt_bbs = mt_bruecke_satz($mt_bbr);
+            if ($mt_bbs !== '') {
+                if (in_array($mt_bbr[0], array('ein', 'aus'), true)) {
+                    $mt_meldungen[] = $mt_bbs;
+                } else {
+                    $mt_fehler[] = $mt_bbs;
+                }
             }
             /* Tuer-1: abgehakt - die je unter haus/tuer/ gesendeten Themen
              * gleich abraeumen, mit Ruecklesen beim Broker (der Dienst tut
@@ -861,6 +902,8 @@ if ($mt_post && isset($_POST['save_loxone'])) {
         $mt_eingaben = mt_eingaben_sammeln('save_loxone', $mt_bean);
     } else {
         $mt_cfg['loxone_adresse'] = $mt_la;
+        /* Gruppe 8 (0.9.44, E1): der Haken des HTTP-Endpunkts steht im selben Formular. */
+        $mt_cfg['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
         if (mt_config_speichern($mt_cfg)) {
             $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
         } else {
@@ -1009,6 +1052,11 @@ if ($mt_post && isset($_POST['mt_sichern'])) {
     $mt_js = json_encode($mt_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($mt_js !== false) {
+        /* M19 (0.9.44, Pruefbericht; Hausform Chromecast C16): den Ausgabepuffer leeren - eine Warnung, ein BOM oder
+         * eine Leerzeile aus einer eingebundenen Datei laege sonst VOR der Datei. */
+        while (ob_get_level() > 0) {
+            @ob_end_clean();
+        }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="matter2lox_einstellungen_'
                . date('Ymd_His') . '.json"');
@@ -1097,8 +1145,10 @@ if ($mt_post && isset($_POST['br_zugang'])) {
     $mt_bk = isset($_POST['br_kennwort']) && is_string($_POST['br_kennwort']) ? $_POST['br_kennwort'] : '';
     if ($mt_bb === null || ($mt_bb !== '' && !mt_br_benutzer_gueltig($mt_bb))) {
         $mt_fehler[] = mt_t('BRIDGE.M_BENUTZER_FORM');
+        $mt_bean[] = 'br_benutzer';   // M20 (0.9.44)
     } elseif ($mt_bk !== '' && (strlen($mt_bk) > 128 || preg_match('/[\x00-\x1F\x7F]/', $mt_bk) === 1)) {
         $mt_fehler[] = mt_t('BRIDGE.M_KENNWORT_FORM');
+        $mt_bean[] = 'br_kennwort';   // M20 (0.9.44)
     } else {
         $mt_bvor = $mt_bz['benutzer'] . "\n" . $mt_bz['kennwort'];
         $mt_bz['benutzer'] = $mt_bb;
@@ -1112,6 +1162,7 @@ if ($mt_post && isset($_POST['br_zugang'])) {
         }
         if (!mt_br_zugang_speichern($mt_bz)) {
             $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), mt_e(mt_br_pfade()['zugang']));
+            $mt_eingaben = mt_eingaben_sammeln('br_zugang', array());   // M20 (0.9.44)
         } else {
             mt_log('Bridge: Zugang gespeichert (Benutzer ' . ($mt_bz['benutzer'] !== '' ? $mt_bz['benutzer'] : '-')
                    . ', Kennwort ' . ($mt_bz['kennwort'] !== '' ? 'gesetzt' : 'leer') . ').');
@@ -1120,6 +1171,12 @@ if ($mt_post && isset($_POST['br_zugang'])) {
                 $mt_meldungen[] = mt_t('BRIDGE.M_ZUGANG_UNVOLLSTAENDIG');
             }
         }
+    }
+    /* M20 (0.9.44, Pruefbericht; Regeln/04 X-2): beanstandet - der eingetippte Benutzername reist mit der
+     * Einmalmeldung zurueck ins Feld, beide Felder werden markiert; das Kennwort reist nie mit. Bis 0.9.43 zeigte
+     * das Feld nach dem 303 wieder den gespeicherten Namen. */
+    if ($mt_bean) {
+        $mt_eingaben = mt_eingaben_sammeln('br_zugang', $mt_bean);
     }
     $mt_tab = 'tab-bridge';
 }
@@ -1250,6 +1307,11 @@ if ($mt_post && isset($_POST['br_log'])) {
 }
 if ($mt_post && isset($_POST['br_log_laden'])) {
     list($mt_ok, $mt_blog) = mt_br_log(2000);
+    /* M19 (0.9.44, Pruefbericht; Hausform Chromecast C16): den Ausgabepuffer leeren - eine Warnung, ein BOM oder
+     * eine Leerzeile aus einer eingebundenen Datei laege sonst VOR der Datei. */
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
     header('Content-Type: text/plain; charset=utf-8');
     header('Content-Disposition: attachment; filename="matter2lox-bridge-' . date('Y-m-d_H-i') . '.log"');
     header('Cache-Control: no-store');
@@ -1269,6 +1331,11 @@ if ($mt_post && isset($_POST['br_sichern'])) {
                 @unlink($mt_fweg);
             }
         });
+        /* M19 (0.9.44, Pruefbericht; Hausform Chromecast C16): den Ausgabepuffer leeren - eine Warnung, ein BOM oder
+         * eine Leerzeile aus einer eingebundenen Datei laege sonst VOR der Datei. */
+        while (ob_get_level() > 0) {
+            @ob_end_clean();
+        }
         header('Content-Type: application/x-download');
         header('Content-Disposition: attachment; filename="matter2lox-bridge-' . date('Y-m-d_H-i') . '.tar.gz"');
         header('Content-Length: ' . (int) @filesize($mt_fwas));
@@ -2612,13 +2679,16 @@ if ($mt_fz) { ?>
 <form action="index.php" method="post" autocomplete="off">
   <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+<?php if (mt_eingaben_aktiv('br_zugang')) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('EINST.EINGABEN_ZURUECK')) ?></div>
+<?php } ?>
   <div class="sm-feld">
     <label for="br_benutzer"><?= mt_e(mt_t('BRIDGE.L_BENUTZER')) ?></label>
-    <input data-role="none" type="text" id="br_benutzer" name="br_benutzer" value="<?= mt_e($mt_brz['benutzer']) ?>" maxlength="64" placeholder="matterbridge">
+    <input data-role="none" type="text" id="br_benutzer" name="br_benutzer" value="<?= mt_e(mt_eingabe('br_zugang', 'br_benutzer', $mt_brz['benutzer'])) ?>"<?= mt_markierung('br_zugang', 'br_benutzer') ?> maxlength="64" placeholder="matterbridge">
   </div>
   <div class="sm-feld">
     <label for="br_kennwort"><?= mt_e(mt_t('BRIDGE.L_KENNWORT')) ?></label>
-    <input data-role="none" type="password" autocomplete="new-password" id="br_kennwort" name="br_kennwort" value=""
+    <input data-role="none" type="password" autocomplete="new-password" id="br_kennwort" name="br_kennwort" value=""<?= mt_markierung('br_zugang', 'br_kennwort') ?>
            placeholder="<?= $mt_brz['kennwort'] !== '' ? mt_e(mt_t('ANLERN.PW_GESETZT')) : mt_e(mt_t('ANLERN.PW_LEER')) ?>">
     <label style="display:flex;align-items:center;gap:6px;margin:6px 0 0;font-size:0.85em;">
       <input data-role="none" type="checkbox" name="br_kennwort_loeschen" value="1"> <?= mt_e(mt_t('BRIDGE.L_KENNWORT_LOESCHEN')) ?></label>
@@ -2922,6 +2992,28 @@ if ($mt_fz) { ?>
   </label>
   <div class="sm-hilfe"><?= mt_t('EINST.H_TUER_HAUS') ?></div>
 </div>
+<?php /* Gruppe 8 / MQTT (0.9.44; Entwurf 3.9, E1-E3): die Haken der Befehlsbruecke im Formular des Reiters MQTT.
+   Der zweite Haken fuer eingreifende Befehle ist der vorhandene "Schreibende Befehle zulassen" (Reiter
+   Einstellungen, E2); Schloesser brauchen zusaetzlich "Schloesser schalten zulassen", Entsperren ueber MQTT den
+   eigenen Haken hier (E3). Speichern startet bzw. haelt die Bruecke sofort (mt_bruecke_schalten()). */ ?>
+<h3 class="sm-h3"><?= mt_e(mt_t('BEFEHL.H_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= mt_t('BEFEHL.H_TEXT') ?></p>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= !empty(mt_eingabe('save_mqtt', 'befehle_mqtt_ein', $mt_cfg['befehle_mqtt_ein'])) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('BEFEHL.L_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= sprintf(mt_t('BEFEHL.H_EIN'), '<span class="sm-mono">' . mt_e(mt_mqtt_praefix($mt_cfg) . '/befehl/#') . '</span>') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_entsperren" value="1" <?= !empty(mt_eingabe('save_mqtt', 'befehle_mqtt_entsperren', $mt_cfg['befehle_mqtt_entsperren'])) ? 'checked' : '' ?>>
+    <?= mt_e(mt_t('BEFEHL.L_ENTSPERREN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= mt_t('BEFEHL.H_ENTSPERREN') ?></div>
+</div>
+<p class="sm-hilfe"><?= mt_t('BEFEHL.ZWEITER_HAKEN') ?></p>
+<div class="sm-warnung"><?= mt_t('BEFEHL.HEIMNETZ') ?></div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
@@ -2972,6 +3064,9 @@ if ($mt_fz) { ?>
 foreach (mt_themen_fest() as $mt_ft => $mt_fi) { ?>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e($mt_fi[0] . $mt_ft) ?></span></td><td><?= mt_e(mt_retain_text($mt_ft)) ?></td><td><?= mt_t($mt_fi[1]) ?></td></tr>
 <?php } ?>
+<?php /* Gruppe 8 (0.9.44): die Themen der Befehlsbruecke - status/befehle sendet die Bruecke selbst. */ ?>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/status/befehle</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_STATUS_BEFEHLE') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/befehl/&lt;Befehl&gt;/quittung</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_QUITTUNG') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/&lt;Endpunkt&gt;/&lt;Thema&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
 <tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/roh/&lt;Pfad&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
 <?php /* Tuer-1: ein eigener Baum, unabhaengig vom Praefix - nur mit dem Haken
@@ -3046,13 +3141,168 @@ foreach ((array) (isset($mt_tabelle['abgeleitete_themen']['themen'])
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION_TOKEN') ?></span>
 </div>
 
-<div class="sm-step"><b><?= mt_e(mt_t('LOX.S1_TITEL')) ?></b><br><?= mt_t('LOX.S1_TEXT') ?></div>
+<?php /* Gruppe 8 / MQTT (0.9.44; Entwurf 2.5, E9-E13): MQTT ist der Weg des LoxBerry-Plugins Musterprojekts, fuer
+   Werte UND Befehle. Schritt 1 die Werte am Gateway (V1: das Abo legt der Dienst selbst an, mqtt_subscriptions.cfg
+   seit 0.9.35; V2: Hakenliste mit Noncached/Resetaftersend), Schritt 2 die Namenstabelle (mt_mqtt_namen(); keine
+   Importvorlage fuer Werte), Schritt 3 die Befehle der Befehlsbruecke mit der Vorlage "MQTT-Befehle" je Geraet,
+   Schritt 4 die Ausfallerkennung ueber status/zaehler. Der HTTP-Weg (Token) steht zugeklappt darunter - fuer
+   bestehende Anlagen und Fremdsysteme, aktiv nur mit dem Haken "HTTP-Endpunkt fuer Loxone annehmen" (endpunkt_ein,
+   ab Werk aus). */
+$mt_ln = mt_mqtt_namen($mt_cfg);
+$mt_lh = mt_mqtt_hakenliste_muster();
+$mt_lb = mt_bb_liste();
+$mt_lpr = mt_mqtt_praefix($mt_cfg);
+$mt_ep_an = mt_endpunkt_an($mt_cfg);
+$mt_udp = (int) $mt_mqtt['udpport'];
+$mt_v2text = function ($k) {
+    return $k === 'N' ? mt_t('LOX.V2_N') : ($k === 'R' ? mt_t('LOX.V2_R') : '');
+};
+?>
+<div class="sm-hinweis"><?= mt_t('LOX.S0_MQTT') ?></div>
 
-<div class="sm-step"><b><?= mt_e(mt_t('LOX.S2_TITEL')) ?></b><br>
-<?= mt_t('LOX.S2_TEXT') ?>
-<p><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/#</span></p>
-<div class="sm-warnung"><?= mt_abo_text() ?></div>
+<div class="sm-step"><b><?= mt_e(mt_t('LOX.MQ1_TITEL')) ?></b><br>
+<?= mt_t('LOX.MQ1_TEXT') ?>
+<p><span class="sm-mono"><?= mt_e($mt_lpr) ?>/#</span></p>
+<?php if (empty($mt_cfg['mqtt_ein'])) { ?>
+<div class="sm-warnung"><?= mt_t('LOX.MQ1_AUS') ?></div>
+<?php } ?>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ1_V2') ?></p>
+<div class="sm-breit">
+<table class="sm-tbl" id="mt_hakenliste">
+<tr><th>#</th><th><?= mt_e(mt_t('LOX.T_NAME_GATEWAY')) ?></th><th><?= mt_e(mt_t('LOX.T_V2')) ?></th></tr>
+<?php foreach ($mt_lh as $mt_hi => $mt_hz) { ?>
+<tr><td><?= (int) $mt_hi + 1 ?></td><td><span class="sm-mono"><?= mt_e(mt_gateway_name($mt_lpr . '/' . $mt_hz[0])) ?></span></td><td><?= mt_e($mt_hz[1] !== '' ? $mt_v2text($mt_hz[1]) : mt_t('LOX.V2_HAKEN')) ?></td></tr>
+<?php } ?>
+</table>
 </div>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ1_RECONNECT') ?></p>
+</div>
+
+<div class="sm-step"><b><?= mt_e(mt_t('LOX.MQ2_TITEL')) ?></b><br>
+<?= mt_t('LOX.MQ2_TEXT') ?>
+<?php if (!$mt_geraete) { ?>
+<div class="sm-hinweis"><?= mt_t('LOX.MQ2_KEINE_GERAETE') ?></div>
+<?php } ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="mt_namenstabelle">
+<tr><th><?= mt_e(mt_t('MQTT.T_THEMA')) ?></th><th><?= mt_e(mt_t('LOX.T_NAME_GATEWAY')) ?></th><th><?= mt_e(mt_t('LOX.T_ART')) ?></th><th><?= mt_e(mt_t('MQTT.T_RETAIN')) ?></th><th><?= mt_e(mt_t('LOX.T_V2')) ?></th><th><?= mt_e(mt_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($mt_ln as $mt_nz) { ?>
+<tr><td><span class="sm-mono"><?= mt_e($mt_nz['voll']) ?></span></td><td><span class="sm-mono"><?= mt_e($mt_nz['name']) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= mt_e($mt_nz['name']) ?>"><?= mt_e(mt_t('LOX.KOPIEREN')) ?></button></td><td><?= mt_e(mt_t($mt_nz['art'] === 'text' ? 'LOX.ART_TEXT' : 'LOX.ART_ZAHL')) ?></td><td><?= mt_e(mt_t($mt_nz['retained'] ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td><td><?= mt_e($mt_v2text($mt_nz['v2'])) ?></td><td><?= mt_e($mt_nz['bedeutung']) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ2_EINGANG') ?></p>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ2_FEHLWERT') ?></p>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ2_PRAEFIX') ?></p>
+<script>
+(function () {
+    var k = document.querySelectorAll('#mt_namenstabelle .sm-kopie');
+    for (var i = 0; i < k.length; i++) {
+        k[i].addEventListener('click', function () {
+            var b = this, n = b.getAttribute('data-kopie');
+            var fertig = function () { b.textContent = <?= json_encode(mt_t('LOX.KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    }
+})();
+</script>
+</div>
+
+<div class="sm-step" id="befehle_loxone"><b><?= mt_e(mt_t('LOX.MQ3_TITEL')) ?></b><br>
+<?= sprintf(mt_t('LOX.MQ3_TEXT'), '<span class="sm-mono">' . mt_e($mt_lpr . '/befehl/#') . '</span>') ?>
+<?php if (empty($mt_cfg['befehle_mqtt_ein'])) { ?>
+<div class="sm-warnung"><?= mt_t('LOX.MQ3_HAKEN_AUS') ?></div>
+<?php } ?>
+<?php if (empty($mt_cfg['steuerung_ein'])) { ?>
+<div class="sm-warnung"><?= mt_t('LOX.MQ3_STEUERUNG_AUS') ?></div>
+<?php } ?>
+<?php if ($mt_lb === null) { ?>
+<div class="sm-fehler"><?= mt_t('LOX.MQ3_KEINE') ?></div>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="mt_befehle">
+<tr><th><?= mt_e(mt_t('BEFEHL.T_TITEL')) ?></th><th><?= mt_e(mt_t('BEFEHL.T_THEMA')) ?></th><th><?= mt_e(mt_t('BEFEHL.T_WERT')) ?></th><th><?= mt_e(mt_t('BEFEHL.T_EINGREIFEND')) ?></th><th><?= mt_e(mt_t('BEFEHL.T_SPERRE')) ?></th></tr>
+<?php foreach ($mt_lb['befehle'] as $mt_bz) {
+    if ($mt_bz['art'] === 'ganz' || $mt_bz['art'] === 'zahl') {
+        $mt_bw = $mt_bz['min'] . ' … ' . $mt_bz['max'];
+    } else {
+        $mt_bw = $mt_bz['art'] === 'schalter' ? '0 / 1' : '1';
+    } ?>
+<tr><td><?= mt_e($mt_bz['titel']) ?></td><td><span class="sm-mono"><?= mt_e(str_replace(array('{geraet}', '{ep}'), array('geraet<N>', '<E>'), $mt_bz['thema'])) ?></span></td><td><span class="sm-mono"><?= mt_e($mt_bw) ?></span></td><td><?= mt_e(mt_t($mt_bz['eingreifend'] ? 'BEFEHL.T_JA_ZWEITER' : 'BEFEHL.T_NEIN')) ?></td><td><?= (int) $mt_bz['sperre_s'] ?> s</td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ3_ADRESSE') ?></p>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ3_SCHLOSS') ?></p>
+<p class="sm-hilfe"><?= mt_t('LOX.MQ3_NICHTS') ?></p>
+<div class="sm-warnung"><?= mt_t('BEFEHL.HEIMNETZ') ?></div>
+<?php if ($mt_geraete) { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= mt_t('LEGENDE.VORLAGE') ?></span>
+</div>
+<div class="sm-knopfreihe" style="margin-bottom:10px;">
+<?php foreach ($mt_geraete as $mt_nr => $mt_g) { ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage" value="mqtt<?= mt_e($mt_nr) ?>">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= mt_e(mt_t('LOX.K_VORLAGE_MQTT')) ?> <?= mt_e($mt_feld($mt_g, 'name', '?')) ?></button>
+</form>
+<?php } ?>
+</div>
+<p class="sm-hilfe"><?= sprintf(mt_t('LOX.MQ3_VORLAGE'), '<span class="sm-mono">' . mt_e('/dev/udp/' . mt_udp_host($mt_cfg) . '/' . ($mt_udp > 0 ? $mt_udp : 11884)) . '</span>') ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= mt_t('BEFEHL.QUITTUNG') ?></p>
+</div>
+
+<div class="sm-step"><b><?= mt_e(mt_t('LOX.MQ4_TITEL')) ?></b><br>
+<?= mt_t('LOX.MQ4_TEXT') ?>
+<?php if (isset($mt_cfg['herzschlag']) && is_numeric($mt_cfg['herzschlag']) && (int) $mt_cfg['herzschlag'] === 0) { ?>
+<div class="sm-warnung"><?= mt_t('LOX.MQ4_HERZSCHLAG_AUS') ?></div>
+<?php } ?>
+</div>
+
+<details class="sm-step"><summary><b><?= mt_e(mt_t('LOX.H_HTTP')) ?></b></summary>
+<p><?= mt_t('LOX.HTTP_TEXT') ?></p>
+<?php /* Entscheidung 1 (E1): der ganze HTTP-Endpunkt haengt an endpunkt_ein. Dasselbe Formular traegt die Adresse
+   des LoxBerry fuer die Vorlagen (0.9.35, Nr. 1) - sie gilt auch fuer die Vorlage MQTT-Befehle (Schritt 3). */ ?>
+<form action="index.php" method="post" autocomplete="off">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="save_loxone" value="1">
+<?php if (mt_eingaben_aktiv('save_loxone')) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('EINST.EINGABEN_ZURUECK')) ?></div>
+<?php } ?>
+  <div class="sm-feld">
+    <label style="display:inline-flex;align-items:center;gap:8px;">
+      <input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= !empty(mt_eingabe('save_loxone', 'endpunkt_ein', $mt_cfg['endpunkt_ein'])) ? 'checked' : '' ?>>
+      <?= mt_e(mt_t('LOX.L_ENDPUNKT_EIN')) ?>
+    </label>
+    <div class="sm-hilfe"><?= mt_t('LOX.H_ENDPUNKT_EIN') ?></div>
+  </div>
+  <h3 class="sm-h3"><?= mt_e(mt_t('LOX.H_ADRESSE')) ?></h3>
+  <div class="sm-feld">
+    <label for="loxone_adresse"><?= mt_e(mt_t('LOX.L_ADRESSE')) ?></label>
+    <input data-role="none" type="text" id="loxone_adresse" name="loxone_adresse" maxlength="80"
+           value="<?= mt_e(mt_eingabe('save_loxone', 'loxone_adresse', $mt_cfg['loxone_adresse'])) ?>"<?= mt_markierung('save_loxone', 'loxone_adresse') ?> placeholder="<?= mt_e(mt_t('LOX.P_ADRESSE')) ?>">
+    <div class="sm-hilfe"><?= sprintf(mt_t('LOX.H_ADRESSE_FELD'), mt_e($mt_host)) ?></div>
+  </div>
+  <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+  </div>
+</form>
+<?php if (!$mt_ep_an) { ?>
+<div class="sm-hinweis"><?= mt_t('LOX.HTTP_AUS') ?></div>
+<?php } else { ?>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S3_TITEL')) ?></b><br>
 <?= mt_t('LOX.S3_TEXT') ?>
@@ -3182,32 +3432,33 @@ foreach ($mt_beispiele as $mt_k => $mt_q) { ?>
   </div>
 </form>
 
-<?php /* 0.9.35 (Nr. 1, Vertrag): die Adresse, die in den Vorlagen steht. */ ?>
-<h3 class="sm-h3"><?= mt_e(mt_t('LOX.H_ADRESSE')) ?></h3>
-<form action="index.php" method="post" autocomplete="off">
-  <?php echo mt_fmt(); ?>
-  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <input data-role="none" type="hidden" name="save_loxone" value="1">
-  <div class="sm-feld">
-    <label for="loxone_adresse"><?= mt_e(mt_t('LOX.L_ADRESSE')) ?></label>
-    <input data-role="none" type="text" id="loxone_adresse" name="loxone_adresse" maxlength="80"
-           value="<?= mt_e(mt_eingabe('save_loxone', 'loxone_adresse', $mt_cfg['loxone_adresse'])) ?>"<?= mt_markierung('save_loxone', 'loxone_adresse') ?> placeholder="<?= mt_e(mt_t('LOX.P_ADRESSE')) ?>">
-    <div class="sm-hilfe"><?= sprintf(mt_t('LOX.H_ADRESSE_FELD'), mt_e($mt_host)) ?></div>
-  </div>
-  <div class="sm-knopfreihe">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
-  </div>
-</form>
+<?php /* Die Adresse fuer die Vorlagen steht seit 0.9.44 oben im Formular mit dem Haken des HTTP-Endpunkts. */ ?>
 </div>
 
 <div class="sm-step"><b><?= mt_e(mt_t('LOX.S6_TITEL')) ?></b><br><?= mt_t('LOX.S6_TEXT') ?></div>
+
+<div class="sm-step"><b><?= mt_e(mt_t('LOX.S8_TITEL')) ?></b><br>
+<?= mt_t('LOX.S8_TEXT') ?>
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('LOX.T_PRUEFUNG')) ?></th><th><?= mt_e(mt_t('LOX.T_ERWARTUNG')) ?></th></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_lese) ?>&amp;aktion=liste</span></td>
+    <td><span class="sm-mono">LISTE;OK=1;N=...</span></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?aktion=liste</span></td>
+    <td><span class="sm-mono">FEHLER;OK=0;GRUND=TOKEN</span> (HTTP 403)</td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=quatsch</span></td>
+    <td><span class="sm-mono">FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION</span> (HTTP 400)</td></tr>
+</table>
+</div>
+<?php } ?>
+</details>
 
 <?php
 /**
  * Die Baustein-Listen des Reiters "Einbindung in Loxone", Schritt 7 - Welle Bild 19 (0.9.43, Hausherr
  * 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 19
  * mt, E1-E15, 18.10.2026). DREI Seiten wie im LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt,
- * Abschnitte "Matter2Lox" 21, "Matter2Lox Geraete" 27, "Matter2Lox Bridge" 3 Zeilen; beide Richtungen
+ * Abschnitte "Matter2Lox" 21 (seit 0.9.44: 18, Gruppe 8 - Werte und Befehle ueber MQTT), "Matter2Lox Geraete" 27,
+ * "Matter2Lox Bridge" 3 Zeilen; beide Richtungen
  * getrennt). Bis 0.9.42 stand hier EINE Liste mit 16 Zeilen (Funktion mt_bausteine). Berichtigt gegen sie: der
  * Schwellwertschalter "Matter Werte veraltet" (900/600 auf ALTER) entfaellt - ALTER waechst in einem ruhigen
  * Haus bis etwa 1800 s (das Abbild wird nur bei Aenderung und alle 30 min geschrieben) und ist ein
@@ -3232,17 +3483,17 @@ function mt_bausteinliste($mt_praefix)
     // Seitenname (= Config-Seite im Musterprojekt, deshalb fest), Bild, Zeilen, Kasten, Hinweise
     $mt_seiten = array(
         array('Matter2Lox', 'einbindung_loxone.png', array(
-            array(mt_t('BAUSTEIN.Z1_01')),
-            array(mt_t('BAUSTEIN.Z1_02')),
-            array(mt_t('BAUSTEIN.Z1_03'), 'gw'),
+            array(mt_t('BAUSTEIN.Z1_01'), 'gw'),
+            array(mt_t('BAUSTEIN.Z1_02'), 'gw'),
+            array(mt_t('BAUSTEIN.Z1_03')),
             array(mt_t('BAUSTEIN.Z1_04')),
             array(mt_t('BAUSTEIN.Z1_05')),
             array(mt_t('BAUSTEIN.Z1_06')),
             array(mt_t('BAUSTEIN.Z1_07')),
             array(mt_t('BAUSTEIN.Z1_08')),
-            array(mt_t('BAUSTEIN.Z1_09')),
-            array(mt_t('BAUSTEIN.Z1_10')),
-            array(mt_t('BAUSTEIN.Z1_11')),
+            array(mt_t('BAUSTEIN.Z1_09'), 'gw'),
+            array(mt_t('BAUSTEIN.Z1_10'), 'gw'),
+            array(mt_t('BAUSTEIN.Z1_11'), 'gw'),
             array(mt_t('BAUSTEIN.Z1_12')),
             array(mt_t('BAUSTEIN.Z1_13')),
             array(mt_t('BAUSTEIN.Z1_14')),
@@ -3250,9 +3501,6 @@ function mt_bausteinliste($mt_praefix)
             array(mt_t('BAUSTEIN.Z1_16')),
             array(mt_t('BAUSTEIN.Z1_17')),
             array(mt_t('BAUSTEIN.Z1_18')),
-            array(mt_t('BAUSTEIN.Z1_19')),
-            array(mt_t('BAUSTEIN.Z1_20')),
-            array(mt_t('BAUSTEIN.Z1_21')),
         ), array(
             'BAUSTEIN.SEITE1_SCHRITT1',
             'BAUSTEIN.SEITE1_SCHRITT2',
@@ -3269,9 +3517,9 @@ function mt_bausteinliste($mt_praefix)
             'BAUSTEIN.SEITE1_H6',
         )),
         array("Matter2Lox Ger\xc3\xa4te", 'einbindung_loxone_geraete.png', array(
-            array(mt_t('BAUSTEIN.Z2_01')),
-            array(sprintf(mt_t('BAUSTEIN.Z2_02'))),
-            array(mt_t('BAUSTEIN.Z2_03')),
+            array(mt_t('BAUSTEIN.Z2_01'), 'gw'),
+            array(sprintf(mt_t('BAUSTEIN.Z2_02')), 'gw'),
+            array(mt_t('BAUSTEIN.Z2_03'), 'gw'),
             array(mt_t('BAUSTEIN.Z2_04'), 'gw'),
             array(sprintf(mt_t('BAUSTEIN.Z2_05'))),
             array(sprintf(mt_t('BAUSTEIN.Z2_06'))),
@@ -3281,16 +3529,16 @@ function mt_bausteinliste($mt_praefix)
             array(mt_t('BAUSTEIN.Z2_10')),
             array(mt_t('BAUSTEIN.Z2_11')),
             array(sprintf(mt_t('BAUSTEIN.Z2_12'))),
-            array(mt_t('BAUSTEIN.Z2_13')),
-            array(mt_t('BAUSTEIN.Z2_14')),
-            array(mt_t('BAUSTEIN.Z2_15')),
+            array(mt_t('BAUSTEIN.Z2_13'), 'gw'),
+            array(mt_t('BAUSTEIN.Z2_14'), 'gw'),
+            array(mt_t('BAUSTEIN.Z2_15'), 'gw'),
             array(mt_t('BAUSTEIN.Z2_16'), 'gw'),
             array(mt_t('BAUSTEIN.Z2_17')),
             array(mt_t('BAUSTEIN.Z2_18')),
             array(mt_t('BAUSTEIN.Z2_19')),
-            array(mt_t('BAUSTEIN.Z2_20')),
-            array(sprintf(mt_t('BAUSTEIN.Z2_21'))),
-            array(sprintf(mt_t('BAUSTEIN.Z2_22'))),
+            array(mt_t('BAUSTEIN.Z2_20'), 'gw'),
+            array(sprintf(mt_t('BAUSTEIN.Z2_21')), 'gw'),
+            array(sprintf(mt_t('BAUSTEIN.Z2_22')), 'gw'),
             array(sprintf(mt_t('BAUSTEIN.Z2_23'))),
             array(mt_t('BAUSTEIN.Z2_24'), 'gw'),
             array(mt_t('BAUSTEIN.Z2_25')),
@@ -3328,6 +3576,9 @@ function mt_bausteinliste($mt_praefix)
         )),
     );
     $mt_gw = str_replace(array('/', '%'), '_', (string) $mt_praefix);
+    /* 0.9.44 (Gruppe 8): Befehle und Abo tragen das Praefix als THEMA ('/' bleibt) - "publish matter/befehl/..."
+     * und "matter/#" stehen so in der Liste; mit dem Werkspraefix aendert sich nichts. */
+    $mt_tp = trim((string) $mt_praefix, '/');
     $mt_aus = array();
     foreach ($mt_seiten as $mt_s) {
         $mt_zeilen = array();
@@ -3336,6 +3587,8 @@ function mt_bausteinliste($mt_praefix)
             if (isset($mt_z[1]) && $mt_z[1] === 'gw' && strpos($mt_c[1], 'matter_') === 0) {
                 $mt_c[1] = $mt_gw . '_' . substr($mt_c[1], strlen('matter_'));
             }
+            $mt_c[2] = str_replace(array('publish matter/', ' matter/#'),
+                                   array('publish ' . $mt_tp . '/', ' ' . $mt_tp . '/#'), $mt_c[2]);
             $mt_zeilen[] = array_merge(array($mt_i + 1), $mt_c);
         }
         $mt_aus[] = array('seite' => $mt_s[0], 'bild' => $mt_s[1], 'zeilen' => $mt_zeilen,
@@ -3384,18 +3637,6 @@ $mt_bl = mt_bausteinliste(mt_mqtt_praefix($mt_cfg));
 <?php foreach ($mt_bl as $mt_bs_i => $mt_bs) { mt_bausteinseite_zeigen($mt_bs, $mt_bs_i + 1); } ?>
 </div>
 
-<div class="sm-step"><b><?= mt_e(mt_t('LOX.S8_TITEL')) ?></b><br>
-<?= mt_t('LOX.S8_TEXT') ?>
-<table class="sm-tbl">
-<tr><th><?= mt_e(mt_t('LOX.T_PRUEFUNG')) ?></th><th><?= mt_e(mt_t('LOX.T_ERWARTUNG')) ?></th></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_lese) ?>&amp;aktion=liste</span></td>
-    <td><span class="sm-mono">LISTE;OK=1;N=...</span></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?aktion=liste</span></td>
-    <td><span class="sm-mono">FEHLER;OK=0;GRUND=TOKEN</span> (HTTP 403)</td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_basis) ?>?token=<?= mt_e($mt_token) ?>&amp;aktion=quatsch</span></td>
-    <td><span class="sm-mono">FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION</span> (HTTP 400)</td></tr>
-</table>
-</div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->

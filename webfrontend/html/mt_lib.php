@@ -290,6 +290,12 @@ function mt_vorgaben()
          * 15.10.2026 mit dem python-matter-server (Shelly 2PM Gen3, Alexa);
          * mit dem matterjs-server nur gegen die Attrappe. */
         'fabric_entfernen_ein' => 0,
+        /* Gruppe 8 (0.9.44, E1-E3): Befehle ueber MQTT annehmen (Befehlsbruecke, ab Werk aus), Schloesser ueber
+         * MQTT entsperren (ab Werk aus) und der HTTP-Endpunkt fuer Loxone (neu 0; ein Update traegt 1 ein,
+         * postinstall.sh; eine Sicherung ohne den Schluessel ebenso, mt_sicherung_lesen()). */
+        'befehle_mqtt_ein'        => 0,
+        'befehle_mqtt_entsperren' => 0,
+        'endpunkt_ein'            => 0,
     );
 }
 
@@ -731,7 +737,8 @@ function mt_sicherung_neue_schluessel()
     /* 0.9.35 (Nr. 1): die vier neuen Schluessel duerfen in einer Sicherung
      * bis 0.9.34 fehlen; sie behalten dann ihre Vorgabe. */
     return array('tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse',
-                 /* 0.9.39 */ 'fabric_entfernen_ein');
+                 /* 0.9.39 */ 'fabric_entfernen_ein',
+                 /* 0.9.44 (Gruppe 8) */ 'befehle_mqtt_ein', 'befehle_mqtt_entsperren', 'endpunkt_ein');
 }
 
 /**
@@ -789,12 +796,18 @@ function mt_eingabe_felder()
                                   // 0.9.39 (Entscheidung 8)
                                   'fabric_entfernen_ein' => 'haken'),
         'save_mqtt'      => array('mqtt_ein' => 'haken', 'mqtt_topic' => 'text', 'mqtt_nur' => 'text',
-                                  'roh_ein' => 'haken', 'tuer_haus' => 'haken'),
+                                  'roh_ein' => 'haken', 'tuer_haus' => 'haken',
+                                  // 0.9.44 (Gruppe 8, E1-E3): die Haken der Befehlsbruecke
+                                  'befehle_mqtt_ein' => 'haken', 'befehle_mqtt_entsperren' => 'haken'),
         'netz_speichern' => array('wlan_ssid' => 'text', 'wlan_passwort' => 'geheim',
                                   'thread_dataset' => 'geheim'),
         'br_holen'       => array('thread_br' => 'text'),
         // 0.9.35 (Nr. 1): Adresse fuer die Loxone-Vorlagen, eigenes Formular.
-        'save_loxone'    => array('loxone_adresse' => 'text'),
+        // 0.9.44 (Gruppe 8, E1): dazu der Haken des HTTP-Endpunkts im selben Formular.
+        'save_loxone'    => array('loxone_adresse' => 'text', 'endpunkt_ein' => 'haken'),
+        /* M20 (0.9.44, Pruefbericht; Regeln/04 X-2): der Zugang der Matter-Bridge (Reiter Bridge, Schritt 2).
+         * Das Kennwort reist nie mit. */
+        'br_zugang'      => array('br_benutzer' => 'text', 'br_kennwort' => 'geheim'),
         /* 0.9.35 (Nr. 4): die Felder der Reiter Anlernen und Test bleiben nach
          * der Umleitung stehen - auch nach einem Erfolg, nicht nur nach einer
          * Beanstandung. Der Code vom Geraet reist nie mit (ein zweiter Druck
@@ -4181,31 +4194,16 @@ function mt_vorlage_out($nummer = 1)
             $cmds[] = $c;
         }
     };
-    $digital('schalter',              'LOX.A_SCHALTEN',       'EIN_AUS', 'ein', 'aus');
-    $wert('helligkeit',               'LOX.A_HELLIGKEIT',     'helligkeit');
-    $wert('farbtemperatur_mired',     'LOX.A_FARBTEMPERATUR', 'farbtemperatur');
-    // Farbton und Saettigung als zwei getrennte Analogbefehle: ein
-    // VirtualOutCmd traegt genau EINEN Wertplatzhalter. Genau so machen es die
-    // Ausfuhren dieser Anlage bei Helligkeit und Kelvin auch.
-    $wert('farbton_roh',              'LOX.A_FARBTON',        'farbton');
-    $wert('saettigung',               'LOX.A_SAETTIGUNG',     'saettigung');
-    // 0.9.35 (Nr. 10c): der Ausgang des Loxone-Lichtbausteins (RGB als
-    // BBBGGGRRR oder Lumitech 20bbbtttt) in EINEM Analogbefehl - fuer jede
-    // Leuchte mit Farbtemperatur oder Farbe. Der Dienst zerlegt den Wert.
-    $wert(array('farbtemperatur_mired', 'farbton_roh', 'farbe_x'),
-                                      'LOX.A_LOXFARBE',       'loxfarbe');
-    $wert('position',                 'LOX.A_ROLLO',          'rollo');
-    $wert('lamelle',                  'LOX.A_LAMELLE',        'lamelle');
-    // 0.9.35 (Nr. 10b): Sollwerte mit einer Nachkommastelle - mit <v.0>
-    // kamen 21,5 Grad als 22 an.
-    $wert('soll_heizen',              'LOX.A_SOLL_HEIZEN',    'soll_heizen', '<v.1>');
-    $wert('soll_kuehlen',             'LOX.A_SOLL_KUEHLEN',   'soll_kuehlen', '<v.1>');
-    $wert('betriebsart',              'LOX.A_BETRIEBSART',    'betriebsart');
-    $wert('luefter_soll',             'LOX.A_LUEFTER',        'luefter');
-    // 0.9.35 (Nr. 10c): Schloss als Digitalausgang, Ein = sperren, Aus =
-    // entsperren. Wirkt nur mit dem eigenen Haken schloss_ein (der Kommentar
-    // sagt es); die Schlossbremse im Endpunkt gilt auch hier.
-    $digital('schloss',               'LOX.A_SCHLOSS',        'SCHLOSS', 'sperren', 'entsperren');
+    /* Gruppe 8 (0.9.44, Entwurf 3.8): die Zuordnung Thema -> Befehl steht EINMAL in mt_befehl_tabelle() - fuer
+     * diese Vorlage (HTTP) und fuer die Vorlage MQTT-Befehle (mt_vorlage_mqtt_out()). Reihenfolge, Titel und
+     * Kommentare wie bis 0.9.43 (dieselbe Datei, Pruefstand). */
+    foreach (mt_befehl_tabelle() as $b) {
+        if ($b['art'] === 'digital') {
+            $digital($b['themen'], $b['titel'], $b['teil'], $b['ein'], $b['aus']);
+        } else {
+            $wert($b['themen'], $b['titel'], $b['aktion'], $b['platz']);
+        }
+    }
 
     return array(
         'VQ_matter_geraet' . (int) $nummer . '.xml',
@@ -4362,6 +4360,21 @@ function mt_sicherung_lesen($roh)
      * Token bleibt, und der vierte Rueckgabewert sagt es. Ein Token leeren
      * laesst sich nur bewusst, nicht nebenbei ueber eine Datei. */
     $hinweise = array();
+    /* Gruppe 8 (0.9.44, Entwurf 3.7): eine Sicherung ohne endpunkt_ein stammt aus einer Fassung mit offenem
+     * HTTP-Endpunkt - er bleibt an (1), wie beim Update (postinstall.sh). Fehlen die Haken der Befehlsbruecke,
+     * gilt der laufende Wert. */
+    if (!$mangel && !array_key_exists('endpunkt_ein', $daten)) {
+        $neu['endpunkt_ein'] = 1;
+        $neu_fehlt = array_values(array_diff($neu_fehlt, array('endpunkt_ein')));
+        $hinweise[] = mt_t('EINST.SICH_ENDPUNKT_AN');
+    }
+    foreach (array('befehle_mqtt_ein', 'befehle_mqtt_entsperren') as $mt_bk) {
+        if (!$mangel && !array_key_exists($mt_bk, $daten)) {
+            $mt_jetzt = mt_config(false);
+            $neu[$mt_bk] = !empty($mt_jetzt[$mt_bk]) ? 1 : 0;
+            $neu_fehlt = array_values(array_diff($neu_fehlt, array($mt_bk)));
+        }
+    }
     if (!$mangel && $neu_fehlt) {
         $hinweise[] = sprintf(mt_t('EINST.SICH_NEU_VORGABE'), implode(', ', $neu_fehlt));
     }
@@ -4404,7 +4417,9 @@ function mt_haken()
 {
     // 0.9.35 (Nr. 1): server_lokal neu im Haken-Satz (Vertrag, HAKEN im Dienst).
     return array('eigener_container', 'mqtt_ein', 'roh_ein', 'steuerung_ein', 'schloss_ein',
-                 'tuer_haus', 'server_lokal', 'fabric_entfernen_ein');
+                 'tuer_haus', 'server_lokal', 'fabric_entfernen_ein',
+                 // 0.9.44 (Gruppe 8): dieselben drei wie HAKEN im Dienst.
+                 'befehle_mqtt_ein', 'befehle_mqtt_entsperren', 'endpunkt_ein');
 }
 
 /**
@@ -5387,6 +5402,11 @@ function mt_fabric_starten(array $namen)
 function mt_themen_fest()
 {
     return array(
+        // Gruppe 8 (0.9.44, Entwurf 2.2): das Lebenszeichen in Hausform; online/ok/ts bleiben fuer bestehende
+        // Projekte. Der Schluessel ist das Thema, der Stamm (letzter Teil) geht in die Pruefzeile.
+        'status/ok'      => array('', 'MQTT.B_STATUS_OK'),
+        'status/zaehler' => array('', 'MQTT.B_STATUS_ZAEHLER'),
+        'status/ts'      => array('', 'MQTT.B_STATUS_TS'),
         'ok'         => array('', 'MQTT.B_OK'),
         'online'     => array('', 'MQTT.B_ONLINE'),
         'ts'         => array('', 'MQTT.B_TS'),
@@ -5428,6 +5448,1016 @@ function mt_themen_dienst()
         }
     }
     return array($liste, '');
+}
+
+
+/* ==================================================================
+ * Gruppe 8 / MQTT (0.9.44): EINE Logik fuer HTTP-Endpunkt und Befehlsbruecke,
+ * Befehlsbruecke, Namenstabelle, V2-Hakenliste, HTTP-Endpunkt hinter einem
+ * eigenen Haken
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe8_mt.txt (Abschnitte 2-3, E1-E14),
+ * ENTSCHEIDUNGEN_GRUPPE8_MATTER2LOX.md, Bauvorschrift
+ * wz_bild/GRUPPE8_BAUVORSCHRIFT.md. Werte gehen wie bisher ueber den
+ * UDP-Eingang des MQTT-Gateways (der Dienst sendet sie); in Loxone ist je Wert
+ * ein einfacher Virtueller Eingang anzulegen, Name genau so, wie das Gateway
+ * ihn vergibt (mt_mqtt_namen()). Befehle kommen ueber die gemeinsame
+ * Befehlsbruecke (bin/befehlsbruecke.php, Stammfassung; Zuordnung
+ * bin/befehle_zuordnung.php). Sie ruft mt_bb_tun() und damit mt_steuern() -
+ * den Rumpf, den bis 0.9.43 webfrontend/html/index.php allein trug. Kein HTTP
+ * auf sich selbst, kein Kindprozess; die Warteschlange befehle/ bleibt der
+ * eine Weg zum Dienst.
+ * ================================================================== */
+
+/** Ueber MQTT eingereiht verfaellt ein Befehl nach so vielen Sekunden (E8). */
+define('MT_BB_VERFALL_S', 30);
+
+/* ------------------------------------------------------------------
+ * Hilfen des Endpunkts - bis 0.9.43 in webfrontend/html/index.php, seit
+ * 0.9.44 hier, weil mt_steuern() sie fuer beide Wege braucht (wortgleich).
+ * ------------------------------------------------------------------ */
+
+/** Ein Strich als Wert bedeutet: dieses Feld gibt es bei diesem Geraet nicht (HTTP-Antwortzeilen). */
+function mt_w($v)
+{
+    if ($v === null || $v === '' || !is_numeric($v)) {
+        return '-';
+    }
+    return (string) (0 + $v);
+}
+
+/**
+ * Ein Feld des Abbilds, abgesichert.
+ *
+ * Das Abbild schreibt der Dienst; fehlt ein Schluessel (aeltere Fassung, halb
+ * geschriebene Datei), ist das unter PHP 7.4 eine verschluckte Notice, unter
+ * PHP 8 aber eine Warning - und die stuende MITTEN IN DER ANTWORTZEILE, die
+ * der Miniserver auswertet. Deshalb geht jeder Zugriff hier durch.
+ */
+function mt_f($g, $name, $leer = '')
+{
+    return is_array($g) && isset($g[$name]) ? $g[$name] : $leer;
+}
+
+/* Eine Zahl aus dem Wertfeld; Komma und Punkt sind gleich. */
+function mt_ep_zahl($w)
+{
+    return (float) str_replace(',', '.', (string) $w);
+}
+
+/* Die Schlossbremse loesen (ohne zu schreiben) - fuer jeden Ausstieg
+ * zwischen dem Oeffnen und dem Absetzen. */
+function mt_ep_bremse_loesen($fh)
+{
+    if (is_resource($fh)) {
+        @flock($fh, LOCK_UN);
+        fclose($fh);
+    }
+}
+
+/**
+ * Das Geraet zu &geraet= bzw. &knoten= (bis 0.9.43 index.php :321-337).
+ * &knoten= gewinnt, wenn beides angegeben ist. Rueckgabe array(Geraet|null,
+ * Geraetenummer, Knoten angegeben aber unbekannt).
+ */
+function mt_geraet_suchen(array $alle, $nr, $knoten)
+{
+    $nr = (string) $nr;
+    $knoten = (string) $knoten;
+    if ($knoten !== '') {
+        foreach ($alle as $k => $kandidat) {
+            if (isset($kandidat['node_id']) && (string) $kandidat['node_id'] === $knoten) {
+                return array($kandidat, (string) $k, false);
+            }
+        }
+        return array(null, $nr, true);
+    }
+    return array(isset($alle[$nr]) ? $alle[$nr] : null, $nr, false);
+}
+
+/**
+ * EINE Logik fuer HTTP und MQTT (Entwurf 3.4, E11): der Rumpf des Endpunkts ab
+ * der Geraetepruefung - geraeteunabhaengiger Abruf, Steuerungsfreigabe,
+ * Rohweg-Sperre, Schlossfreigabe, Dienst laeuft, Bereiche, Schlossbremse,
+ * Gleichwert-Unterdrueckung, mt_befehl_absetzen() und das Nachfuehren der
+ * Merker - OHNE $_GET, echo, exit und http_response_code(). Die Antwortzeilen
+ * sind byte-gleich die des Endpunkts bis 0.9.43 (Pruefstand Gruppe 8).
+ *
+ * $e: aktion, nr (Geraetenummer als Text, Vorgabe '1'), geraet_angegeben,
+ *     knoten, endpunkt, wert, x, y, pfad, cluster, name, nutzlast (je Text,
+ *     geprueft wie im Endpunkt) und saettigung_roh (der rohe Parameter oder
+ *     null - geprueft wird er erst hier, an derselben Stelle wie bisher).
+ * $cfg: die schon gelesene Konfiguration (mt_config(false)).
+ * $quelle: 'http' oder 'mqtt' - ueber MQTT tragen Befehle 'quelle' und
+ *     'verfall_s' (30 s, E8); der HTTP-Befehl bleibt unveraendert.
+ * $wartezeit: null = die der Konfiguration (wie HTTP), 0 = einreihen ohne
+ *     zu warten (Befehlsbruecke, E5).
+ * Rueckgabe array('code' => HTTP-Code, 'text' => Antwort, 'ok' => 0|1|2,
+ * 'grund' => kurzer Grund fuer die Quittung, '' bei Erfolg).
+ */
+function mt_steuern(array $e, array $cfg, $quelle = 'http', $wartezeit = null)
+{
+    $aus = function ($code, $text, $ok, $grund) {
+        return array('code' => (int) $code, 'text' => (string) $text, 'ok' => (int) $ok, 'grund' => (string) $grund);
+    };
+    $hol = function ($k, $vorgabe = '') use ($e) {
+        return isset($e[$k]) && is_scalar($e[$k]) ? (string) $e[$k] : $vorgabe;
+    };
+    $mt_aktion = $hol('aktion');
+    $mt_geraet_angegeben = !empty($e['geraet_angegeben']);
+    $mt_knoten = $hol('knoten');
+    $mt_endpunkt = $hol('endpunkt', '1');
+    $mt_wert = $hol('wert');
+    $mt_x = $hol('x');
+    $mt_y = $hol('y');
+    $mt_pfad = $hol('pfad');
+    $mt_cluster = $hol('cluster');
+    $mt_name = $hol('name');
+    $mt_nutzlast = $hol('nutzlast');
+    $mt_alle = mt_geraete();
+    $mt_alter = mt_alter();
+    list($mt_g, $mt_nr, $mt_knoten_unbekannt) = mt_geraet_suchen($mt_alle, $hol('nr', '1'), $mt_knoten);
+    $mt_ueber_mqtt = ($quelle === 'mqtt');
+    $zusatz = function (array $b) use ($mt_ueber_mqtt) {
+        if ($mt_ueber_mqtt) {
+            $b['quelle'] = 'mqtt';
+            $b['verfall_s'] = MT_BB_VERFALL_S;
+        }
+        return $b;
+    };
+    $grund_aus = function ($erg) {
+        return $erg === 0 ? 'NICHT_AUSGEFUEHRT' : '';
+    };
+
+    /* ---------------- Geraeteunabhaengig: abruf (bis 0.9.43 index.php :421-463) ---------------- */
+    if ($mt_aktion === 'abruf') {
+        if ($mt_knoten_unbekannt) {
+            return $aus(400, sprintf("SET;OK=0;GRUND=KNOTEN_UNBEKANNT;KNOTEN=%s;N=%d\n", $mt_knoten, count($mt_alle)),
+                        0, 'KNOTEN_UNBEKANNT');
+        }
+        if ($mt_knoten === '' && $mt_geraet_angegeben && $mt_g === null) {
+            return $aus(400, sprintf("SET;OK=0;GRUND=GERAET_UNBEKANNT;GERAET=%s;N=%d\n", $mt_nr, count($mt_alle)),
+                        0, 'GERAET_UNBEKANNT');
+        }
+        if (mt_dienst_pid() === 0) {
+            return $aus(503, "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n"
+                . "Der Dienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n", 0, 'DIENST_LAEUFT_NICHT');
+        }
+        $mt_auftrag = array('aktion' => $mt_aktion);
+        $mt_frist = null;
+        if ($mt_g !== null && ($mt_geraet_angegeben || $mt_knoten !== '')) {
+            $mt_auftrag['knoten'] = (int) mt_f($mt_g, 'node_id', 0);
+            $mt_frist = 20;
+        }
+        if ($wartezeit !== null) {
+            $mt_frist = (int) $wartezeit;
+        }
+        list($mt_erg, $mt_meldung) = mt_befehl_absetzen($zusatz($mt_auftrag), $mt_frist, $cfg);
+        return $aus($mt_erg === 0 ? 500 : 200, sprintf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $mt_erg, $mt_aktion,
+            str_replace(array("\r", "\n", ';'), ' ', $mt_meldung)), $mt_erg, $grund_aus($mt_erg));
+    }
+
+    if ($mt_g === null) {
+        return $aus(200, sprintf("MATTER;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=%d\n", count($mt_alle), $mt_alter),
+                    0, 'GERAET_UNBEKANNT');
+    }
+
+    /* ---------------- Schaltende Aktionen (bis 0.9.43 index.php :504-845) ---------------- */
+    if (empty($cfg['steuerung_ein'])) {
+        return $aus(403, "SET;OK=0;GRUND=STEUERUNG_AUS\n"
+            . "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n",
+            0, 'STEUERUNG_AUS');
+    }
+
+    /* Schloss und Rohwege (0.9.35, Nr. 6): der Cluster, den ein Rohweg anspricht. */
+    $mt_roh_cluster = -1;
+    if ($mt_aktion === 'befehl' && $mt_cluster !== '') {
+        $mt_roh_cluster = (int) $mt_cluster;
+    } elseif ($mt_aktion === 'attribut' && $mt_pfad !== '') {
+        $mt_roh_cluster = (int) explode('/', $mt_pfad)[1];
+    }
+    /* Gesperrt im Rohweg (VERTRAG, Endpunkt UND Dienst): 31, 48, 49, 60, 62, 63. */
+    if (in_array($mt_roh_cluster, array(31, 48, 49, 60, 62, 63), true)) {
+        return $aus(403, sprintf("SET;OK=0;AKTION=%s;GRUND=CLUSTER_GESPERRT;CLUSTER=%d\n", $mt_aktion, $mt_roh_cluster),
+                    0, 'CLUSTER_GESPERRT');
+    }
+    /* Schloesser verlangen den eigenen Haken - auch ueber die Rohwege. */
+    if (($mt_aktion === 'sperren' || $mt_aktion === 'entsperren' || $mt_roh_cluster === 257)
+            && empty($cfg['schloss_ein'])) {
+        return $aus(403, sprintf("SET;OK=0;AKTION=%s;GRUND=SCHLOSS_AUS\n", $mt_aktion)
+            . "Schloesser zu schalten ist gesperrt. Reiter Einstellungen, Haken 'Schloesser schalten zulassen'.\n",
+            0, 'SCHLOSS_AUS');
+    }
+
+    if (mt_dienst_pid() === 0) {
+        return $aus(503, "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n"
+            . "Der Dienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n", 0, 'DIENST_LAEUFT_NICHT');
+    }
+
+    /* Ausserhalb des erlaubten Bereichs: abweisen, nicht kappen. */
+    $bereich = function ($v, $klein, $gross) use ($mt_aktion, $aus) {
+        if ($v < $klein || $v > $gross) {
+            return $aus(400, sprintf("SET;OK=0;AKTION=%s;GRUND=WERT_BEREICH;MIN=%s;MAX=%s\n", $mt_aktion, $klein, $gross),
+                        0, 'WERT_BEREICH');
+        }
+        return null;
+    };
+    $fehlt = $aus(400, "SET;OK=0;GRUND=WERT_FEHLT\n", 0, 'WERT_FEHLT');
+
+    $mt_befehl = array(
+        'aktion'   => $mt_aktion,
+        'knoten'   => (int) mt_f($mt_g, 'node_id', 0),
+        'endpunkt' => (int) $mt_endpunkt,
+    );
+    if (in_array($mt_aktion, array('helligkeit', 'farbtemperatur', 'rollo', 'lamelle',
+                                   'soll_heizen', 'soll_kuehlen', 'betriebsart',
+                                   'farbe', 'farbton', 'saettigung', 'luefter'), true)) {
+        if ($mt_wert === '') {
+            return $fehlt;
+        }
+        $mt_befehl['wert'] = mt_ep_zahl($mt_wert);
+        // 0.9.35 (Nr. 5): helligkeit bleibt 0..100 (0 = aus), lamelle 0..100.
+        if ($mt_aktion === 'helligkeit' || $mt_aktion === 'lamelle') {
+            $r = $bereich($mt_befehl['wert'], 0, 100);
+            if ($r !== null) {
+                return $r;
+            }
+        }
+        // Bei 'farbe' darf zusaetzlich die Saettigung mitkommen (nur HTTP). Geprueft wie bis 0.9.43 mit
+        // mt_param('saettigung', '/^[0-9]{1,3}$/', '') an genau dieser Stelle.
+        if ($mt_aktion === 'farbe' && array_key_exists('saettigung_roh', $e) && $e['saettigung_roh'] !== null) {
+            $mt_saet = $e['saettigung_roh'];
+            if (!is_string($mt_saet)) {
+                return $aus(400, "FEHLER;OK=0;GRUND=PARAMETER\nDer Wert von saettigung ist keine Zeichenkette.\n",
+                            0, 'PARAMETER');
+            }
+            if ($mt_saet !== '') {
+                if (!preg_match('/^[0-9]{1,3}$/', $mt_saet)) {
+                    return $aus(400, "FEHLER;OK=0;GRUND=PARAMETER\nDer Wert von saettigung passt nicht ins erlaubte Muster.\n",
+                                0, 'PARAMETER');
+                }
+                $mt_befehl['saettigung'] = (int) $mt_saet;
+            }
+        }
+    } elseif ($mt_aktion === 'loxfarbe') {
+        if ($mt_wert === '') {
+            return $fehlt;
+        }
+        $mt_befehl['wert'] = (int) $mt_wert;
+        $r = $bereich($mt_befehl['wert'], 0, 299999999);
+        if ($r !== null) {
+            return $r;
+        }
+    } elseif ($mt_aktion === 'farbe_xy') {
+        if ($mt_x === '' || $mt_y === '') {
+            return $fehlt;
+        }
+        $mt_befehl['x'] = mt_ep_zahl($mt_x);
+        $mt_befehl['y'] = mt_ep_zahl($mt_y);
+        $r = $bereich($mt_befehl['x'], 0, 1);
+        if ($r === null) {
+            $r = $bereich($mt_befehl['y'], 0, 1);
+        }
+        if ($r !== null) {
+            return $r;
+        }
+    } elseif ($mt_aktion === 'identify') {
+        // Ohne Angabe macht sich das Geraet 15 s lang bemerkbar.
+        if ($mt_wert !== '') {
+            $mt_befehl['wert'] = mt_ep_zahl($mt_wert);
+        }
+    } elseif ($mt_aktion === 'attribut') {
+        if ($mt_pfad === '' || $mt_wert === '') {
+            return $aus(400, "SET;OK=0;GRUND=PFAD_ODER_WERT_FEHLT\n", 0, 'PFAD_ODER_WERT_FEHLT');
+        }
+        $mt_befehl['pfad'] = $mt_pfad;
+        $mt_befehl['wert'] = mt_ep_zahl($mt_wert) == (int) $mt_wert
+            ? (int) $mt_wert : mt_ep_zahl($mt_wert);
+    } elseif ($mt_aktion === 'befehl') {
+        if ($mt_cluster === '' || $mt_name === '') {
+            return $aus(400, "SET;OK=0;GRUND=CLUSTER_ODER_NAME_FEHLT\n", 0, 'CLUSTER_ODER_NAME_FEHLT');
+        }
+        $mt_befehl['cluster'] = (int) $mt_cluster;
+        $mt_befehl['name'] = $mt_name;
+        if ($mt_nutzlast !== '') {
+            $mt_nl = json_decode($mt_nutzlast);
+            if ($mt_nl === null && strtolower(trim($mt_nutzlast)) !== 'null') {
+                return $aus(400, "SET;OK=0;GRUND=NUTZLAST_KEIN_JSON\n", 0, 'NUTZLAST_KEIN_JSON');
+            }
+            if (!is_object($mt_nl)) {
+                return $aus(400, "SET;OK=0;GRUND=NUTZLAST_KEIN_OBJEKT\n", 0, 'NUTZLAST_KEIN_OBJEKT');
+            }
+            $mt_befehl['nutzlast'] = $mt_nutzlast;
+        }
+    }
+
+    /* ---------------- Schlossbremse (0.9.35, Nr. 1; Kommentar bis 0.9.43 index.php :657-685) ---------------- */
+    $mt_schlossart = '';
+    if ($mt_aktion === 'sperren' || $mt_aktion === 'entsperren') {
+        $mt_schlossart = $mt_aktion;
+    } elseif ($mt_aktion === 'befehl' && (int) $mt_cluster === 257) {
+        if ($mt_name === 'LockDoor') {
+            $mt_schlossart = 'sperren';
+        } elseif (in_array($mt_name, array('UnlockDoor', 'UnlockWithTimeout', 'UnlatchDoor'), true)) {
+            $mt_schlossart = 'entsperren';
+        }
+    }
+    $mt_bfh = null;
+    $mt_bm = array();
+    $mt_bschl = (int) $mt_befehl['knoten'] . '|' . (int) $mt_befehl['endpunkt'];
+    if ($mt_schlossart !== '') {
+        $mt_bremse = mt_paths()['datadir'] . '/schlossbremse.json';
+        $mt_bfh = @fopen($mt_bremse, 'c+e');
+        if ($mt_bfh === false || !@flock($mt_bfh, LOCK_EX)) {
+            if ($mt_bfh !== false) {
+                fclose($mt_bfh);
+            }
+            $mt_bfh = null;
+            mt_log_gebremst('schlossbremse', 'Die Merkerdatei der Schlossbremse (' . $mt_bremse . ') laesst '
+                . 'sich nicht oeffnen oder sperren - entsperren wird mit 503 abgewiesen, bis das '
+                . 'behoben ist (sperren geht ohne Bremse hinaus).');
+            if ($mt_schlossart === 'entsperren') {
+                return $aus(503, "SET;OK=0;AKTION=" . $mt_aktion . ";GRUND=BREMSE_MERKER\n", 0, 'BREMSE_MERKER');
+            }
+        } else {
+            $mt_bm = json_decode((string) stream_get_contents($mt_bfh), true);
+            if (!is_array($mt_bm)) {
+                $mt_bm = array();
+            }
+            if ($mt_schlossart === 'entsperren' && isset($mt_bm[$mt_bschl]) && is_array($mt_bm[$mt_bschl])
+                    && isset($mt_bm[$mt_bschl]['t'])) {
+                $mt_seit = time() - (int) $mt_bm[$mt_bschl]['t'];
+                $mt_bw = (string) (isset($mt_bm[$mt_bschl]['w']) ? $mt_bm[$mt_bschl]['w'] : '');
+                // Was das Abbild ueber das Schloss sagt (DoorLock LockState:
+                // 0 nicht ganz verriegelt, 1 verriegelt, 2 entriegelt, 3 offen).
+                $mt_bep = (array) mt_f((array) mt_f($mt_g, 'endpunkte', array()), (string) $mt_endpunkt, array());
+                $mt_bist = mt_f($mt_bep, 'schloss', null);
+                $mt_entriegelt = is_numeric($mt_bist) && in_array((int) $mt_bist, array(2, 3), true);
+                if ($mt_bw === 'entsperren' && $mt_seit >= 0 && $mt_seit < 60 && $mt_entriegelt) {
+                    flock($mt_bfh, LOCK_UN);
+                    fclose($mt_bfh);
+                    return $aus(200, sprintf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;IST=%s\n", $mt_aktion, mt_w($mt_bist)),
+                                1, '');
+                }
+                if ($mt_bw !== 'entsperren' && $mt_seit >= 0 && $mt_seit < 10) {
+                    flock($mt_bfh, LOCK_UN);
+                    fclose($mt_bfh);
+                    return $aus(429, sprintf("SET;OK=0;AKTION=%s;GRUND=BREMSE;WARTEN_S=%d\n", $mt_aktion, 10 - $mt_seit),
+                                0, 'BREMSE');
+                }
+            }
+        }
+    }
+
+    /* ---------------- Gleichwert-Unterdrueckung (X-7, B-Nachzug 01.10.2026; Kommentar bis 0.9.43 index.php :756-772) */
+    $mt_gw_fh = null;
+    $mt_gw_geraet = (int) $mt_befehl['knoten'] . '|' . (int) $mt_befehl['endpunkt'];
+    $mt_gw_schl = mt_gleichwert_schluessel($mt_aktion);
+    $mt_gw_wert = mt_gleichwert_wert($mt_befehl);
+    $mt_gw_betrifft = mt_gleichwert_betrifft($mt_aktion);
+    if ($mt_gw_betrifft) {
+        $mt_gw_grund = '';
+        list($mt_gw_fh, $mt_gw_grund) = mt_gleichwert_oeffnen($mt_gw_geraet);
+        $mt_gw_merker = false;
+        if ($mt_gw_fh !== false) {
+            list($mt_gw_merker, $mt_gw_grund) = mt_gleichwert_lesen();
+        }
+        if ($mt_gw_merker === false && $mt_gw_schl !== '') {
+            mt_gleichwert_freigeben($mt_gw_fh);
+            mt_ep_bremse_loesen($mt_bfh);
+            if ($mt_gw_grund !== 'BESCHAEFTIGT') {
+                mt_log_gebremst('gleichwert', 'Die Merkerdatei der Gleichwert-Unterdrueckung (' . mt_gleichwert_datei()
+                    . ') oder eine Sperrdatei in ' . mt_gleichwert_ordner() . ' laesst sich nicht oeffnen oder '
+                    . 'sperren - Sollwert-Befehle werden mit 503 abgewiesen, bis das behoben ist.');
+            }
+            $mt_gw_g = $mt_gw_grund === 'BESCHAEFTIGT' ? 'BESCHAEFTIGT' : 'GLEICHWERT_MERKER';
+            return $aus(503, sprintf("SET;OK=0;AKTION=%s;GRUND=%s\n", $mt_aktion, $mt_gw_g), 0, $mt_gw_g);
+        }
+        if ($mt_gw_merker !== false
+                && mt_gleichwert_seit($mt_gw_merker, $mt_gw_geraet, $mt_gw_schl, $mt_gw_wert) >= 0) {
+            mt_gleichwert_freigeben($mt_gw_fh);
+            mt_ep_bremse_loesen($mt_bfh);
+            return $aus(200, sprintf("SET;OK=1;AKTION=%s;UNVERAENDERT=1\n", $mt_aktion), 1, '');
+        }
+    }
+
+    // 0.9.35 (Nr. 2/3): drittes Element "ist"; die gelesene Konfiguration geht
+    // mit, damit nichts mit Schreibrecht gelesen wird.
+    list($mt_erg, $mt_meldung, $mt_istwert) = array_pad(
+        mt_befehl_absetzen($zusatz($mt_befehl), $wartezeit, $cfg), 3, null);
+    if ($mt_gw_betrifft) {
+        /* Nachgefuehrt wird, solange die Geraetesperre noch gehalten ist - der
+         * naechste Aufruf an dieses Geraet sieht schon den neuen Stand. Gemerkt
+         * wird der eigene Wert nur bei OK=1 (nicht bei 2: ueberholt oder ohne
+         * Ergebnis - ueber MQTT eingereiht also nie, Entwurf 3.4). */
+        mt_gleichwert_nachfuehren((int) $mt_befehl['knoten'], $mt_gw_geraet, $mt_aktion, $mt_gw_wert,
+            $mt_erg === 1);
+        mt_gleichwert_freigeben($mt_gw_fh);
+    }
+    if (is_resource($mt_bfh)) {
+        /* 0.9.35 (Nr. 1): gemerkt wird nur, was der Dienst ausgefuehrt hat
+         * (OK=1). Laenge statt "!== false" gegen eine gekuerzte Schreibung
+         * (Regeln/03). */
+        if ($mt_erg === 1) {
+            $mt_bm[$mt_bschl] = array('w' => $mt_schlossart, 't' => time());
+            $mt_bjs = (string) json_encode($mt_bm);
+            if (!(ftruncate($mt_bfh, 0) && rewind($mt_bfh)
+                  && @fwrite($mt_bfh, $mt_bjs) === strlen($mt_bjs) && fflush($mt_bfh))) {
+                mt_log_gebremst('schlossbremse', 'Die Merkerdatei der Schlossbremse liess sich nicht '
+                    . 'schreiben - die Bremse erkennt den letzten Schlossbefehl nicht.');
+            }
+        }
+        mt_ep_bremse_loesen($mt_bfh);
+    }
+    /* 0.9.35 (Nr. 9): der Ist-Wert nach dem Befehl, wenn der Dienst ihn
+     * mitliefert - vor MELDUNG, weil MELDUNG freier Text ist und am Ende steht. */
+    $mt_ist_teil = '';
+    if ($mt_istwert !== null && $mt_istwert !== '') {
+        $mt_ist_teil = ';IST=' . (is_numeric($mt_istwert) ? mt_w($mt_istwert)
+            : str_replace(array("\r", "\n", ';', '='), ' ', (string) $mt_istwert));
+    }
+    return $aus($mt_erg === 0 ? 500 : 200, sprintf("SET;OK=%d;AKTION=%s%s;MELDUNG=%s\n", $mt_erg, $mt_aktion, $mt_ist_teil,
+        str_replace(array("\r", "\n", ';'), ' ', $mt_meldung)), $mt_erg, $grund_aus($mt_erg));
+}
+
+/* ------------------------------------------------------------------
+ * HTTP-Endpunkt hinter einem eigenen Haken (Entscheidung 1, E1; Entwurf 3.7)
+ * ------------------------------------------------------------------ */
+
+/** Ist der HTTP-Endpunkt fuer Loxone eingeschaltet? (endpunkt_ein; neu 0, Update und Sicherung ohne Schluessel 1) */
+function mt_endpunkt_an($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = mt_config(false);
+    }
+    return !empty($cfg['endpunkt_ein']);
+}
+
+/** Merker: wann zuletzt ein schaltender Aufruf mit Token kam (nur die Zeit; legt keinen Ordner an). */
+function mt_endpunkt_merken()
+{
+    $d = mt_paths()['datadir'];
+    if (@is_dir($d)) {
+        @file_put_contents($d . '/endpunkt_zuletzt', (string) time());
+    }
+}
+
+/** Alter des letzten schaltenden Aufrufs in Sekunden, -1 = keiner gemerkt. */
+function mt_endpunkt_zuletzt()
+{
+    $f = mt_paths()['datadir'] . '/endpunkt_zuletzt';
+    $w = @is_file($f) ? trim((string) @file_get_contents($f)) : '';
+    return ctype_digit($w) ? max(0, time() - (int) $w) : -1;
+}
+
+/* ------------------------------------------------------------------
+ * Befehlsbruecke (Entwurf 3.3-3.9)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Einstellungen fuer die Zuordnung: Praefix = mt_mqtt_praefix(); annehmen = "Befehle ueber MQTT annehmen";
+ * eingreifend = der vorhandene zweite Haken "Schreibende Befehle zulassen" (steuerung_ein, E2); mqtt_ein = "Werte
+ * per MQTT veroeffentlichen" (status/befehle nur dann, Quittungen gehen immer). Liest nur, schreibt nie.
+ */
+function mt_bb_einstellungen()
+{
+    $c = mt_config(false);
+    return array('praefix' => mt_mqtt_praefix($c),
+                 'annehmen' => !empty($c['befehle_mqtt_ein']),
+                 'eingreifend' => !empty($c['steuerung_ein']),
+                 'mqtt_ein' => !empty($c['mqtt_ein']));
+}
+
+/** Protokoll der Befehlsbruecke: die Logdatei des Plugins (mt_log), mit Stufe. */
+function mt_bb_protokoll($stufe, $text)
+{
+    mt_log('[' . (string) $stufe . '] ' . (string) $text);
+}
+
+/**
+ * Ein Befehl der Befehlsbruecke (tun() in bin/befehle_zuordnung.php). Prueft zuerst, was nur MQTT betrifft:
+ * Upgrade-Marke (AKTUALISIERUNG), entsperren nur mit "Schloesser ueber MQTT entsperren erlauben"
+ * (ENTSPERREN_MQTT_AUS, E3), Verbindung zum Matter-Server (KEINE_VERBINDUNG, E8 - ohne sie laege ein Befehl bis
+ * zum Verfall und wirkte ueberraschend spaet). Dann mt_steuern() mit Quelle 'mqtt': Stellbefehle, Tasten und
+ * Abrufe ohne Warten (E5), Schloesser mit der Wartezeit der Konfiguration (die Schlossbremse merkt nur, was
+ * ausgefuehrt ist). Rueckgabe array(bool ok, string grund).
+ */
+function mt_bb_tun($aktion, array $teile, $wert)
+{
+    $aktion = (string) $aktion;
+    $cfg = mt_config(false);
+    $marke = mt_upgrade_marke();
+    if ($marke[0] === 1) {
+        return array(false, 'AKTUALISIERUNG');
+    }
+    if ($aktion === 'entsperren' && empty($cfg['befehle_mqtt_entsperren'])) {
+        return array(false, 'ENTSPERREN_MQTT_AUS');
+    }
+    if (mt_ok_endpunkt(mt_loxone(), $cfg) !== 1) {
+        return array(false, 'KEINE_VERBINDUNG');
+    }
+    $e = array('aktion' => $aktion, 'nr' => '1', 'geraet_angegeben' => false, 'knoten' => '', 'endpunkt' => '1',
+               'wert' => '', 'x' => '', 'y' => '', 'pfad' => '', 'cluster' => '', 'name' => '', 'nutzlast' => '',
+               'saettigung_roh' => null);
+    if (isset($teile['geraet']) && preg_match('/^geraet([1-9][0-9]{0,2})\z/', (string) $teile['geraet'], $m)) {
+        $e['nr'] = $m[1];
+        $e['geraet_angegeben'] = true;
+    }
+    if (isset($teile['ep']) && preg_match('/^[0-9]{1,3}\z/', (string) $teile['ep'])) {
+        $e['endpunkt'] = (string) $teile['ep'];
+    }
+    $wert = (string) $wert;
+    if ($aktion === 'schalter') {
+        $e['aktion'] = $wert === '1' ? 'ein' : 'aus';
+    } elseif (!in_array($aktion, array('umschalten', 'rollo_auf', 'rollo_zu', 'rollo_stopp', 'sperren', 'entsperren',
+                                       'abruf'), true)) {
+        $e['wert'] = $wert;
+    }
+    $warten = ($aktion === 'sperren' || $aktion === 'entsperren') ? null : 0;
+    $r = mt_steuern($e, $cfg, 'mqtt', $warten);
+    if ($r['ok'] === 1 || $r['ok'] === 2) {
+        return array(true, '');
+    }
+    return array(false, $r['grund'] !== '' ? $r['grund'] : 'ABGELEHNT');
+}
+
+/** Wo liegt eine Datei unter bin/? Installiert bin/plugins/<ordner>/, im Archiv <wurzel>/bin/. '' = fehlt. */
+function mt_bin_datei($name)
+{
+    foreach (array(mt_paths()['bindir'] . '/' . $name, dirname(dirname(__DIR__)) . '/bin/' . $name) as $k) {
+        if (@is_file($k)) {
+            return $k;
+        }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function mt_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $f = mt_bin_datei('befehlsbruecke.php');
+    if ($f === '') {
+        return false;
+    }
+    if (!defined('BB_NUR_LADEN')) {
+        define('BB_NUR_LADEN', true);
+    }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function mt_bb_liste()
+{
+    if (!mt_bruecke_laden()) {
+        return null;
+    }
+    list($z) = bb_zuordnung_laden(mt_bin_datei('befehle_zuordnung.php'));
+    if ($z === null) {
+        return null;
+    }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) {
+        return null;
+    }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/**
+ * Direktstart bzw. -stopp der Bruecke beim Speichern im Reiter MQTT (Entwurf 3.9, Bauart ic/cc):
+ * befehlsbruecke.sh start startet nur nach --soll, nie als root, nie waehrend eines Updates, nie doppelt; der
+ * Waechter in cron.01min startet hoechstens alle 600 s neu. $neustart: Praefix gewechselt (stop, dann start).
+ * Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function mt_bruecke_schalten($neustart = false)
+{
+    if (DIRECTORY_SEPARATOR === '\\' || mt_paths()['home'] === '' || !mt_bruecke_laden()) {
+        return array('', '');
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array('', '');
+    }
+    $e = mt_bb_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft && !$neustart) {
+            return array('', '');
+        }
+        if ($laeuft) {
+            bb_sh($p, 'stop');
+        }
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array(($rc === 0 && bb_dienste()) ? 'ein' : 'start_fehl', $aus);
+    }
+    if (!$laeuft) {
+        return array('', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array(($rc === 0 && !bb_dienste()) ? 'aus' : 'stop_fehl', $aus);
+}
+
+/** Ein Satz zum Ergebnis von mt_bruecke_schalten() ('' = nichts zu sagen), maskiert. */
+function mt_bruecke_satz(array $r)
+{
+    $a = $r[1] !== '' ? $r[1] : '-';
+    switch ($r[0]) {
+        case 'ein':
+            return mt_e(sprintf(mt_t('BEFEHL.H_GESTARTET'), $a));
+        case 'aus':
+            return mt_e(sprintf(mt_t('BEFEHL.H_ANGEHALTEN'), $a));
+        case 'start_fehl':
+            return mt_e(sprintf(mt_t('BEFEHL.H_START_FEHL'), $a));
+        case 'stop_fehl':
+            return mt_e(sprintf(mt_t('BEFEHL.H_STOP_FEHL'), $a));
+    }
+    return '';
+}
+
+/* ------------------------------------------------------------------
+ * Befehlstabelle: EINE Quelle fuer die Ausgangsvorlage (HTTP) und die Vorlage MQTT-Befehle (Entwurf 3.8)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Je schaltbarem Thema ein Eintrag: art 'digital' (zwei Befehle) oder 'wert' (ein Analogbefehl), themen (an
+ * welchen Werten des Abbilds der Befehl haengt), titel (Sprachschluessel des Kommentars), fuer HTTP teil/ein/aus
+ * bzw. aktion/platz, fuer MQTT der Befehlsname der Bruecke und das deutsche Wort im Titel. Die Reihenfolge ist
+ * die der Ausgangsvorlage bis 0.9.43 (mt_vorlage_out(), byte-gleiche Datei).
+ */
+function mt_befehl_tabelle()
+{
+    return array(
+        array('art' => 'digital', 'themen' => 'schalter', 'titel' => 'LOX.A_SCHALTEN', 'teil' => 'EIN_AUS',
+              'ein' => 'ein', 'aus' => 'aus', 'mqtt' => array('schalter', '1', 'schalter', '0'), 'wort' => ''),
+        array('art' => 'wert', 'themen' => 'helligkeit', 'titel' => 'LOX.A_HELLIGKEIT', 'aktion' => 'helligkeit',
+              'platz' => '<v.0>', 'mqtt' => 'helligkeit', 'wort' => 'Helligkeit'),
+        array('art' => 'wert', 'themen' => 'farbtemperatur_mired', 'titel' => 'LOX.A_FARBTEMPERATUR',
+              'aktion' => 'farbtemperatur', 'platz' => '<v.0>', 'mqtt' => 'farbtemperatur', 'wort' => 'Farbtemperatur'),
+        // Farbton und Saettigung als zwei getrennte Analogbefehle: ein VirtualOutCmd traegt genau EINEN
+        // Wertplatzhalter.
+        array('art' => 'wert', 'themen' => 'farbton_roh', 'titel' => 'LOX.A_FARBTON', 'aktion' => 'farbton',
+              'platz' => '<v.0>', 'mqtt' => 'farbton', 'wort' => 'Farbton'),
+        array('art' => 'wert', 'themen' => 'saettigung', 'titel' => 'LOX.A_SAETTIGUNG', 'aktion' => 'saettigung',
+              'platz' => '<v.0>', 'mqtt' => 'saettigung', 'wort' => "S\xc3\xa4ttigung"),
+        // 0.9.35 (Nr. 10c): der Ausgang des Loxone-Lichtbausteins in EINEM Analogbefehl.
+        array('art' => 'wert', 'themen' => array('farbtemperatur_mired', 'farbton_roh', 'farbe_x'),
+              'titel' => 'LOX.A_LOXFARBE', 'aktion' => 'loxfarbe', 'platz' => '<v.0>', 'mqtt' => 'loxfarbe',
+              'wort' => 'Loxone-Farbe'),
+        array('art' => 'wert', 'themen' => 'position', 'titel' => 'LOX.A_ROLLO', 'aktion' => 'rollo',
+              'platz' => '<v.0>', 'mqtt' => 'rollo', 'wort' => 'Behang'),
+        array('art' => 'wert', 'themen' => 'lamelle', 'titel' => 'LOX.A_LAMELLE', 'aktion' => 'lamelle',
+              'platz' => '<v.0>', 'mqtt' => 'lamelle', 'wort' => 'Lamelle'),
+        // 0.9.35 (Nr. 10b): Sollwerte mit einer Nachkommastelle.
+        array('art' => 'wert', 'themen' => 'soll_heizen', 'titel' => 'LOX.A_SOLL_HEIZEN', 'aktion' => 'soll_heizen',
+              'platz' => '<v.1>', 'mqtt' => 'soll_heizen', 'wort' => 'Sollwert Heizen'),
+        array('art' => 'wert', 'themen' => 'soll_kuehlen', 'titel' => 'LOX.A_SOLL_KUEHLEN', 'aktion' => 'soll_kuehlen',
+              'platz' => '<v.1>', 'mqtt' => 'soll_kuehlen', 'wort' => "Sollwert K\xc3\xbchlen"),
+        array('art' => 'wert', 'themen' => 'betriebsart', 'titel' => 'LOX.A_BETRIEBSART', 'aktion' => 'betriebsart',
+              'platz' => '<v.0>', 'mqtt' => 'betriebsart', 'wort' => 'Betriebsart'),
+        array('art' => 'wert', 'themen' => 'luefter_soll', 'titel' => 'LOX.A_LUEFTER', 'aktion' => 'luefter',
+              'platz' => '<v.0>', 'mqtt' => 'luefter', 'wort' => "L\xc3\xbcfter"),
+        // 0.9.35 (Nr. 10c): Schloss als Digitalausgang, Ein = sperren, Aus = entsperren.
+        array('art' => 'digital', 'themen' => 'schloss', 'titel' => 'LOX.A_SCHLOSS', 'teil' => 'SCHLOSS',
+              'ein' => 'sperren', 'aus' => 'entsperren', 'mqtt' => array('sperren', '1', 'entsperren', '1'),
+              'wort' => 'Schloss'),
+    );
+}
+
+/** Die Endpunkte je Thema eines Geraets aus dem Abbild: array(thema => array(ep, ...)). */
+function mt_geraet_themen($g)
+{
+    $themen = array();
+    if ($g !== null && !empty($g['endpunkte']) && is_array($g['endpunkte'])) {
+        foreach ($g['endpunkte'] as $ep => $felder) {
+            foreach ((array) $felder as $thema => $wert) {
+                $themen[(string) $thema][] = (string) $ep;
+            }
+        }
+    }
+    return $themen;
+}
+
+/** Der Rechner fuer die UDP-Adresse der Vorlage MQTT-Befehle: mt_endpunkt_host() ohne den Webserver-Port. */
+function mt_udp_host($cfg = null)
+{
+    $h = mt_endpunkt_host($cfg);
+    if (strpos($h, ']') !== false) {
+        return (string) preg_replace('/\]:[0-9]+\z/', ']', $h);
+    }
+    return substr_count($h, ':') === 1 ? (string) preg_replace('/:[0-9]+\z/', '', $h) : $h;
+}
+
+/**
+ * Die MQTT-Befehle eines Geraets (Reiter Einbindung, Vorlage MQTT-Befehle): je schaltbarem Thema und Endpunkt
+ * ein Befehl "publish <praefix>/befehl/geraet<N>/<ep>/<befehl> <wert>". Titel fest deutsch "Matter2Lox:
+ * <Geraetename> <Aktion>" (ohne Aktion beim Schalten; mehrere Endpunkte " (Endpunkt n)") - mit Doppelpunkt und
+ * Leerzeichen gleicht er nie einem Gateway-Namen. Rueckgabe Liste array(title, comment, analog, on, off, befehl,
+ * eingreifend).
+ */
+function mt_mqtt_befehle_geraet($nummer, $g, $praefix)
+{
+    $themen = mt_geraet_themen($g);
+    $name = $g !== null && isset($g['name']) && is_scalar($g['name']) ? trim((string) $g['name']) : '';
+    if ($name === '') {
+        $name = "GerÃ¤t " . (int) $nummer;
+    }
+    $text = function ($schl) {
+        return trim(strip_tags(html_entity_decode(mt_t($schl), ENT_QUOTES, 'UTF-8')));
+    };
+    $basis = trim((string) $praefix, '/') . '/befehl/geraet' . (int) $nummer . '/';
+    $aus = array();
+    foreach (mt_befehl_tabelle() as $b) {
+        $eps = array();
+        foreach ((array) $b['themen'] as $t) {
+            if (isset($themen[$t])) {
+                $eps = array_merge($eps, $themen[$t]);
+            }
+        }
+        $eps = array_values(array_unique($eps));
+        sort($eps, SORT_NUMERIC);
+        foreach ($eps as $ep) {
+            $mehrere = count($eps) > 1;
+            $titel = 'Matter2Lox: ' . $name . ($b['wort'] !== '' ? ' ' . $b['wort'] : '')
+                   . ($mehrere ? ' (Endpunkt ' . $ep . ')' : '');
+            $c = array('title' => $titel, 'comment' => $text($b['titel']), 'eingreifend' => true);
+            if ($b['art'] === 'digital') {
+                $c['analog'] = false;
+                $c['on'] = 'publish ' . $basis . $ep . '/' . $b['mqtt'][0] . ' ' . $b['mqtt'][1];
+                $c['off'] = 'publish ' . $basis . $ep . '/' . $b['mqtt'][2] . ' ' . $b['mqtt'][3];
+                $c['befehl'] = $b['mqtt'][0] . ($b['mqtt'][2] !== $b['mqtt'][0] ? ' / ' . $b['mqtt'][2] : '');
+            } else {
+                $c['analog'] = true;
+                $c['on'] = 'publish ' . $basis . $ep . '/' . $b['mqtt'] . ' ' . $b['platz'];
+                $c['off'] = '';
+                $c['befehl'] = $b['mqtt'];
+            }
+            $aus[] = $c;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Vorlage "MQTT-Befehle" je Geraet (Entwurf 3.8): ein Virtueller Ausgang an /dev/udp/<LoxBerry>/<UDP-Eingang des
+ * Gateways>, dieselbe Thema-zu-Befehl-Tabelle wie die Ausgangsvorlage (mt_befehl_tabelle()). Nie retain. Rueckgabe
+ * array(Dateiname, Inhalt).
+ */
+function mt_vorlage_mqtt_out($nummer = 1)
+{
+    $geraete = mt_geraete();
+    $g = isset($geraete[(string) $nummer]) ? $geraete[(string) $nummer] : null;
+    $cfg = mt_config(false);
+    $port = (int) mt_mqtt_zustand()['udpport'];
+    $cmds = array();
+    foreach (mt_mqtt_befehle_geraet($nummer, $g, mt_mqtt_praefix($cfg)) as $c) {
+        $cmds[] = array('title' => $c['title'], 'comment' => $c['comment'], 'analog' => $c['analog'],
+                        'on' => $c['on'], 'off' => $c['off']);
+    }
+    return array(
+        'VQ_matter_geraet' . (int) $nummer . '_mqtt.xml',
+        mt_xml_virtual_out(array(
+            'title'   => 'Matter2Lox ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . ' MQTT-Befehle',
+            'address' => '/dev/udp/' . mt_udp_host($cfg) . '/' . ($port > 0 ? $port : 11884),
+            'comment' => mt_t('BEFEHL.V_KOMMENTAR'),
+        ), $cmds),
+    );
+}
+
+/* ------------------------------------------------------------------
+ * Namenstabelle und V2-Hakenliste (Entwurf 2.4, E9)
+ * ------------------------------------------------------------------ */
+
+/** Der Name, den das MQTT-Gateway einem Thema gibt: / und % werden _ (gateway_name() im Dienst). */
+function mt_gateway_name($thema)
+{
+    return str_replace(array('/', '%'), '_', (string) $thema);
+}
+
+/** Geht ein Thema retained hinaus? Wie ist_zustand() im Dienst: letzter Teil, NIE_RETAINED vor der Liste. */
+function mt_ist_retained($thema)
+{
+    $letzter = substr(strrchr('/' . (string) $thema, '/'), 1);
+    if (in_array($letzter, mt_nie_retained(), true)) {
+        return false;
+    }
+    return isset(mt_zustandsthemen()[$letzter]);
+}
+
+/** Die Impulsthemen (EREIGNIS_IMPULSE im Dienst): Gateway V2 "Resetaftersend". */
+function mt_impulsthemen()
+{
+    return array('taste', 'taste_anzahl', 'taste_kurz', 'taste_lang', 'taste_doppelt', 'taste_dreifach');
+}
+
+/**
+ * V2-Hakenliste des Musterprojekts (Praefix matter, 17 Haken; Entwurf 2.4): Thema relativ zum Praefix und Kennzeichen
+ * N (Noncached: kommt jede Minute mit gleichem Wert) bzw. R (Resetaftersend: Impuls).
+ */
+function mt_mqtt_hakenliste_muster()
+{
+    return array(
+        array('status/ok', 'N'), array('status/zaehler', ''), array('geraet1/erreichbar', 'N'),
+        array('geraet2/erreichbar', 'N'), array('geraet3/erreichbar', 'N'), array('geraet1/1/schalter', ''),
+        array('geraet1/1/helligkeit', ''), array('geraet1/1/farbtemperatur_kelvin', ''),
+        array('geraet2/1/schalter', ''), array('geraet2/1/leistung', ''), array('geraet2/1/energie_bezug', ''),
+        array('geraet3/1/temperatur', ''), array('geraet3/2/feuchte', ''), array('geraet3/1/batterie', ''),
+        array('geraet4/1/taste_kurz', 'R'), array('geraet4/1/taste_lang', 'R'), array('geraet5/1/bewegung', ''),
+    );
+}
+
+/**
+ * Die Namenstabelle - EINE Quelle fuer Reiter Einbindung, Reiter MQTT und die Pruefzeile. Je Zeile: thema
+ * (relativ zum Praefix), voll, name (Gateway), art (zahl|text), retained, v2 (N|R|''), muster (steht so im
+ * Musterprojekt), bedeutung (Klartext). Erst die Lebenszeichen, dann je Geraet aus dem Abbild.
+ */
+function mt_mqtt_namen($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = mt_config(false);
+    }
+    $p = mt_mqtt_praefix($cfg);
+    $muster = array();
+    foreach (mt_mqtt_hakenliste_muster() as $h) {
+        $muster[$h[0]] = $h[1];
+    }
+    $klar = function ($s) {
+        return trim(strip_tags(html_entity_decode((string) $s, ENT_QUOTES, 'UTF-8')));
+    };
+    $zeilen = array(
+        array('status/ok', 'zahl', $klar(mt_t('MQTT.B_STATUS_OK'))),
+        array('status/zaehler', 'zahl', $klar(mt_t('MQTT.B_STATUS_ZAEHLER'))),
+        array('status/ts', 'zahl', $klar(mt_t('MQTT.B_STATUS_TS'))),
+    );
+    $text = array('name', 'hersteller', 'produkt', 'bezeichnung', 'firmware');
+    foreach (mt_geraete() as $nr => $g) {
+        $basis = 'geraet' . (int) $nr;
+        $zeilen[] = array($basis . '/erreichbar', 'zahl', $klar(mt_t('MQTT.B_ERREICH')));
+        foreach ((array) mt_f($g, 'endpunkte', array()) as $ep => $felder) {
+            foreach ((array) $felder as $thema => $_w) {
+                $zeilen[] = array($basis . '/' . $ep . '/' . $thema, in_array((string) $thema, $text, true) ? 'text' : 'zahl',
+                                  $klar(mt_thema_text((string) $thema)));
+            }
+        }
+    }
+    $aus = array();
+    foreach ($zeilen as $z) {
+        $voll = $p . '/' . $z[0];
+        $letzter = substr(strrchr('/' . $z[0], '/'), 1);
+        $v2 = isset($muster[$z[0]]) ? $muster[$z[0]]
+            : (in_array($letzter, array('ok', 'erreichbar'), true) ? 'N' : (in_array($letzter, mt_impulsthemen(), true) ? 'R' : ''));
+        $aus[] = array('thema' => $z[0], 'voll' => $voll, 'name' => mt_gateway_name($voll), 'art' => $z[1],
+                       'retained' => mt_ist_retained($z[0]), 'v2' => $v2, 'muster' => isset($muster[$z[0]]),
+                       'bedeutung' => $z[2]);
+    }
+    return $aus;
+}
+
+/* ------------------------------------------------------------------
+ * Pruefzeilen der Umstellung (Reiter Test; Entwurf 2.0, 2.2, 2.4, 3.7, 3.9). Alle lesen nur.
+ * Rueckgabe je array(stand, text): 1 in Ordnung, 0 Fehler, -1 Hinweis (grau).
+ * ------------------------------------------------------------------ */
+
+/** Laeuft die Befehlsbruecke? Haken aus ist ein Hinweis, kein Kreuz. */
+function mt_pruef_bruecke($cfg)
+{
+    if (!mt_bruecke_laden()) {
+        return array(0, mt_t('TEST.A_BRUECKE_FEHLT'));
+    }
+    list($z, $fehler) = bb_zuordnung_laden(mt_bin_datei('befehle_zuordnung.php'));
+    if ($z === null) {
+        return array(0, sprintf(mt_t('TEST.A_BRUECKE_DEFEKT'), mt_e($fehler)));
+    }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) {
+        return array(0, sprintf(mt_t('TEST.A_BRUECKE_DEFEKT'), mt_e($f[0])));
+    }
+    if (empty($cfg['befehle_mqtt_ein'])) {
+        return array(-1, mt_t('TEST.A_BRUECKE_AUS'));
+    }
+    $pr = mt_mqtt_praefix($cfg);
+    if (!bb_praefix_gueltig($pr)) {
+        return array(0, sprintf(mt_t('TEST.A_BRUECKE_PRAEFIX'), mt_e($pr)));
+    }
+    if (DIRECTORY_SEPARATOR === '\\' || mt_paths()['home'] === '' || !bb_pfade()) {
+        return array(-1, mt_t('TEST.A_BRUECKE_ARCHIV'));
+    }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) {
+        return array(0, mt_t('TEST.A_BRUECKE_STEHT'));
+    }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) {
+        return array(0, sprintf(mt_t('TEST.A_BRUECKE_HAENGT'), (int) $alter));
+    }
+    if (empty($zu['abo'])) {
+        return array(0, sprintf(mt_t('TEST.A_BRUECKE_OHNE_ABO'), mt_e(isset($zu['fehler']) ? (string) $zu['fehler'] : '')));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $letzte = (!empty($zu['letzter']) && is_array($zu['letzter']))
+        ? (string) $zu['letzter']['name'] . ': ' . (string) $zu['letzter']['ergebnis'] . ' (vor '
+          . max(0, time() - (int) $zu['letzter']['zeit']) . ' s)' : '-';
+    return array(1, sprintf(mt_t('TEST.A_BRUECKE_LAEUFT'),
+        mt_e(date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time())),
+        isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0,
+        isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0, mt_e($letzte)));
+}
+
+/** "befehlsbruecke.php --pruefen" (Programme mosquitto_sub/_pub, Zuordnung) als EINE Zeile. */
+function mt_pruef_bruecke_einrichtung($cfg)
+{
+    if (!mt_bruecke_laden()) {
+        return array(0, mt_t('TEST.A_BRUECKE_FEHLT'));
+    }
+    ob_start();
+    bb_pruefen();
+    $aus = array_values(array_filter(explode("\n", (string) ob_get_clean()), 'strlen'));
+    if (!$aus) {
+        return array(-1, mt_t('TEST.A_BRUECKE_UNKLAR'));
+    }
+    $fehl = array_values(preg_grep('/^\[FEHL\]/', $aus));
+    if ($fehl) {
+        // Fehlende mosquitto-clients bei ausgeschaltetem Haken: ein Hinweis, kein Kreuz.
+        return array(empty($cfg['befehle_mqtt_ein']) ? -1 : 0, mt_e(implode(' | ', $fehl)) . ' ' . mt_t('TEST.R_BRUECKE_EINRICHTUNG'));
+    }
+    return array(1, mt_e(implode(' | ', array($aus[0], end($aus)))));
+}
+
+/**
+ * F1 (Entwurf 2.0, E7): Befehlsbruecke und Dienst teilen data/plugins/<ordner>/befehle/. Traegt der Dienst den
+ * Namensfilter (in allen drei Schleifen), und liegt im Ordner keine fremde *.json ausser den Dateien der Bruecke?
+ */
+function mt_pruef_warteschlange()
+{
+    $py = mt_bin_datei('matter_dienst.py');
+    if ($py === '') {
+        return array(-1, mt_t('TEST.A_WS_UNKLAR'));
+    }
+    $n = substr_count((string) @file_get_contents($py), 'if not KENNUNG.match(datei.stem):');
+    if ($n < 3) {
+        return array(0, sprintf(mt_t('TEST.A_WS_OHNE_FILTER'), $n));
+    }
+    $fremd = array();
+    foreach ((@glob(mt_paths()['datadir'] . '/befehle/*.json') ?: array()) as $f) {
+        $b = basename($f, '.json');
+        if (in_array($b, array('zustand', 'waechter'), true) || preg_match('/^[0-9]{16}_[0-9a-f]{8}\z/', $b)) {
+            continue;
+        }
+        $fremd[] = basename($f);
+    }
+    return $fremd ? array(0, sprintf(mt_t('TEST.A_WS_FREMD'), mt_e(implode(', ', $fremd))))
+                  : array(1, mt_t('TEST.A_WS_OK'));
+}
+
+/** HTTP-Endpunkt aus ist gewollt (grau); an nennt den letzten schaltenden Aufruf (wie cc_cmd_hinweis()). */
+function mt_pruef_endpunkt_ein($cfg)
+{
+    if (!mt_endpunkt_an($cfg)) {
+        return array(-1, mt_t('TEST.A_ENDPUNKT_EIN_AUS'));
+    }
+    $z = mt_endpunkt_zuletzt();
+    return array(1, $z < 0 ? mt_t('TEST.A_ENDPUNKT_EIN_NIE')
+                           : sprintf(mt_t('TEST.A_ENDPUNKT_EIN_ZULETZT'), mt_e(mt_zuletzt_text(time() - $z))));
+}
+
+/** Herzschlag 0: kein Lebenszeichen status/zaehler - die Ausfallerkennung des Musterprojekts meldet Stoerung. */
+function mt_pruef_herzschlag($cfg)
+{
+    $hz = isset($cfg['herzschlag']) && is_numeric($cfg['herzschlag']) ? (int) $cfg['herzschlag'] : 60;
+    return $hz > 0 ? array(1, sprintf(mt_t('TEST.A_HERZSCHLAG_OK'), $hz)) : array(-1, mt_t('TEST.A_HERZSCHLAG_AUS'));
+}
+
+/**
+ * Namenstabelle (Entwurf 2.4): jeder Name ist der Gateway-Name seines Themas (Gegenseite ohne mt_gateway_name()), und
+ * jeder Themenstamm ist einer, den der Dienst bildet (matter_dienst.py --themen). $namen: Liste array(voll, name)
+ * fuer die Gegenprobe (ein verdrehter Name muss rot werden); $staemme: die Staemme des Dienstes (sonst gefragt).
+ */
+function mt_pruef_namen($namen = null, $staemme = null)
+{
+    $cfg = mt_config(false);
+    if ($namen === null) {
+        $namen = array();
+        foreach (mt_mqtt_namen($cfg) as $z) {
+            $namen[] = array($z['voll'], $z['name']);
+        }
+    }
+    if ($staemme === null) {
+        list($staemme, $grund) = mt_themen_dienst();
+        if ($staemme === null) {
+            return array(-1, sprintf(mt_t('TEST.A_NAMEN_UNKLAR'), mt_e($grund)));
+        }
+    }
+    $falsch = array();
+    foreach ($namen as $z) {
+        $stamm = substr(strrchr('/' . $z[0], '/'), 1);
+        if (!in_array($stamm, $staemme, true) || $z[1] !== strtr($z[0], array('/' => '_', '%' => '_'))) {
+            $falsch[] = $z[1];
+        }
+    }
+    return $falsch ? array(0, sprintf(mt_t('TEST.A_NAMEN_FEHL'), mt_e(implode(', ', $falsch))))
+                   : array(1, sprintf(mt_t('TEST.A_NAMEN_OK'), count($namen), count(mt_mqtt_hakenliste_muster())));
 }
 
 

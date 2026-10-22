@@ -71,13 +71,45 @@ function mt_pruef_formulare()
         return array(-1, sprintf(mt_t('TEST.A_REITER_UNBEKANNT'), mt_e($datei)));
     }
     $t = (string) @file_get_contents($datei);
-    $formulare = preg_match_all('/<form\b/i', $t);
-    $marken = preg_match_all('/mt_fmt\(\)/', $t);
+    /* M18 (0.9.44, Pruefbericht; Hausform Chromecast C14): je Formular gezaehlt, nicht ueber die ganze Datei. Jeder
+     * Block von <form bis zum naechsten </form> traegt genau ein mt_fmt(), und keins steht ausserhalb. Bis 0.9.43
+     * wurden nur die Summen verglichen - ein Merkmal hinter </form> fiel nicht auf, solange ein anderes Formular
+     * zwei trug (Gedaechtnis "Formulartoken hinter </form>"). */
+    preg_match_all('/<form\b/i', $t, $auf, PREG_OFFSET_CAPTURE);
+    preg_match_all('/<\/form>/i', $t, $zu, PREG_OFFSET_CAPTURE);
+    preg_match_all('/mt_fmt\(\)/', $t, $fmt, PREG_OFFSET_CAPTURE);
+    $auf = array_map(function ($m) { return $m[1]; }, $auf[0]);
+    $zu = array_map(function ($m) { return $m[1]; }, $zu[0]);
+    $fmt = array_map(function ($m) { return $m[1]; }, $fmt[0]);
+    $formulare = count($auf);
     if ($formulare === 0) {
         return array(0, mt_t('TEST.A_FORM_KEINE'));
     }
-    if ($formulare !== $marken) {
-        return array(0, sprintf(mt_t('TEST.A_FORM_FEHL'), $formulare, $marken));
+    $belegt = array();
+    $schlecht = array();
+    foreach ($auf as $a) {
+        $ende = strlen($t);
+        foreach ($zu as $z) {
+            if ($z > $a) {
+                $ende = $z;
+                break;
+            }
+        }
+        $n = 0;
+        foreach ($fmt as $f) {
+            if ($f > $a && $f < $ende) {
+                $n++;
+                $belegt[$f] = 1;
+            }
+        }
+        if ($n !== 1) {
+            $schlecht[] = substr_count($t, "\n", 0, $a) + 1;
+        }
+    }
+    $ausserhalb = count($fmt) - count($belegt);
+    if ($schlecht || $ausserhalb > 0 || count($zu) !== $formulare) {
+        return array(0, sprintf(mt_t('TEST.A_FORM_BLOCK_FEHL'), $formulare, count($zu), count($fmt),
+                                mt_e($schlecht ? implode(', ', $schlecht) : '-'), $ausserhalb));
     }
     return array(1, sprintf(mt_t('TEST.A_FORM_OK'), $formulare));
 }
@@ -122,7 +154,8 @@ function mt_pruef_themen()
         return array(0, mt_t('TEST.A_THEMEN_LEER'));
     }
     foreach (array_keys(mt_themen_fest()) as $t) {
-        $liste[(string) $t] = 1;
+        // 0.9.44: der Schluessel kann ein Pfad sein (status/zaehler) - verglichen wird der Stamm.
+        $liste[(string) substr(strrchr('/' . $t, '/'), 1)] = 1;
     }
     list($dienst, $grund) = mt_themen_dienst();
     if ($dienst === null) {
@@ -688,7 +721,12 @@ function mt_pruef_ra($cfg)
 {
     list($if, $quelle) = mt_hauptschnittstelle($cfg);
     $thread = trim((string) $cfg['thread_dataset']) !== '' || trim((string) $cfg['thread_br']) !== '';
-    $schlecht = $thread ? 0 : -1;
+    /* M16 mit V1 (0.9.44, Pruefbericht; Entscheidung 2): ohne Dataset und Border-Router nicht mehr "ohne Belang"
+     * (grau), sondern eine Warnung. Geteilte Thread-Geraete (Kopplungsfenster aus Google Home, Apple Home oder
+     * Alexa, kein BLE, kein Dataset) brauchen die Route aus den Router-Advertisements trotzdem - im Haus steht
+     * seit dem 19.10.2026 ein Google Home Speaker (Thread-1.3-Border-Router). Der Zusatz A_NUR_THREAD sagt es.
+     * Bis 0.9.43: $schlecht = $thread ? 0 : -1. */
+    $schlecht = 0;
     if ($if === '') {
         return array(array(-1, mt_t('TEST.A_IF_KEINE')), array(-1, mt_t('TEST.A_IF_KEINE')));
     }
@@ -1191,35 +1229,53 @@ function mt_pruefungen()
     // Ein Anfuehrungszeichen oder ein Umlaut im Geraetenamen zerlegt die
     // Datei, und Loxone Config meldet dazu nichts Brauchbares. Deshalb wird
     // hier erzeugt und sofort wieder eingelesen: wohlgeformt oder nicht.
+    /* M17 (0.9.44, Pruefbericht): ohne php-xml stand hier bis 0.9.43 ein "return $zeilen;" - mit ihm fehlten 15
+     * Folgepruefungen (F_UNGEPRUEFT bis F_VORGABEN), die simplexml gar nicht brauchen. Jetzt ist nur diese eine
+     * Zeile grau, und alles darunter folgt - auch die Pruefzeilen der Gruppe 8 am Ende. */
     if (!function_exists('simplexml_load_string') || !function_exists('libxml_use_internal_errors')) {
         /* Ohne php-xml laesst sich die Vorlage nicht pruefen. Das ist ein
          * Strich, kein Kreuz - und es steht dabei, was fehlt. Ungesichert
          * waere es ein fataler Fehler und die ganze Seite bliebe weiss. */
         $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_VORLAGE'), mt_t('TEST.A_VORLAGE_KEIN_XML'));
-        return $zeilen;
-    }
-    $mt_vorher = libxml_use_internal_errors(true);
-    $mt_kaputt = array();
-    $mt_gezaehlt = 0;
-    $mt_proben = array('VI alle' => mt_vorlage_alle());
-    foreach (array_keys(mt_geraete()) as $mt_nr) {
-        $mt_proben['VI ' . (int) $mt_nr] = mt_vorlage((int) $mt_nr);
-        $mt_proben['VQ ' . (int) $mt_nr] = mt_vorlage_out((int) $mt_nr);
-    }
-    foreach ($mt_proben as $mt_was => $mt_paar) {
-        $mt_gezaehlt++;
-        libxml_clear_errors();
-        if (simplexml_load_string($mt_paar[1]) === false) {
-            $mt_fehler = libxml_get_errors();
-            $mt_kaputt[] = $mt_was . ' (' . (isset($mt_fehler[0])
-                ? trim($mt_fehler[0]->message) : '?') . ')';
+    } else {
+        $mt_vorher = libxml_use_internal_errors(true);
+        $mt_kaputt = array();
+        $mt_gezaehlt = 0;
+        $mt_proben = array('VI alle' => mt_vorlage_alle());
+        foreach (array_keys(mt_geraete()) as $mt_nr) {
+            $mt_proben['VI ' . (int) $mt_nr] = mt_vorlage((int) $mt_nr);
+            $mt_proben['VQ ' . (int) $mt_nr] = mt_vorlage_out((int) $mt_nr);
+            // 0.9.44 (Gruppe 8, Entwurf 3.8): die Vorlage MQTT-Befehle desselben Geraets.
+            $mt_proben['VQ MQTT ' . (int) $mt_nr] = mt_vorlage_mqtt_out((int) $mt_nr);
         }
+        $mt_gwnamen = array();
+        foreach (mt_mqtt_namen() as $mt_nz) {
+            $mt_gwnamen[$mt_nz['name']] = 1;
+        }
+        foreach ($mt_proben as $mt_was => $mt_paar) {
+            $mt_gezaehlt++;
+            libxml_clear_errors();
+            $mt_sx = simplexml_load_string($mt_paar[1]);
+            if ($mt_sx === false) {
+                $mt_fehler = libxml_get_errors();
+                $mt_kaputt[] = $mt_was . ' (' . (isset($mt_fehler[0])
+                    ? trim($mt_fehler[0]->message) : '?') . ')';
+            } elseif (strpos($mt_was, 'VQ MQTT ') === 0) {
+                /* Kein Befehlstitel gleicht einem Gateway-Eingang (Entwurf 3.8) - sonst schickte der Ausgang dem
+                 * gleichnamigen Eingang seine eigene Nachricht zurueck. */
+                foreach ($mt_sx->VirtualOutCmd as $mt_c) {
+                    if (isset($mt_gwnamen[(string) $mt_c['Title']])) {
+                        $mt_kaputt[] = $mt_was . ' (' . (string) $mt_c['Title'] . ')';
+                    }
+                }
+            }
+        }
+        libxml_clear_errors();
+        libxml_use_internal_errors($mt_vorher);
+        $zeilen[] = mt_pruefzeile($mt_kaputt ? 0 : 1, mt_t('TEST.F_VORLAGE'),
+            $mt_kaputt ? sprintf(mt_t('TEST.A_VORLAGE_FEHL'), mt_e(implode(', ', $mt_kaputt)))
+                       : sprintf(mt_t('TEST.A_VORLAGE'), $mt_gezaehlt));
     }
-    libxml_clear_errors();
-    libxml_use_internal_errors($mt_vorher);
-    $zeilen[] = mt_pruefzeile($mt_kaputt ? 0 : 1, mt_t('TEST.F_VORLAGE'),
-        $mt_kaputt ? sprintf(mt_t('TEST.A_VORLAGE_FEHL'), mt_e(implode(', ', $mt_kaputt)))
-                   : sprintf(mt_t('TEST.A_VORLAGE'), $mt_gezaehlt));
 
     // --- Ungepruefte Cluster ausweisen ---
     $mt_ungeprueft = array();
@@ -1241,9 +1297,21 @@ function mt_pruefungen()
     // ist das ein HINWEIS und kein Kreuz - im Pruefaufbau faellt genau dieser
     // Fall an, und ein rotes Kreuz, das nichts bedeutet, ist schlimmer als
     // keine Prüfung.
-    list($e_ok, $e_code, $e_text, $e_url, $e_alter) = mt_selbsttest_endpunkt();
+    /* Gruppe 8 (0.9.44, Entwurf 3.7): ist der HTTP-Endpunkt ausgeschaltet (endpunkt_ein 0), ist das gewollt -
+     * grau, und die Seite ruft sich nicht selbst auf. */
+    if (!mt_endpunkt_an($cfg)) {
+        $e_ok = 0;
+        $e_code = -1;
+        $e_text = '';
+        $e_url = '';
+        $e_alter = 0;
+    } else {
+        list($e_ok, $e_code, $e_text, $e_url, $e_alter) = mt_selbsttest_endpunkt();
+    }
     $e_zusatz = $e_alter > 0 ? ' ' . sprintf(mt_t('TEST.A_PROBE_ALT'), (int) $e_alter) : '';
-    if ($e_ok) {
+    if ((int) $e_code === -1) {
+        $zeilen[] = mt_pruefzeile(-1, mt_t('TEST.F_ENDPUNKT'), mt_t('TEST.A_ENDPUNKT_AUS_GEWOLLT'));
+    } elseif ($e_ok) {
         $zeilen[] = mt_pruefzeile(1, mt_t('TEST.F_ENDPUNKT'),
             sprintf(mt_t('TEST.A_ENDPUNKT_OK'), (int) $e_code,
                     mt_e(substr($e_text, 0, 70))) . $e_zusatz);
@@ -1306,6 +1374,21 @@ function mt_pruefungen()
     $zeilen[] = mt_pruefzeile($r[0], mt_t('TEST.F_REITER'), $r[1]);
     $vg = mt_pruef_vorgaben();
     $zeilen[] = mt_pruefzeile($vg[0], mt_t('TEST.F_VORGABEN'), $vg[1]);
+
+    /* Gruppe 8 (0.9.44, Entwurf 2.0/2.2/2.4/3.7/3.9): Befehlsbruecke, Warteschlange (F1), HTTP-Endpunkt,
+     * Herzschlag, Namenstabelle - hinter dem M17-Schutz, damit sie ohne php-xml nicht fehlen. */
+    $bb = mt_pruef_bruecke($cfg);
+    $zeilen[] = mt_pruefzeile($bb[0], mt_t('TEST.F_BRUECKE'), $bb[1]);
+    $be = mt_pruef_bruecke_einrichtung($cfg);
+    $zeilen[] = mt_pruefzeile($be[0], mt_t('TEST.F_BRUECKE_EINRICHTUNG'), $be[1]);
+    $ws = mt_pruef_warteschlange();
+    $zeilen[] = mt_pruefzeile($ws[0], mt_t('TEST.F_WARTESCHLANGE'), $ws[1]);
+    $ee = mt_pruef_endpunkt_ein($cfg);
+    $zeilen[] = mt_pruefzeile($ee[0], mt_t('TEST.F_ENDPUNKT_EIN'), $ee[1]);
+    $hs = mt_pruef_herzschlag($cfg);
+    $zeilen[] = mt_pruefzeile($hs[0], mt_t('TEST.F_HERZSCHLAG'), $hs[1]);
+    $nm = mt_pruef_namen();
+    $zeilen[] = mt_pruefzeile($nm[0], mt_t('TEST.F_NAMEN'), $nm[1]);
 
     return $zeilen;
 }

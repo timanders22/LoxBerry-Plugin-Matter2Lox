@@ -12,39 +12,49 @@
 # systemweites pip3 install auf Debian 12/13 nicht zu - deshalb die venv.
 # JEDER Rueckgabewert wird geprueft.
 
-ARGV3=$3
-ARGV5=$5
-PFOLDER="${ARGV3:-matter2lox}"
-# Wurzel: $5 bzw. LBHOMEDIR mit config/plugins darunter, sonst vom eigenen
-# Ablageort AUFWAERTS ein Verzeichnis mit config/plugins, data/plugins UND
-# config/system/general.json (Regeln/06), sonst keine. Bis 0.9.28 stand hier
-# "zwei Ebenen ueber dem Ablageort", geprueft nur auf config/plugins: in WSL
-# gemessen (25.09.2026, Pruefung-Matter2Lox-0.9.29, Fall W6) legte das Skript
-# in einem fremden Baum ohne general.json data/plugins/<ordner> und die
-# Fabric-, Log- und Konfigurationsordner an.
+# ---- Wurzelblock (M3, seit 0.9.44; in preinstall, postinstall, preupgrade und postupgrade woertlich gleich) ----
+# Bauform Alexa NG 1.0.6 (ax_ist_wurzel) und Intercom 2.2.23 (ic_wurzel). Ordner aus $3 mit Schranke ('' . .. und
+# alles mit / oder ..); Wurzel aus $5, sonst LBHOMEDIR, sonst vom Ablageort aufwaerts gesucht (Regeln/06). Eine
+# Wurzel gilt nur mit config/plugins, data/plugins UND config/system/general.json - ein Rest alter Prueflaeufe hat
+# die dritte nie. Bis 0.9.43 prueften postinstall und preupgrade $5/LBHOMEDIR nur auf config/plugins, postupgrade
+# nur -d, und preinstall wies den Ordnernamen "." nicht ab (Pruefbericht M3: mit "." trafen chown -R und chmod
+# ganz data/plugins).
+# mt_wurzel setzt PFOLDER und BASE; Rueckgabe 0 = erkannt, 1 = Ordnername unzulaessig, 2 = keine LoxBerry-Wurzel.
+mt_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] && [ -f "$1/config/system/general.json" ]
+}
 mt_wurzel_suchen() {
     v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
-           && [ -f "$v/config/system/general.json" ]; then
-            printf '%s\n' "$v"; return 0
-        fi
+        if mt_ist_wurzel "$v"; then printf '%s\n' "$v"; return 0; fi
         v=$(dirname "$v"); i=$((i + 1))
     done
     return 1
 }
-BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
-    BASE=$(mt_wurzel_suchen)
-fi
-
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
-    echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
-    echo "<FAIL> Ohne ihn wuerden Ordner im Wurzelverzeichnis des Systems"
-    echo "<FAIL> angelegt. Es wurde nichts angelegt; das Plugin ist nicht lauffaehig."
-    exit 1
-fi
+mt_wurzel() {
+    PFOLDER="${1:-matter2lox}"
+    case "$PFOLDER" in
+        ''|.|..|*/*|*..*) return 1 ;;
+    esac
+    BASE=""
+    for MT_K in "$2" "$LBHOMEDIR"; do
+        if mt_ist_wurzel "$MT_K"; then BASE="$MT_K"; break; fi
+    done
+    [ -n "$BASE" ] || BASE=$(mt_wurzel_suchen)
+    [ -n "$BASE" ] || return 2
+    return 0
+}
+# ---- Ende Wurzelblock ----
+mt_wurzel "$3" "$5"
+case $? in
+    1) echo "<FAIL> Unzulaessiger Ordnername '$PFOLDER' - es wurde nichts angelegt; das Plugin ist nicht lauffaehig."
+       exit 1 ;;
+    2) echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
+       echo "<FAIL> Ohne ihn wuerden Ordner im Wurzelverzeichnis des Systems"
+       echo "<FAIL> angelegt. Es wurde nichts angelegt; das Plugin ist nicht lauffaehig."
+       exit 1 ;;
+esac
 
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
@@ -180,6 +190,59 @@ if [ "$UPGRADE" = 1 ] && [ -f "$BK" ]; then
     fi
 fi
 chmod 600 "$PCONFIG/matter2lox.json"
+
+# ---------- Uebergang Gruppe 8 (0.9.44, Entscheidung 1, E1; Bauart Chromecast befehle_cmd_ein) ----------
+# Der HTTP-Endpunkt fuer Loxone haengt seit 0.9.44 am Haken endpunkt_ein, ab Werk aus. Eine BESTEHENDE Anlage
+# (Aktualisierung, Konfiguration mit Inhalt) behaelt ihn: fehlt der Schluessel, wird 1 eingetragen, dazu
+# befehle_mqtt_ein und befehle_mqtt_entsperren mit 0. Vorhandene Werte bleiben. Eine leere Konfiguration ({}) bekommt
+# nichts - sie ist neu. Nebendatei 0600, Laengenpruefung, rename. Laeuft nach dem Zurueckspielen der Sicherung und
+# vor jedem Dienststart; die Befehlsbruecke startet erst der Waechter in cron.01min.
+if [ "$UPGRADE" = 1 ] && [ "$(mt_inhalt "$CF")" -ge 1 ]; then
+    MT_UE=$(python3 -c '
+import json, os, sys
+p = sys.argv[1]
+try:
+    with open(p, encoding="utf-8") as d:
+        c = json.load(d)
+except Exception:
+    print("fehl")
+    sys.exit(0)
+if not isinstance(c, dict) or not c:
+    print("leer")
+    sys.exit(0)
+neu = []
+for k, w in (("endpunkt_ein", 1), ("befehle_mqtt_ein", 0), ("befehle_mqtt_entsperren", 0)):
+    if k not in c:
+        c[k] = w
+        neu.append("%s=%d" % (k, w))
+if not neu:
+    print("da")
+    sys.exit(0)
+t = json.dumps(c, indent=4, ensure_ascii=False) + "\n"
+tmp = p + ".neu"
+try:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as d:
+        d.write(t)
+    if os.path.getsize(tmp) != len(t.encode("utf-8")):
+        raise OSError("Laenge")
+    os.replace(tmp, p)
+    os.chmod(p, 0o600)
+except OSError:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    print("fehl")
+    sys.exit(0)
+print(" ".join(neu))
+' "$CF" 2>/dev/null)
+    case "$MT_UE" in
+        da|leer) ;;
+        fehl|'') echo "<WARNING> Die Konfiguration liess sich nicht ergaenzen - der HTTP-Endpunkt fuer Loxone ist damit AUS. Wer ihn braucht: Reiter Einbindung in Loxone, Haken 'HTTP-Endpunkt fuer Loxone annehmen'." ;;
+        *) echo "<INFO> Konfiguration ergaenzt: $MT_UE (bestehende Anlage - der HTTP-Weg bleibt an; Befehle ueber MQTT ab Werk aus)." ;;
+    esac
+fi
 
 # ---------- Bridge (0.9.42, Beta) ----------
 # Nur beim Upgrade: bridge.json und bridge_zugang.json aus der Zweitschrift

@@ -148,6 +148,56 @@ done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
 rm -f "$PDATA/soll_laufen" "$PDATA/dienst.pid" 2>/dev/null
 
+# --------------------------------------------------------- Befehlsbruecke
+# Gruppe 8 (0.9.44, E12; Bauart Alexa NG 1.0.6 und Intercom 2.2.23): anhalten (stop beendet Dienst UND mosquitto_sub),
+# dann argumentweise nachzaehlen, verwaiste mosquitto_sub mit unseren Optionsdateien beenden. Die Optionsdateien mit
+# dem Broker-Zugang (befehle/mosquitto/mosquitto_sub|_pub) werden VOR dem Loeschen ueberschrieben und entfernt -
+# LoxBerry raeumt den Datenordner erst nach diesem Skript. Der Praefixschutz steht oben (fremder Name: nichts tun).
+BBSH="$PBIN/befehlsbruecke.sh"
+BBPHP="$PBIN/befehlsbruecke.php"
+BBDIR="$PDATA/befehle"
+if [ -f "$BBSH" ]; then
+    MT_AUS=$(timeout 40 bash "$BBSH" stop 2>&1)
+    echo "<INFO> Befehlsbruecke: ${MT_AUS:-keine Antwort}"
+fi
+MT_REST=0
+for d in /proc/[0-9]*; do
+    mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+    [ "${#a[@]}" -ge 2 ] || continue
+    if [ "${a[1]}" = "$BBPHP" ] && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${d#/proc/}" 2>/dev/null && MT_REST=$((MT_REST + 1))
+    fi
+done
+MT_ABO=0
+for d in /proc/[0-9]*; do
+    c=""
+    read -r c 2>/dev/null < "$d/comm"
+    [ "$c" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+    for x in "${e[@]}"; do
+        if [ "$x" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then
+            kill -9 "${d#/proc/}" 2>/dev/null && MT_ABO=$((MT_ABO + 1)); break
+        fi
+    done
+done
+[ "$MT_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $MT_REST Dienst(e) erst mit kill -9 beendet."
+[ "$MT_ABO" -gt 0 ] && echo "<WARNING> $MT_ABO mosquitto_sub mit den Optionsdateien des Plugins erst mit kill -9 beendet."
+MT_OPT=0
+MT_OPTREST=""
+for MT_F in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+    [ -f "$MT_F" ] || continue
+    MT_N=$(stat -c %s "$MT_F" 2>/dev/null || echo 64)
+    [ "$MT_N" -gt 0 ] 2>/dev/null && head -c "$MT_N" /dev/zero > "$MT_F" 2>/dev/null
+    rm -f "$MT_F" 2>/dev/null
+    if [ -e "$MT_F" ]; then MT_OPTREST="$MT_OPTREST $MT_F"; else MT_OPT=$((MT_OPT + 1)); fi
+done
+if [ -n "$MT_OPTREST" ]; then
+    echo "<WARNING> Optionsdateien mit dem Broker-Zugang liegen noch:$MT_OPTREST - bitte von Hand entfernen."
+elif [ "$MT_OPT" -gt 0 ]; then
+    echo "<OK> $MT_OPT Optionsdateien der Befehlsbruecke (Broker-Zugang) ueberschrieben und entfernt."
+fi
+
+
 # ------------------------------------------------------------------ MQTT
 # Zurueckbehaltene Themen der Linie leeren - unter dem eingestellten und
 # seit 0.9.30 (M5) unter jedem gemerkten Praefix. NACH dem Anhalten des Dienstes -
@@ -496,7 +546,8 @@ fi
 if [ -f "$NUMMERN" ]; then
     rm -f "$NUMMERN" && echo "<OK> Geraetenummern entfernt: $PDIR.nummern.json"
 fi
-rm -f "$LIEFMARKE" "$UPGRADEMARKE" 2>/dev/null
+# M9 (0.9.44): die Startsperre von bin/dienst.sh liegt neben dem Datenordner.
+rm -f "$LIEFMARKE" "$UPGRADEMARKE" "$BASE/data/plugins/$PDIR.startsperre" 2>/dev/null
 # M5 (Durchgang 30.09.2026): die Liste der je benutzten MQTT-Praefixe. Der
 # Schritt "MQTT" oben hat unter jedem davon abgeraeumt; danach geht sie.
 rm -f "$BASE/config/plugins/$PDIR.mqtt_praefixe.json" 2>/dev/null

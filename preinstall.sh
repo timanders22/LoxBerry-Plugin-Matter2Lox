@@ -29,19 +29,44 @@
 # weiterbenutzt - ob sie bei einer Neuinstallation beiseite gehoeren, ist
 # nicht entschieden (Baubericht "Offen"). Liegen sie da, nennt die WARNING sie
 # ausdruecklich; bis 0.9.30 geschah das ohne jede Meldung.
-ARGV3=$3
-ARGV5=$5
-PFOLDER="${ARGV3:-matter2lox}"
-BASE="${ARGV5:-$LBHOMEDIR}"
-# Wurzelsuche wie in den uebrigen Hakenskripten: ohne config/plugins,
-# data/plugins UND config/system/general.json wird nichts angefasst.
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
-   || [ ! -f "$BASE/config/system/general.json" ]; then
-    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - nichts beiseitegelegt."
-    exit 0
-fi
-case "$PFOLDER" in
-    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts beiseitegelegt."; exit 0 ;;
+# ---- Wurzelblock (M3, seit 0.9.44; in preinstall, postinstall, preupgrade und postupgrade woertlich gleich) ----
+# Bauform Alexa NG 1.0.6 (ax_ist_wurzel) und Intercom 2.2.23 (ic_wurzel). Ordner aus $3 mit Schranke ('' . .. und
+# alles mit / oder ..); Wurzel aus $5, sonst LBHOMEDIR, sonst vom Ablageort aufwaerts gesucht (Regeln/06). Eine
+# Wurzel gilt nur mit config/plugins, data/plugins UND config/system/general.json - ein Rest alter Prueflaeufe hat
+# die dritte nie. Bis 0.9.43 prueften postinstall und preupgrade $5/LBHOMEDIR nur auf config/plugins, postupgrade
+# nur -d, und preinstall wies den Ordnernamen "." nicht ab (Pruefbericht M3: mit "." trafen chown -R und chmod
+# ganz data/plugins).
+# mt_wurzel setzt PFOLDER und BASE; Rueckgabe 0 = erkannt, 1 = Ordnername unzulaessig, 2 = keine LoxBerry-Wurzel.
+mt_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] && [ -f "$1/config/system/general.json" ]
+}
+mt_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if mt_ist_wurzel "$v"; then printf '%s\n' "$v"; return 0; fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+mt_wurzel() {
+    PFOLDER="${1:-matter2lox}"
+    case "$PFOLDER" in
+        ''|.|..|*/*|*..*) return 1 ;;
+    esac
+    BASE=""
+    for MT_K in "$2" "$LBHOMEDIR"; do
+        if mt_ist_wurzel "$MT_K"; then BASE="$MT_K"; break; fi
+    done
+    [ -n "$BASE" ] || BASE=$(mt_wurzel_suchen)
+    [ -n "$BASE" ] || return 2
+    return 0
+}
+# ---- Ende Wurzelblock ----
+mt_wurzel "$3" "$5"
+case $? in
+    1) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts beiseitegelegt."; exit 0 ;;
+    2) echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('${5:-$LBHOMEDIR}') - nichts beiseitegelegt."; exit 0 ;;
 esac
 [ -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ] && exit 0
 

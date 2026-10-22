@@ -18,36 +18,48 @@
 # auch - sein DATENORDNER aber nicht: der Bindmount zeigte auf
 # data/plugins/<ordner>/matter, und der wurde bei jedem Update geloescht.
 # Jedes angelernte Geraet haette danach neu angelernt werden muessen.
-ARGV3=$3
-ARGV5=$5
-PFOLDER="${ARGV3:-matter2lox}"
-
-# Wurzelbestimmung - wie in postinstall.sh und uninstall: $5 bzw. LBHOMEDIR,
-# wenn darunter config/plugins liegt, sonst vom eigenen Ablageort AUFWAERTS
-# ein Verzeichnis mit config/plugins, data/plugins UND
-# config/system/general.json (Regeln/06), sonst keine Wurzel.
-# Bis 0.9.28 stand hier als Rueckfall "zwei Ebenen ueber dem Ablageort",
-# geprueft nur auf config/plugins: in WSL gemessen (25.09.2026,
-# Pruefung-Matter2Lox-0.9.29, Fall W5) legte das Skript in einem fremden
-# Baum ohne general.json die Marke an und kopierte dort die Konfiguration.
+# ---- Wurzelblock (M3, seit 0.9.44; in preinstall, postinstall, preupgrade und postupgrade woertlich gleich) ----
+# Bauform Alexa NG 1.0.6 (ax_ist_wurzel) und Intercom 2.2.23 (ic_wurzel). Ordner aus $3 mit Schranke ('' . .. und
+# alles mit / oder ..); Wurzel aus $5, sonst LBHOMEDIR, sonst vom Ablageort aufwaerts gesucht (Regeln/06). Eine
+# Wurzel gilt nur mit config/plugins, data/plugins UND config/system/general.json - ein Rest alter Prueflaeufe hat
+# die dritte nie. Bis 0.9.43 prueften postinstall und preupgrade $5/LBHOMEDIR nur auf config/plugins, postupgrade
+# nur -d, und preinstall wies den Ordnernamen "." nicht ab (Pruefbericht M3: mit "." trafen chown -R und chmod
+# ganz data/plugins).
+# mt_wurzel setzt PFOLDER und BASE; Rueckgabe 0 = erkannt, 1 = Ordnername unzulaessig, 2 = keine LoxBerry-Wurzel.
+mt_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] && [ -f "$1/config/system/general.json" ]
+}
 mt_wurzel_suchen() {
     v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
-           && [ -f "$v/config/system/general.json" ]; then
-            printf '%s\n' "$v"; return 0
-        fi
+        if mt_ist_wurzel "$v"; then printf '%s\n' "$v"; return 0; fi
         v=$(dirname "$v"); i=$((i + 1))
     done
     return 1
 }
-BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
-    BASE=$(mt_wurzel_suchen)
-fi
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
-    echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
+mt_wurzel() {
+    PFOLDER="${1:-matter2lox}"
+    case "$PFOLDER" in
+        ''|.|..|*/*|*..*) return 1 ;;
+    esac
+    BASE=""
+    for MT_K in "$2" "$LBHOMEDIR"; do
+        if mt_ist_wurzel "$MT_K"; then BASE="$MT_K"; break; fi
+    done
+    [ -n "$BASE" ] || BASE=$(mt_wurzel_suchen)
+    [ -n "$BASE" ] || return 2
+    return 0
+}
+# ---- Ende Wurzelblock ----
+mt_wurzel "$3" "$5"
+MT_RC=$?
+if [ "$MT_RC" -ne 0 ]; then
+    if [ "$MT_RC" -eq 1 ]; then
+        echo "<FAIL> Unzulaessiger Ordnername '$PFOLDER'."
+    else
+        echo "<FAIL> Der LoxBerry-Wurzelordner liess sich nicht bestimmen."
+    fi
     echo "<FAIL> Es wurde NICHTS gesichert. Das Update wird abgebrochen (Rueckgabe 2),"
     echo "<FAIL> es wurde nichts geloescht. Bitte melden."
     # I4 (Durchgang 30.09.2026): 2, nicht 1. plugininstall.pl wertet 1 nur
@@ -94,6 +106,15 @@ else
     echo "<FAIL> Aktualisierung als Neuinstallation behandelt und die Einstellungen"
     echo "<FAIL> nicht uebernommen. Ist data/plugins voll oder schreibgeschuetzt?"
     FEHLER=1
+fi
+
+# Gruppe 8 (0.9.44, E12): die Befehlsbruecke anhalten (stop beendet Dienst UND mosquitto_sub). Beim Umstieg von
+# 0.9.43 gibt es sie noch nicht - dann nichts. Die Marke von eben haelt den Waechter in cron.01min bis zum Ende
+# der Installation ab (befehlsbruecke.sh start prueft dieselbe Marke).
+BBSH="$PBIN/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    MT_BB=$(timeout 40 bash "$BBSH" stop 2>&1)
+    echo "<INFO> Befehlsbruecke: ${MT_BB:-keine Antwort}"
 fi
 
 # Ist die Nummer $1 ein Dienst dieses Plugins? Argumentweise: argv[0] ist
@@ -238,12 +259,21 @@ fi
 # Die Oberflaeche schreibt ihre Zweitschrift neben den Ordner bei jedem
 # Speichern; hier wird sie aufgefrischt. postinstall.sh spielt sie zurueck.
 # Der Bridge-Container laeuft durch - sein Ordner liegt neben dem Datenordner.
+# M4 (0.9.44, Pruefbericht): nur ein JSON-Objekt mit mindestens einem Schluessel ersetzt die Zweitschrift -
+# ueber eine Nebendatei (0600 vor dem Inhalt) und mv, also atomar. Sonst eine INFO, und die Zweitschrift bleibt.
+# Bis 0.9.43 ueberschrieb ein blankes cp sie auch mit einer leeren oder kaputten Datei.
 for BRF in bridge bridge_zugang; do
     if [ -f "$PCONFIG/$BRF.json" ]; then
-        if cp "$PCONFIG/$BRF.json" "$BASE/config/plugins/$PFOLDER.backup.$BRF.json" 2>/dev/null; then
-            chmod 600 "$BASE/config/plugins/$PFOLDER.backup.$BRF.json" 2>/dev/null
+        BRZ="$BASE/config/plugins/$PFOLDER.backup.$BRF.json"
+        if ! python3 -c 'import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+sys.exit(0 if isinstance(d, dict) and d else 1)' "$PCONFIG/$BRF.json" 2>/dev/null; then
+            echo "<INFO> Die Bridge-Einstellung $BRF.json ist leer oder nicht lesbar - die Zweitschrift $PFOLDER.backup.$BRF.json bleibt unveraendert."
+        elif (umask 077; cp "$PCONFIG/$BRF.json" "$BRZ.neu") 2>/dev/null && chmod 600 "$BRZ.neu" 2>/dev/null \
+             && mv -f "$BRZ.neu" "$BRZ" 2>/dev/null; then
             echo "<OK> Bridge-Einstellung gesichert: $PFOLDER.backup.$BRF.json"
         else
+            rm -f "$BRZ.neu" 2>/dev/null
             echo "<FAIL> Die Bridge-Einstellung $BRF.json liess sich NICHT sichern."
             FEHLER=1
         fi

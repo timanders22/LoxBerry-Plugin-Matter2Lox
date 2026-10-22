@@ -15,6 +15,14 @@
 # Schale den Befehl gar nicht aus. Ein Anhaengen ohne Inhalt frischt die
 # Aenderungszeit nicht auf, und die Protokollwartung raeumt eine alte Datei
 # weg (Regeln/06). Die regulaere Ausgabe bleibt still.
+#
+# Waechter der Befehlsbruecke (seit 0.9.44, Gruppe 8; Entwurf 3.9, E12) - als ERSTE Anweisung, vor dem
+# Waechter des Dienstes und dessen Startsperre: startet die Bruecke nach Boot und Update spaetestens nach einer
+# Minute, wenn "Befehle ueber MQTT annehmen" gesetzt ist, und haelt sie sonst an (befehlsbruecke.php --waechter:
+# misst zustand.json, nie waehrend einer Aktualisierung, hoechstens alle 600 s ein Neustart). Kein Start in den
+# Hakenskripten. Ausgabe nach /dev/null: die Bruecke protokolliert selbst.
+BBSH="REPLACELBPBINDIR/befehlsbruecke.sh"
+[ -f "$BBSH" ] && /bin/bash "$BBSH" waechter >/dev/null 2>&1
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
 touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
 /bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"

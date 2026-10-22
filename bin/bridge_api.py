@@ -29,6 +29,7 @@ keine Datei und gibt auf stderr nie einen Wert aus.
 import json
 import os
 import sys
+import time
 import urllib.parse
 
 FRIST = 10.0
@@ -70,8 +71,15 @@ class Sitzung:
         nr = self.nr
         self.ws.send(json.dumps({"id": nr, "src": "Matter2Lox", "dst": "Matterbridge",
                                  "method": methode, "params": params}))
+        # M2 (0.9.44, Pruefbericht): EINE Gesamtfrist fuer die Frage. Die matterbridge schickt laufend eigene
+        # Rundsendungen (id 0); bis 0.9.43 startete jede davon die Frist neu, und frage() kam nie zurueck
+        # (beendet erst durch den Aufrufer nach 15 s mit fehler=frist).
+        ende = time.monotonic() + FRIST
         while True:
-            roh = self.ws.recv(timeout=FRIST)
+            rest = ende - time.monotonic()
+            if rest <= 0:
+                raise TimeoutError("frist")
+            roh = self.ws.recv(timeout=rest)
             try:
                 d = json.loads(roh)
             except ValueError:

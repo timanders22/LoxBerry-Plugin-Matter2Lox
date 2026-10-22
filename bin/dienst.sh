@@ -247,11 +247,17 @@ marke_gilt() {
 # Verhalten bis 0.9.30; der Dienst sperrt ausserdem selbst (dienst.lock,
 # matter_dienst.py). Bauart Bewaesserung 0.9.35.
 MT_SPERRE_GEHALTEN=0
+# M9 (0.9.44, Pruefbericht; Hausform Chromecast4Lox NG 1.3.24 daemon/daemon:26): die Sperre liegt auf einer
+# eigenen Datei NEBEN dem Datenordner, nicht mehr auf $0. Ein Update ersetzt dienst.sh (neuer Inode), und zwei
+# Inodes heben die gegenseitige Sperre auf (Probe des Pruefberichts). Laesst sich die Datei nicht anlegen,
+# geht es wie bisher ohne Sperre weiter; die Deinstallation raeumt sie ab.
+STARTSPERRE="$LBHOMEDIR/data/plugins/$PNAME.startsperre"
 startsperre_nehmen() {
     [ "$MT_SPERRE_GEHALTEN" = "1" ] && return 0
     command -v flock >/dev/null 2>&1 || return 0
-    [ -r "$0" ] || return 0
-    exec 8<"$0"
+    touch "$STARTSPERRE" 2>/dev/null
+    [ -f "$STARTSPERRE" ] && [ -w "$STARTSPERRE" ] || return 0
+    { exec 8<>"$STARTSPERRE"; } 2>/dev/null || return 0
     if flock -w 15 8; then
         MT_SPERRE_GEHALTEN=1
         return 0
@@ -278,6 +284,11 @@ haengt() {
     hz=$(herzschlag_takt)
     [ "$hz" -gt 0 ] || return 1
     grenze=$((3 * hz))
+    # E1 (0.9.44, Pruefbericht zu M8): mindestens 180 s. Der erste Herzschlag kommt erst nach verbinden()
+    # und start_listening samt erstem Vollabbild (bis rund 40 s); bei einem Takt unter etwa 15 s hielt der
+    # Waechter einen gesunden Dienst sonst waehrend des Starts fuer haengend. Gleich der Waechtergrenze der
+    # Befehlsbruecke (BB_WACHE_GRENZE 180).
+    [ "$grenze" -lt 180 ] && grenze=180
     P=$(cat "$PID" 2>/dev/null)
     case "$P" in ''|*[!0-9]*) return 1 ;; esac
     lz=$(ps -o etimes= -p "$P" 2>/dev/null | tr -d ' ')

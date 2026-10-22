@@ -111,6 +111,34 @@ function mt_br_label()
     return mt_br_label_schluessel() . '=' . mt_paths()['plugin'];
 }
 
+/**
+ * M13 (0.9.44, Pruefbericht): einen liegengebliebenen Einmal-Container (<bridge>-npm, <bridge>-add) vor dem
+ * naechsten "docker run --name" entfernen - aber NUR, wenn er das eigene Label traegt (Hausregel: nur eigene
+ * Container anfassen, wie bin/bridge_eigen.sh). Ein fremder Container gleichen Namens bricht mit Meldung ab.
+ * Ein Rest entsteht, wenn mt_docker() nach der Frist nur den CLI-Prozess beendet: --rm raeumt erst, wenn der
+ * Container selbst endet. Rueckgabe array(ok, Meldung).
+ */
+function mt_br_rest_entfernen($name)
+{
+    list($da, $aus) = mt_docker('inspect --format ' . mt_sh_arg('{{json .Config.Labels}}') . ' ' . mt_sh_arg($name), 15);
+    if (!$da) {
+        // Kein Container dieses Namens (oder Docker antwortet nicht - dann scheitert der Lauf danach sichtbar).
+        return array(true, '');
+    }
+    $lab = json_decode(trim((string) $aus), true);
+    $k = mt_br_label_schluessel();
+    if (is_array($lab) && isset($lab[$k]) && is_string($lab[$k]) && $k . '=' . $lab[$k] === mt_br_label()) {
+        list($weg, $raus) = mt_docker('rm -f ' . mt_sh_arg($name), 15);
+        if ($weg) {
+            mt_log('Bridge: liegengebliebener Einmal-Container ' . $name . ' (eigenes Label) entfernt.');
+            return array(true, '');
+        }
+        return array(false, sprintf(mt_t('BRIDGE.V_REST_FEHL'), mt_e($name))
+            . ' <span class="sm-mono">' . mt_e(mt_br_log_filter(substr((string) $raus, 0, 300))) . '</span>');
+    }
+    return array(false, sprintf(mt_t('BRIDGE.V_REST_FREMD'), mt_e($name)));
+}
+
 /** Der Containername: <ordner>-bridge (eine Zweitinstallation matter2lox_01
  *  bekommt matter2lox_01-bridge). */
 function mt_br_name()
@@ -286,7 +314,8 @@ function mt_br_http($url, array $kopf, $frist)
         $body = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = $body === false ? curl_error($ch) : '';
-        curl_close($ch);
+        // M14 (0.9.44): wie mt_lib.php - unter PHP 8.5 ist curl_close() veraltet (Deprecated), ab 8.0 wirkungslos.
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         return array($body === false ? 0 : $code, $body === false ? '' : (string) $body, $fehler);
     }
     $ctx = stream_context_create(array('http' => array(
@@ -931,8 +960,18 @@ function mt_br_abweichung($ist = null)
     if ($ist['label'] !== $s['label']) {
         $ab[] = sprintf(mt_t('EINST.AB_LABEL'), $ist['label'] !== '' ? $ist['label'] : '-', $s['label']);
     }
+    /* M12 (0.9.44, Pruefbericht): beide Seiten ueber realpath verglichen, wie mt_container_abweichung() in
+     * mt_lib.php. Bis 0.9.43 Zeichenkette gegen Zeichenkette - "/a/b/../b" galt als Abweichung von "/a/b". */
+    $mt_echt = function ($q) {
+        $r = @realpath($q);
+        return $r !== false ? $r : $q;
+    };
+    $mt_ist_m = array();
+    foreach ($ist['mounts'] as $q => $z) {
+        $mt_ist_m[$mt_echt($q)] = $z;
+    }
     foreach ($s['mounts'] as $q => $z) {
-        if (!isset($ist['mounts'][$q]) || $ist['mounts'][$q] !== $z) {
+        if (!isset($mt_ist_m[$mt_echt($q)]) || $mt_ist_m[$mt_echt($q)] !== $z) {
             $ab[] = sprintf(mt_t('EINST.AB_MOUNT_FEHLT'), $q . ':' . $z);
         }
     }
@@ -1356,6 +1395,10 @@ function mt_br_vorbereiten(array &$stand, $ende)
         }
         $stand['schritt'] = 'br_npm';
         mt_ct_vorgang_schreiben($stand);
+        list($mt_rok, $mt_rgrund) = mt_br_rest_entfernen($name . '-npm');   // M13 (0.9.44)
+        if (!$mt_rok) {
+            return array(0, $mt_rgrund);
+        }
         list($ok, $aus) = mt_docker('run' . $einmal . ' --name ' . mt_sh_arg($name . '-npm')
             . ' -v ' . mt_sh_arg($f['ordner'] . '/Matterbridge:/root/Matterbridge')
             . ' --entrypoint npm ' . mt_sh_arg($abbild)
@@ -1375,6 +1418,10 @@ function mt_br_vorbereiten(array &$stand, $ende)
         $v = '';
         foreach (mt_br_soll()['mounts'] as $q => $z) {
             $v .= ' -v ' . mt_sh_arg($q . ':' . $z);
+        }
+        list($mt_rok, $mt_rgrund) = mt_br_rest_entfernen($name . '-add');   // M13 (0.9.44)
+        if (!$mt_rok) {
+            return array(0, $mt_rgrund);
         }
         list($ok, $aus) = mt_docker('run' . $einmal . ' --name ' . mt_sh_arg($name . '-add') . $v . ' ' . mt_sh_arg($abbild)
             . ' matterbridge --docker --add /root/Matterbridge/m2l/node_modules/matterbridge-loxone', 180);

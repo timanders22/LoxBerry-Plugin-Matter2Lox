@@ -124,6 +124,13 @@
  * Verbindung zum Matter-Server meldet UND der Herzschlag des Dienstes
  * hoechstens 3 x Takt alt ist (mt_ok_endpunkt()). ALTER bleibt daneben
  * unveraendert das Alter des Abbilds.
+ *
+ * Gruppe 8 (0.9.44): der ganze Endpunkt haengt am Haken "HTTP-Endpunkt fuer
+ * Loxone annehmen" (endpunkt_ein; neu aus, nach einem Update an) - sonst
+ * 403 GRUND=ENDPUNKT_AUS bzw. SELFTEST;OK=0;ERR=ENDPUNKT_AUS. Das Musterprojekt
+ * holt Werte und sendet Befehle ueber MQTT. Der Rumpf der schaltenden Aktionen
+ * und des Abrufs steht als mt_steuern() in mt_lib.php - dieselbe Funktion ruft
+ * die Befehlsbruecke; die Antworten sind byte-gleich die bis 0.9.43.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -139,6 +146,19 @@ header('Content-Type: text/plain; charset=utf-8');
  * Token hinterliess drei neue Dateien. Der Schalter false sagt der
  * Lesefunktion, dass sie hier nur lesen darf. */
 $mt_cfg = mt_config(false);
+
+/* Gruppe 8 (0.9.44, Entscheidung 1, E1): VOR der Tokenpruefung - lesend und
+ * schaltend, auch der Selbsttest. Legt nichts an. */
+if (!mt_endpunkt_an($mt_cfg)) {
+    http_response_code(403);
+    if (mt_get('selftest') === '1') {
+        echo "SELFTEST;OK=0;ERR=ENDPUNKT_AUS\n";
+        exit;
+    }
+    echo "FEHLER;OK=0;GRUND=ENDPUNKT_AUS\n";
+    echo "Der HTTP-Endpunkt ist ausgeschaltet. Reiter Einbindung in Loxone, Haken 'HTTP-Endpunkt fuer Loxone annehmen'.\n";
+    exit;
+}
 
 /* ---------------- Token ----------------
  *
@@ -297,44 +317,13 @@ if (strlen($mt_nutzlast) > 4096) {
     exit;
 }
 
-function mt_w($v)
-{
-    if ($v === null || $v === '' || !is_numeric($v)) {
-        return '-';
-    }
-    return (string) (0 + $v);
-}
-
-/**
- * Ein Feld des Abbilds, abgesichert.
- *
- * Das Abbild schreibt der Dienst; fehlt ein Schluessel (aeltere Fassung, halb
- * geschriebene Datei), ist das unter PHP 7.4 eine verschluckte Notice, unter
- * PHP 8 aber eine Warning - und die stuende MITTEN IN DER ANTWORTZEILE, die
- * der Miniserver auswertet. Deshalb geht jeder Zugriff hier durch.
- */
-function mt_f($g, $name, $leer = '')
-{
-    return is_array($g) && isset($g[$name]) ? $g[$name] : $leer;
-}
+/* mt_w() und mt_f() stehen seit 0.9.44 in mt_lib.php (wortgleich) - mt_steuern() braucht sie fuer
+ * beide Wege. */
 
 $mt_lox = mt_loxone();
 $mt_alle = mt_geraete();
 $mt_alter = mt_alter();
-$mt_knoten_unbekannt = false;
-if ($mt_knoten !== '') {
-    $mt_g = null;
-    foreach ($mt_alle as $mt_k => $mt_kandidat) {
-        if (isset($mt_kandidat['node_id']) && (string) $mt_kandidat['node_id'] === $mt_knoten) {
-            $mt_g = $mt_kandidat;
-            $mt_nr = (string) $mt_k;
-            break;
-        }
-    }
-    $mt_knoten_unbekannt = ($mt_g === null);
-} else {
-    $mt_g = isset($mt_alle[$mt_nr]) ? $mt_alle[$mt_nr] : null;
-}
+list($mt_g, $mt_nr, $mt_knoten_unbekannt) = mt_geraet_suchen($mt_alle, $mt_nr, $mt_knoten);
 
 /* ================= Lesende Aktionen ================= */
 
@@ -416,50 +405,29 @@ if ($mt_aktion === 'statusalle') {
  * ($mt_aktion !== 'abruf'). An einer Stelle geraeteunabhaengig behandelt, an
  * der anderen nicht.
  */
-$mt_global = array('abruf');
+/* Gruppe 8 (0.9.44, Entwurf 3.4, E11): ab hier steht der Rumpf als mt_steuern() in mt_lib.php - DIESELBE
+ * Funktion ruft die Befehlsbruecke (bin/befehle_zuordnung.php). Hier bleiben Parameter und Ausgabe. */
+$mt_e = array(
+    'aktion' => $mt_aktion, 'nr' => $mt_nr, 'geraet_angegeben' => $mt_geraet_angegeben,
+    'knoten' => $mt_knoten, 'endpunkt' => $mt_endpunkt, 'wert' => $mt_wert, 'x' => $mt_x, 'y' => $mt_y,
+    'pfad' => $mt_pfad, 'cluster' => $mt_cluster, 'name' => $mt_name, 'nutzlast' => $mt_nutzlast,
+    // Geprueft wird 'saettigung' erst in mt_steuern(), an derselben Stelle wie bis 0.9.43.
+    'saettigung_roh' => isset($_GET['saettigung']) ? $_GET['saettigung'] : null,
+);
 
-if (in_array($mt_aktion, $mt_global, true)) {
-    /* Eine angegebene, aber unbekannte Knotennummer wird gemeldet, nicht
-     * uebergangen. Bis 0.9.16 loeste sie still einen Gesamtabruf aus - der
-     * Aufrufer bekam OK=1 und hielt seinen Knoten fuer ausgelesen. */
-    if ($mt_knoten_unbekannt) {
-        http_response_code(400);
-        printf("SET;OK=0;GRUND=KNOTEN_UNBEKANNT;KNOTEN=%s;N=%d\n", $mt_knoten, count($mt_alle));
-        exit;
+/** Die Antwort von mt_steuern() ausgeben: Statuscode (200 wird nicht gesetzt), Zeilen, Ende. */
+function mt_antwort(array $r)
+{
+    if ($r['code'] !== 200) {
+        http_response_code($r['code']);
     }
-    /* 0.9.35 (Nr. 7): dasselbe fuer eine angegebene, aber unbekannte
-     * Geraetenummer. Bis 0.9.34 loeste sie still einen Gesamtabruf aus. */
-    if ($mt_knoten === '' && $mt_geraet_angegeben && $mt_g === null) {
-        http_response_code(400);
-        printf("SET;OK=0;GRUND=GERAET_UNBEKANNT;GERAET=%s;N=%d\n", $mt_nr, count($mt_alle));
-        exit;
-    }
-    if (mt_dienst_pid() === 0) {
-        http_response_code(503);
-        echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-        echo "Der Dienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-        exit;
-    }
-    /* Ohne Geraeteangabe wird der ganze Bestand neu geholt, mit Angabe genau
-     * ein Knoten neu ausgelesen. Ein Interview dauert laenger als ein
-     * Bestandsabgleich - deshalb bekommt der Einzelfall mehr Zeit. */
-    $mt_auftrag = array('aktion' => $mt_aktion);
-    $mt_frist = null;
-    // 0.9.35 (Nr. 7): $mt_geraet_angegeben statt isset() - ein leeres
-    // &geraet= war bis 0.9.34 "Geraet 1".
-    if ($mt_g !== null && ($mt_geraet_angegeben || $mt_knoten !== '')) {
-        $mt_auftrag['knoten'] = (int) mt_f($mt_g, 'node_id', 0);
-        $mt_frist = 20;
-    }
-    // 0.9.35 (Nr. 3): die schon gelesene Konfiguration mitgeben - ohne sie
-    // las mt_befehl_absetzen() mt_config() MIT Schreibrecht.
-    list($mt_erg, $mt_meldung) = mt_befehl_absetzen($mt_auftrag, $mt_frist, $mt_cfg);
-    if ($mt_erg === 0) {
-        http_response_code(500);
-    }
-    printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $mt_erg, $mt_aktion,
-        str_replace(array("\r", "\n", ';'), ' ', $mt_meldung));
+    echo $r['text'];
     exit;
+}
+
+if ($mt_aktion === 'abruf') {
+    mt_endpunkt_merken();
+    mt_antwort(mt_steuern($mt_e, $mt_cfg));
 }
 
 if ($mt_g === null) {
@@ -498,348 +466,8 @@ if ($mt_aktion === 'status') {
 
 /* ================= Schaltende Aktionen ================= */
 
-/* 'abruf' wird hier NICHT mehr geprueft - es kommt gar nicht bis hierher,
- * sondern wird oben unter den geraeteunabhaengigen Aktionen erledigt. Die
- * frueher noetige Ausnahme ($mt_aktion !== 'abruf') ist damit entfallen. */
-if (empty($mt_cfg['steuerung_ein'])) {
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
-    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
-    exit;
-}
-
-/* ---------------- Schloss und Rohwege (0.9.35, Nr. 6) ----------------
- *
- * Der Cluster, den ein Rohweg anspricht: bei befehl &cluster=, bei attribut
- * die Mitte von &pfad=E/C/A. -1 fuer alle anderen Aktionen. */
-$mt_roh_cluster = -1;
-if ($mt_aktion === 'befehl' && $mt_cluster !== '') {
-    $mt_roh_cluster = (int) $mt_cluster;
-} elseif ($mt_aktion === 'attribut' && $mt_pfad !== '') {
-    $mt_roh_cluster = (int) explode('/', $mt_pfad)[1];
-}
-/* Gesperrt im Rohweg (VERTRAG, Endpunkt UND Dienst): 31 AccessControl,
- * 48 GeneralCommissioning, 49 NetworkCommissioning, 60 AdministratorCommissioning,
- * 62 OperationalCredentials, 63 GroupKeyManagement. Wer darueber schreibt,
- * kann das Geraet aus der Fabric werfen, ein Anlernfenster oeffnen oder
- * fremden Controllern Rechte geben - dafuer gibt es die Knoepfe der
- * Oberflaeche, nicht einen unangemeldeten Endpunkt. */
-if (in_array($mt_roh_cluster, array(31, 48, 49, 60, 62, 63), true)) {
-    http_response_code(403);
-    printf("SET;OK=0;AKTION=%s;GRUND=CLUSTER_GESPERRT;CLUSTER=%d\n", $mt_aktion, $mt_roh_cluster);
-    exit;
-}
-/* Schloesser verlangen den eigenen Haken - auch ueber die Rohwege. Bis
- * 0.9.34 pruefte das nur der Dienst; der Endpunkt nahm den Befehl an und
- * meldete erst nach der Wartezeit die Ablehnung. */
-if (($mt_aktion === 'sperren' || $mt_aktion === 'entsperren' || $mt_roh_cluster === 257)
-        && empty($mt_cfg['schloss_ein'])) {
-    http_response_code(403);
-    printf("SET;OK=0;AKTION=%s;GRUND=SCHLOSS_AUS\n", $mt_aktion);
-    echo "Schloesser zu schalten ist gesperrt. Reiter Einstellungen, Haken 'Schloesser schalten zulassen'.\n";
-    exit;
-}
-
-if (mt_dienst_pid() === 0) {
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Dienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
-/* Eine Zahl aus dem Wertfeld; Komma und Punkt sind gleich. */
-function mt_ep_zahl($w)
-{
-    return (float) str_replace(',', '.', (string) $w);
-}
-
-/* Ausserhalb des erlaubten Bereichs: abweisen, nicht kappen. */
-function mt_ep_bereich($aktion, $v, $klein, $gross)
-{
-    if ($v < $klein || $v > $gross) {
-        http_response_code(400);
-        printf("SET;OK=0;AKTION=%s;GRUND=WERT_BEREICH;MIN=%s;MAX=%s\n", $aktion, $klein, $gross);
-        exit;
-    }
-}
-
-$mt_befehl = array(
-    'aktion'   => $mt_aktion,
-    'knoten'   => (int) mt_f($mt_g, 'node_id', 0),
-    'endpunkt' => (int) $mt_endpunkt,
-);
-if (in_array($mt_aktion, array('helligkeit', 'farbtemperatur', 'rollo', 'lamelle',
-                               'soll_heizen', 'soll_kuehlen', 'betriebsart',
-                               'farbe', 'farbton', 'saettigung', 'luefter'), true)) {
-    if ($mt_wert === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=WERT_FEHLT\n";
-        exit;
-    }
-    $mt_befehl['wert'] = mt_ep_zahl($mt_wert);
-    // 0.9.35 (Nr. 5): helligkeit bleibt 0..100 (0 = aus), lamelle 0..100.
-    if ($mt_aktion === 'helligkeit' || $mt_aktion === 'lamelle') {
-        mt_ep_bereich($mt_aktion, $mt_befehl['wert'], 0, 100);
-    }
-    // Bei 'farbe' darf zusaetzlich die Saettigung mitkommen. Fehlt sie, setzt
-    // der Dienst 100 % - das ist die volle Farbe, nicht Weiss.
-    if ($mt_aktion === 'farbe') {
-        $mt_saet = mt_param('saettigung', '/^[0-9]{1,3}$/', '');
-        if ($mt_saet !== '') {
-            $mt_befehl['saettigung'] = (int) $mt_saet;
-        }
-    }
-} elseif ($mt_aktion === 'loxfarbe') {
-    /* 0.9.35 (Nr. 5): der Ausgang des Loxone-Lichtbausteins als ganze
-     * Zahl. Zerlegt wird im Dienst (20bbbtttt Lumitech, sonst BBBGGGRRR);
-     * hier nur die Grenzen. */
-    if ($mt_wert === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=WERT_FEHLT\n";
-        exit;
-    }
-    $mt_befehl['wert'] = (int) $mt_wert;
-    mt_ep_bereich($mt_aktion, $mt_befehl['wert'], 0, 299999999);
-} elseif ($mt_aktion === 'farbe_xy') {
-    // 0.9.35 (Nr. 5): Farbort der CIE-Normfarbtafel, beide 0..1.
-    if ($mt_x === '' || $mt_y === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=WERT_FEHLT\n";
-        exit;
-    }
-    $mt_befehl['x'] = mt_ep_zahl($mt_x);
-    $mt_befehl['y'] = mt_ep_zahl($mt_y);
-    mt_ep_bereich($mt_aktion, $mt_befehl['x'], 0, 1);
-    mt_ep_bereich($mt_aktion, $mt_befehl['y'], 0, 1);
-} elseif ($mt_aktion === 'identify') {
-    // Ohne Angabe macht sich das Geraet 15 s lang bemerkbar.
-    if ($mt_wert !== '') {
-        $mt_befehl['wert'] = mt_ep_zahl($mt_wert);
-    }
-} elseif ($mt_aktion === 'attribut') {
-    if ($mt_pfad === '' || $mt_wert === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=PFAD_ODER_WERT_FEHLT\n";
-        exit;
-    }
-    $mt_befehl['pfad'] = $mt_pfad;
-    $mt_befehl['wert'] = mt_ep_zahl($mt_wert) == (int) $mt_wert
-        ? (int) $mt_wert : mt_ep_zahl($mt_wert);
-} elseif ($mt_aktion === 'befehl') {
-    if ($mt_cluster === '' || $mt_name === '') {
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=CLUSTER_ODER_NAME_FEHLT\n";
-        exit;
-    }
-    $mt_befehl['cluster'] = (int) $mt_cluster;
-    $mt_befehl['name'] = $mt_name;
-    if ($mt_nutzlast !== '') {
-        // Die Nutzlast wird NICHT gefiltert, sondern nur auf gueltiges JSON
-        // geprueft - ein hartes Filtern zerstoerte gueltige Nutzlasten.
-        $mt_nl = json_decode($mt_nutzlast);
-        if ($mt_nl === null && strtolower(trim($mt_nutzlast)) !== 'null') {
-            http_response_code(400);
-            echo "SET;OK=0;GRUND=NUTZLAST_KEIN_JSON\n";
-            exit;
-        }
-        /* 0.9.35 (Nr. 6): die Nutzlast sind die Felder des Befehls - also
-         * ein JSON-Objekt. Eine Liste, Zahl oder null liess der Dienst bis
-         * 0.9.34 erst beim Senden scheitern. */
-        if (!is_object($mt_nl)) {
-            http_response_code(400);
-            echo "SET;OK=0;GRUND=NUTZLAST_KEIN_OBJEKT\n";
-            exit;
-        }
-        $mt_befehl['nutzlast'] = $mt_nutzlast;
-    }
-}
-
-/* ---------------- Schlossbremse (0.9.35, Nr. 1) ----------------
- *
- * ENTSCHEIDUNGEN Nr. 15 (Nachtrag Verbesserungsbau 30.09.2026), neu
- * gefasst: eine Tuer soll ein flatternder Loxone-Ausgang nicht im
- * Sekundentakt aufsperren. Gebremst wird nur noch die unsichere Richtung.
- * Licht, Dimmen und alle anderen Befehle bekommen kein 429; fuer ihre
- * Sollwerte gilt die Gleichwert-Unterdrueckung darunter (Nr. 19).
- *
- * Gilt fuer sperren/entsperren und fuer den Rohweg befehl &cluster=257 mit
- * LockDoor (wie sperren) bzw. UnlockDoor, UnlockWithTimeout, UnlatchDoor
- * (wie entsperren) - sonst liesse sich die Bremse ueber den Rohweg umgehen.
- * Je Geraet (Knoten und Endpunkt):
- *   - sperren geht IMMER hinaus: nie UNVERAENDERT, nie 429. Sperren ist die
- *     sichere Richtung und LockDoor idempotent. Bis 0.9.34 konnte ein
- *     sperren kurz nach einem entsperren mit 429 abgewiesen werden - die
- *     Tuer blieb offen. Auch ein unlesbarer Merker haelt sperren nicht auf.
- *   - entsperren bleibt UNVERAENDERT (200, UNVERAENDERT=1) nur, wenn derselbe
- *     Befehl vor weniger als 60 s gelungen ist UND das Abbild das Schloss als
- *     entriegelt meldet (schloss 2 oder 3). Wer in der Zwischenzeit am
- *     Schloss von Hand zugesperrt hat, sperrt mit dem naechsten entsperren
- *     wieder auf - bis 0.9.34 wurde es 60 s lang verschluckt.
- *   - entsperren innerhalb von 10 s nach einem ANDEREN Schlossbefehl
- *     (sperren): 429, GRUND=BREMSE, WARTEN_S.
- *   - ist der Merker nicht zu oeffnen oder zu sperren, faellt entsperren
- *     geschlossen aus: 503, GRUND=BREMSE_MERKER - es wird nichts gesendet.
- * Gemerkt wird nur, was der Dienst AUSGEFUEHRT hat (OK=1). Bis 0.9.34 auch
- * OK=2 - ein verworfener oder ueberholter Befehl sperrte dann den Weg.
- * Die Sperre bleibt bis zum Ende des Befehls gehalten; zwei gleichzeitige
- * Schlossbefehle laufen nacheinander. */
-$mt_schlossart = '';
-if ($mt_aktion === 'sperren' || $mt_aktion === 'entsperren') {
-    $mt_schlossart = $mt_aktion;
-} elseif ($mt_aktion === 'befehl' && (int) $mt_cluster === 257) {
-    if ($mt_name === 'LockDoor') {
-        $mt_schlossart = 'sperren';
-    } elseif (in_array($mt_name, array('UnlockDoor', 'UnlockWithTimeout', 'UnlatchDoor'), true)) {
-        $mt_schlossart = 'entsperren';
-    }
-}
-$mt_bfh = null;
-$mt_bm = array();
-$mt_bschl = (int) $mt_befehl['knoten'] . '|' . (int) $mt_befehl['endpunkt'];
-if ($mt_schlossart !== '') {
-    $mt_bremse = mt_paths()['datadir'] . '/schlossbremse.json';
-    $mt_bfh = @fopen($mt_bremse, 'c+e');
-    if ($mt_bfh === false || !@flock($mt_bfh, LOCK_EX)) {
-        if ($mt_bfh !== false) {
-            fclose($mt_bfh);
-        }
-        $mt_bfh = null;
-        mt_log_gebremst('schlossbremse', 'Die Merkerdatei der Schlossbremse (' . $mt_bremse . ') laesst '
-            . 'sich nicht oeffnen oder sperren - entsperren wird mit 503 abgewiesen, bis das '
-            . 'behoben ist (sperren geht ohne Bremse hinaus).');
-        if ($mt_schlossart === 'entsperren') {
-            http_response_code(503);
-            echo "SET;OK=0;AKTION=" . $mt_aktion . ";GRUND=BREMSE_MERKER\n";
-            exit;
-        }
-    } else {
-        $mt_bm = json_decode((string) stream_get_contents($mt_bfh), true);
-        if (!is_array($mt_bm)) {
-            $mt_bm = array();
-        }
-        if ($mt_schlossart === 'entsperren' && isset($mt_bm[$mt_bschl]) && is_array($mt_bm[$mt_bschl])
-                && isset($mt_bm[$mt_bschl]['t'])) {
-            $mt_seit = time() - (int) $mt_bm[$mt_bschl]['t'];
-            $mt_bw = (string) (isset($mt_bm[$mt_bschl]['w']) ? $mt_bm[$mt_bschl]['w'] : '');
-            // Was das Abbild ueber das Schloss sagt (DoorLock LockState:
-            // 0 nicht ganz verriegelt, 1 verriegelt, 2 entriegelt, 3 offen).
-            $mt_bep = (array) mt_f((array) mt_f($mt_g, 'endpunkte', array()), (string) $mt_endpunkt, array());
-            $mt_bist = mt_f($mt_bep, 'schloss', null);
-            $mt_entriegelt = is_numeric($mt_bist) && in_array((int) $mt_bist, array(2, 3), true);
-            if ($mt_bw === 'entsperren' && $mt_seit >= 0 && $mt_seit < 60 && $mt_entriegelt) {
-                flock($mt_bfh, LOCK_UN);
-                fclose($mt_bfh);
-                printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;IST=%s\n", $mt_aktion, mt_w($mt_bist));
-                exit;
-            }
-            if ($mt_bw !== 'entsperren' && $mt_seit >= 0 && $mt_seit < 10) {
-                flock($mt_bfh, LOCK_UN);
-                fclose($mt_bfh);
-                http_response_code(429);
-                printf("SET;OK=0;AKTION=%s;GRUND=BREMSE;WARTEN_S=%d\n", $mt_aktion, 10 - $mt_seit);
-                exit;
-            }
-        }
-    }
-}
-
-/* Die Schlossbremse loesen (ohne zu schreiben) - fuer jeden Ausstieg
- * zwischen hier und dem Absetzen. */
-function mt_ep_bremse_loesen($fh)
-{
-    if (is_resource($fh)) {
-        @flock($fh, LOCK_UN);
-        fclose($fh);
-    }
-}
-
-/* ---------------- Gleichwert-Unterdrueckung (X-7, B-Nachzug 01.10.2026) ----------------
- *
- * ENTSCHEIDUNGEN Nr. 19; Vorbild die Schlossbremse darueber, EVCC 0.9.37
- * und Marstek 1.1.19. Derselbe Sollwert fuer dasselbe Geraet (Knoten und
- * Endpunkt) innerhalb von 60 s geht nicht erneut hinaus: 200 mit
- * UNVERAENDERT=1, gesendet wird nichts. Ein anderer Wert geht sofort hinaus,
- * kein 429. Ereignisse und Rohwege werden nie unterdrueckt, fuehren den
- * Merker aber nach (mt_gleichwert_verfaellt()).
- *
- * 0.9.35 (Nr. 4): gesperrt wird nur noch DIESES Geraet, und zwar waehrend
- * des ganzen Befehls (mt_gleichwert_oeffnen()); die gemeinsame Merkerdatei
- * nur kurz zum Lesen und zum Nachfuehren. Laesst sich der Merker nicht
- * oeffnen, faellt ein Sollwert-Befehl geschlossen aus (503
- * GRUND=GLEICHWERT_MERKER); haelt ein anderer Aufruf dasselbe Geraet
- * laenger als etwa 2 s, 503 GRUND=BESCHAEFTIGT. Ein Ereignis geht in beiden
- * Faellen trotzdem hinaus - ohne Merker fallen die Sollwerte ohnehin
- * geschlossen aus. */
-$mt_gw_fh = null;
-$mt_gw_geraet = (int) $mt_befehl['knoten'] . '|' . (int) $mt_befehl['endpunkt'];
-$mt_gw_schl = mt_gleichwert_schluessel($mt_aktion);
-$mt_gw_wert = mt_gleichwert_wert($mt_befehl);
-$mt_gw_betrifft = mt_gleichwert_betrifft($mt_aktion);
-if ($mt_gw_betrifft) {
-    $mt_gw_grund = '';
-    list($mt_gw_fh, $mt_gw_grund) = mt_gleichwert_oeffnen($mt_gw_geraet);
-    $mt_gw_merker = false;
-    if ($mt_gw_fh !== false) {
-        list($mt_gw_merker, $mt_gw_grund) = mt_gleichwert_lesen();
-    }
-    if ($mt_gw_merker === false && $mt_gw_schl !== '') {
-        mt_gleichwert_freigeben($mt_gw_fh);
-        mt_ep_bremse_loesen($mt_bfh);
-        if ($mt_gw_grund !== 'BESCHAEFTIGT') {
-            mt_log_gebremst('gleichwert', 'Die Merkerdatei der Gleichwert-Unterdrueckung (' . mt_gleichwert_datei()
-                . ') oder eine Sperrdatei in ' . mt_gleichwert_ordner() . ' laesst sich nicht oeffnen oder '
-                . 'sperren - Sollwert-Befehle werden mit 503 abgewiesen, bis das behoben ist.');
-        }
-        http_response_code(503);
-        printf("SET;OK=0;AKTION=%s;GRUND=%s\n", $mt_aktion,
-            $mt_gw_grund === 'BESCHAEFTIGT' ? 'BESCHAEFTIGT' : 'GLEICHWERT_MERKER');
-        exit;
-    }
-    if ($mt_gw_merker !== false
-            && mt_gleichwert_seit($mt_gw_merker, $mt_gw_geraet, $mt_gw_schl, $mt_gw_wert) >= 0) {
-        mt_gleichwert_freigeben($mt_gw_fh);
-        mt_ep_bremse_loesen($mt_bfh);
-        printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1\n", $mt_aktion);
-        exit;
-    }
-}
-
-// 0.9.35 (Nr. 2/3): drittes Element "ist"; die gelesene Konfiguration geht
-// mit, damit nichts mit Schreibrecht gelesen wird.
-list($mt_erg, $mt_meldung, $mt_istwert) = array_pad(mt_befehl_absetzen($mt_befehl, null, $mt_cfg), 3, null);
-if ($mt_erg === 0) {
-    http_response_code(500);
-}
-if ($mt_gw_betrifft) {
-    /* Nachgefuehrt wird, solange die Geraetesperre noch gehalten ist - der
-     * naechste Aufruf an dieses Geraet sieht schon den neuen Stand. Gemerkt
-     * wird der eigene Wert nur bei OK=1 (nicht bei 2: ueberholt oder ohne
-     * Ergebnis). */
-    mt_gleichwert_nachfuehren((int) $mt_befehl['knoten'], $mt_gw_geraet, $mt_aktion, $mt_gw_wert,
-        $mt_erg === 1);
-    mt_gleichwert_freigeben($mt_gw_fh);
-}
-if (is_resource($mt_bfh)) {
-    /* 0.9.35 (Nr. 1): gemerkt wird nur, was der Dienst ausgefuehrt hat
-     * (OK=1). Laenge statt "!== false" gegen eine gekuerzte Schreibung
-     * (Regeln/03). */
-    if ($mt_erg === 1) {
-        $mt_bm[$mt_bschl] = array('w' => $mt_schlossart, 't' => time());
-        $mt_bjs = (string) json_encode($mt_bm);
-        if (!(ftruncate($mt_bfh, 0) && rewind($mt_bfh)
-              && @fwrite($mt_bfh, $mt_bjs) === strlen($mt_bjs) && fflush($mt_bfh))) {
-            mt_log_gebremst('schlossbremse', 'Die Merkerdatei der Schlossbremse liess sich nicht '
-                . 'schreiben - die Bremse erkennt den letzten Schlossbefehl nicht.');
-        }
-    }
-    mt_ep_bremse_loesen($mt_bfh);
-}
-/* 0.9.35 (Nr. 9): der Ist-Wert nach dem Befehl, wenn der Dienst ihn
- * mitliefert - vor MELDUNG, weil MELDUNG freier Text ist und am Ende steht. */
-$mt_ist_teil = '';
-if ($mt_istwert !== null && $mt_istwert !== '') {
-    $mt_ist_teil = ';IST=' . (is_numeric($mt_istwert) ? mt_w($mt_istwert)
-        : str_replace(array("\r", "\n", ';', '='), ' ', (string) $mt_istwert));
-}
-printf("SET;OK=%d;AKTION=%s%s;MELDUNG=%s\n", $mt_erg, $mt_aktion, $mt_ist_teil,
-    str_replace(array("\r", "\n", ';'), ' ', $mt_meldung));
+/* Steuerungsfreigabe, Rohweg-Sperre, Schlossfreigabe, Dienst, Bereiche,
+ * Schlossbremse, Gleichwert-Unterdrueckung und das Absetzen: mt_steuern()
+ * in mt_lib.php (bis 0.9.43 standen sie hier, Zeilen 499-845). */
+mt_endpunkt_merken();
+mt_antwort(mt_steuern($mt_e, $mt_cfg));

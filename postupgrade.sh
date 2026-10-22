@@ -17,14 +17,45 @@
 #
 # Hier faellt nur noch die Marke "Aktualisierung laeuft", als Fangnetz:
 # postinstall.sh entfernt sie selbst (nach dem Dienststart und per trap).
-if [ -n "${5:-}" ] && [ -d "${5:-}" ]; then
-    MARKE="$5/data/plugins/${3:-matter2lox}.upgrade_laeuft"
-elif [ -n "${LBHOMEDIR:-}" ] && [ -d "${LBHOMEDIR:-}" ]; then
-    MARKE="$LBHOMEDIR/data/plugins/${3:-matter2lox}.upgrade_laeuft"
-else
-    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt - die Marke 'Aktualisierung laeuft' wurde nicht geprueft."
+# ---- Wurzelblock (M3, seit 0.9.44; in preinstall, postinstall, preupgrade und postupgrade woertlich gleich) ----
+# Bauform Alexa NG 1.0.6 (ax_ist_wurzel) und Intercom 2.2.23 (ic_wurzel). Ordner aus $3 mit Schranke ('' . .. und
+# alles mit / oder ..); Wurzel aus $5, sonst LBHOMEDIR, sonst vom Ablageort aufwaerts gesucht (Regeln/06). Eine
+# Wurzel gilt nur mit config/plugins, data/plugins UND config/system/general.json - ein Rest alter Prueflaeufe hat
+# die dritte nie. Bis 0.9.43 prueften postinstall und preupgrade $5/LBHOMEDIR nur auf config/plugins, postupgrade
+# nur -d, und preinstall wies den Ordnernamen "." nicht ab (Pruefbericht M3: mit "." trafen chown -R und chmod
+# ganz data/plugins).
+# mt_wurzel setzt PFOLDER und BASE; Rueckgabe 0 = erkannt, 1 = Ordnername unzulaessig, 2 = keine LoxBerry-Wurzel.
+mt_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] && [ -f "$1/config/system/general.json" ]
+}
+mt_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if mt_ist_wurzel "$v"; then printf '%s\n' "$v"; return 0; fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+mt_wurzel() {
+    PFOLDER="${1:-matter2lox}"
+    case "$PFOLDER" in
+        ''|.|..|*/*|*..*) return 1 ;;
+    esac
+    BASE=""
+    for MT_K in "$2" "$LBHOMEDIR"; do
+        if mt_ist_wurzel "$MT_K"; then BASE="$MT_K"; break; fi
+    done
+    [ -n "$BASE" ] || BASE=$(mt_wurzel_suchen)
+    [ -n "$BASE" ] || return 2
+    return 0
+}
+# ---- Ende Wurzelblock ----
+if ! mt_wurzel "$3" "$5"; then
+    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt oder Ordnername unzulaessig - die Marke 'Aktualisierung laeuft' wurde nicht geprueft."
     exit 0
 fi
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 if [ -f "$MARKE" ]; then
     rm -f "$MARKE" 2>/dev/null && echo "<INFO> Die Marke 'Aktualisierung laeuft' lag noch und wurde entfernt."
 fi
