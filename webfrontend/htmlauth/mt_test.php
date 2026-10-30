@@ -1389,6 +1389,10 @@ function mt_pruefungen()
     $zeilen[] = mt_pruefzeile($hs[0], mt_t('TEST.F_HERZSCHLAG'), $hs[1]);
     $nm = mt_pruef_namen();
     $zeilen[] = mt_pruefzeile($nm[0], mt_t('TEST.F_NAMEN'), $nm[1]);
+    /* Nachtwelle N8 (0.9.45): stehen unter MQTT-Gateway V2 die Haken der Hakenliste mit dem richtigen Noncached?
+     * Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein Strich. */
+    $v2 = mt_v2_haken_lage($cfg);
+    $zeilen[] = mt_pruefzeile($v2[0] === 2 ? -1 : $v2[0], mt_t('TEST.F_V2_HAKEN'), mt_e($v2[1]));
 
     return $zeilen;
 }

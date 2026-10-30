@@ -1757,13 +1757,15 @@ if ($mt_rahmen) {
 <h2><?= mt_e(mt_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= mt_t('EINST.DIENST_ERKLAERUNG') ?></p>
 <div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= mt_t('LEGENDE.LESEN') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
-<?php /* 'start' ist orange, nicht gruen: die Legende sagt bei Gruen
-   "fragt nur ab, veraendert nichts", und ein Dienststart tut beides nicht.
-   Trennlinie ist "kann den Betrieb stoeren". */
-foreach (array('start' => 'sm-b-aktion', 'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
+<?php /* Nachtwelle N8 (0.9.45, Sammelstelle 23.10. #5): 'start' ist GRUEN. Regeln/04 (entschieden 01.08.2026):
+   Trennlinie ist "kann den Betrieb stoeren" - Dienststart gruen; Anhalten und Neustarten orange. Von 0.9.35 bis
+   0.9.44 stand 'start' hier orange (Auslegung "alles Ausloesende orange", die nicht gilt). Die Legende dieser
+   Reihe nennt jetzt beide Farben. */
+foreach (array('start' => 'sm-b-lesen', 'restart' => 'sm-b-aktion', 'stop' => 'sm-b-aktion') as $mt_b => $mt_farbe) { ?>
   <form action="index.php" method="post">
     <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">

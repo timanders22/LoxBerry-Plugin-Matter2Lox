@@ -11,6 +11,23 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.45
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne neue Funktion und ohne Änderung an Werten, Themen
+und Befehlen:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung, bisher 1.0.0): `stop` legt als root nichts mehr an,
+  `befehle_start.log` wird gekappt, eine leere Uhr startet den Dienst nicht, der Befehlsordner ist nur für
+  das Plugin lesbar (0700). Die Vorlage der MQTT-Befehle baut das Plugin selbst; sie hatte schon
+  Windows-Zeilenenden (CRLF). Ein Neuimport ist nicht nötig.
+* **Reiter Test, neue Zeile „Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?“** Unter MQTT-Gateway V2
+  liest das Plugin `config/system/subscriptions.json` und nennt jeden Datenpunkt der Hakenliste, der dort nicht
+  angehakt ist, und jeden, bei dem „Noncached“ nicht stimmt (`status/ok` und `geraet<N>/erreichbar` brauchen es, die übrigen nicht; geprüft werden nur die Haken der
+  Liste, deren Gerät es in dieser Anlage gibt).
+  Unter Gateway V1 und bei ausgeschalteter MQTT-Veröffentlichung heißt die Zeile „trifft nicht zu“.
+* **Knopf „Dienst starten“ grün** (Reiter Einstellungen), wie die Hausregel es sagt: Starten stört den Betrieb
+  nicht; Anhalten und Neustarten bleiben orange.
+
 ## Neu in 0.9.44
 
 Werte und Befehle über MQTT – der Weg des LoxBerry-Plugins Musterprojekts. Der HTTP-Endpunkt mit Token bleibt für
