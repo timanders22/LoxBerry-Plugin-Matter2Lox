@@ -788,6 +788,9 @@ function mt_br_sperren($stufe, $zahl, $zeile)
         }
         if (function_exists('notify')) {
             $z = mt_br_zugang();
+            /* bis 0.9.45: das erste Laden des SDK laeuft hier im Bereich dieser Funktion, loxberry_system.php setzt dabei $p (Zeile 18). Danach war $p['plugin'] leer,
+             * notify_ext() verwarf die Meldung ("Notification: Missing parameters" auf stderr), und im Cron war es immer das erste Laden. */
+            $p = mt_paths();
             @notify($p['plugin'], 'bridge', sprintf(mt_t('BRIDGE.MELDUNG_GESPERRT'), $z['benutzer']), true);
         }
     }
