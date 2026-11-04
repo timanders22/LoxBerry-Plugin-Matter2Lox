@@ -151,6 +151,19 @@ $mt_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  * Ausgenommen sind nur die Downloads: sie liefern ihre Datei unmittelbar.
  * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
+/* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ($mt_post && isset($_POST['ansage_test'])) {
+    list($mt_at, $mt_ag) = mt_ansage_test();
+    if ($mt_at) { $mt_meldungen[] = mt_e(mt_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $mt_fehler[] = mt_e(mt_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $mt_ag); }
+    $mt_tab = 'tab-settings';
+}
+if ($mt_post && isset($_POST['ansage_speichern'])) {
+    list($mt_ao, $mt_af, $mt_ah) = mt_ansage_post($_POST);
+    if ($mt_af) { foreach ($mt_af as $mt_ax) { $mt_fehler[] = mt_e($mt_ax); } }
+    elseif ($mt_ao) { $mt_meldungen[] = mt_e(trim(mt_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $mt_ah))); }
+    else { $mt_fehler[] = mt_e(mt_t('ANSAGEPLUGIN.M_FEHL')); }
+    $mt_tab = 'tab-settings';
+}
 if ($mt_post && isset($_POST['vorlage'])) {
     // 'alle' = Sammelvorlage, 'aus<N>' = virtuelle Ausgaenge, '<N>' = Eingaenge
     // Nachtrag: eine Liste statt Text ist kein Geraetewunsch (keine PHP-Warnung).
@@ -1039,7 +1052,7 @@ if ($mt_post && isset($_POST['mt_sichern'])) {
         '_hinweis' => mt_t('EINST.SICH_KOPF'),
         '_stand'   => date('Y-m-d H:i:s'),
         '_fassung' => mt_fassung(),
-    ) + mt_config();
+    ) + mt_ansage_fuer_sicherung(mt_config());     // nie ein Sprechtoken
     /* X-3 (Verbesserungsbau 30.09.2026): wuerde das eigene Zurueckspielen
      * einen gespeicherten Wert abweisen, sagt es der Kopf der Datei - nur die
      * Namen, nie die Werte. Geliefert wird trotzdem vollstaendig; die gelbe
@@ -2195,6 +2208,7 @@ $mt_leer_knopf = function ($nr) {
 </div>
 <?php } ?>
 
+<?= mt_ansage_form_html(mt_fmt() . '<input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= mt_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= mt_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= mt_t('EINST.SICH_WARNUNG') ?></div>

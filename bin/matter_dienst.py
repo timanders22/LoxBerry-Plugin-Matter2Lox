@@ -52,7 +52,9 @@ import os
 import re
 import signal
 import socket
+import subprocess
 import sys
+import threading
 import time
 import types
 import uuid
@@ -3036,6 +3038,30 @@ def abbild_stoerung(cfg: dict, fehler: str) -> None:
 _ZAEHLER: dict = {"n": 0}
 
 
+_ANSAGE_STAND = {}
+
+
+def ansage_lage(anlass, gestoert, name="", frist=0):
+    """Seit 0.9.47: den Zustand eines Anlasses an mt_ansage.php geben. Ausgabeart, Nachtruhe, Sperre und Schalter prueft die gemeinsame Sprachausgabe.
+    Die Flanke und den ersten Lauf merkt die Bruecke. name: nur fuer die Unterscheidung, nie eine Geraetekennung im Satz. Ein Fehler stoert den Dienst nicht."""
+    schluessel = anlass + "|" + name
+    alt = _ANSAGE_STAND.get(schluessel)
+    jetzt = time.monotonic()
+    if alt is not None and alt[0] == bool(gestoert) and (not gestoert or jetzt - alt[1] < 60):
+        return
+    _ANSAGE_STAND[schluessel] = (bool(gestoert), jetzt)
+    pfad = os.path.dirname(os.path.abspath(__file__))
+    aufruf = ["php", os.path.join(pfad, "mt_ansage.php"), anlass, "1" if gestoert else "0", os.path.basename(pfad), name, str(int(frist))]
+
+    def laufen():
+        try:
+            subprocess.run(aufruf, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    threading.Thread(target=laufen, name="ansage", daemon=True).start()
+
+
 def herzschlag_paare(ok: int) -> dict:
     """Die Themen des Lebenszeichens - EINE Stelle fuer den Versand und fuer
     die Selbstauskunft --themen."""
@@ -3063,6 +3089,7 @@ def herzschlag_senden(cfg: dict, ok: int) -> None:
     # lebt. Die Prozessnummer allein beantwortet das nicht - ein Prozess kann
     # dastehen und nichts mehr tun.
     zustand_schreiben(herzschlag=int(time.time()), herzschlag_ok=int(ok))
+    ansage_lage("ausfall", not ok, "", 1800)     # nur der Ausfall, nie ein Taster oder Ereignis
     if not cfg.get("mqtt_ein"):
         return
     praefix = mqtt_praefix(cfg)
