@@ -363,7 +363,7 @@ WS_SHA256="f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f"
 WS_OK=0
 if [ -f "$WS_WHEEL" ] && [ "$(sha256sum "$WS_WHEEL" 2>/dev/null | cut -d' ' -f1)" = "$WS_SHA256" ]; then
     echo "<INFO> Installiere websockets aus dem Plugin (ohne Internet) ..."
-    if "$VENV/bin/python3" -m pip install --no-index --no-cache-dir --disable-pip-version-check \
+    if timeout 900 "$VENV/bin/python3" -m pip install --no-index --no-cache-dir --disable-pip-version-check \
             "$WS_WHEEL" </dev/null; then
         WS_OK=1
     else
@@ -374,7 +374,7 @@ else
 fi
 if [ "$WS_OK" = 0 ]; then
     echo "<INFO> Installiere websockets aus dem Internet ..."
-    if ! "$VENV/bin/python3" -m pip install --no-cache-dir --disable-pip-version-check \
+    if ! timeout 2400 "$VENV/bin/python3" -m pip install --no-cache-dir --disable-pip-version-check \
             "websockets>=13,<16" </dev/null; then
         echo "<FAIL> Plugin installiert, aber nicht lauffaehig: das Paket websockets liess sich nicht installieren."
         echo "<FAIL> Ohne dieses eine Paket kann der Dienst nicht mit dem Matter-Server reden."

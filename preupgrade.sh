@@ -107,6 +107,21 @@ else
     echo "<FAIL> nicht uebernommen. Ist data/plugins voll oder schreibgeschuetzt?"
     FEHLER=1
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
 
 # Gruppe 8 (0.9.44, E12): die Befehlsbruecke anhalten (stop beendet Dienst UND mosquitto_sub). Beim Umstieg von
 # 0.9.43 gibt es sie noch nicht - dann nichts. Die Marke von eben haelt den Waechter in cron.01min bis zum Ende
@@ -235,7 +250,7 @@ if [ -f "$CF" ]; then
     BK_STUFE=0
     [ -f "$BK" ] && BK_STUFE=$(mt_inhalt "$BK")
     if [ "$CF_STUFE" -ge 1 ] && [ "$CF_STUFE" -ge "$BK_STUFE" ]; then
-        if cp -p "$CF" "$BK"; then
+        if zs_hinlegen "$CF" "$BK"; then
             chmod 600 "$BK"
             echo "<OK> Konfiguration gesichert: $PFOLDER.backup.json"
         else
@@ -270,7 +285,7 @@ d = json.load(open(sys.argv[1], encoding="utf-8"))
 sys.exit(0 if isinstance(d, dict) and d else 1)' "$PCONFIG/$BRF.json" 2>/dev/null; then
             echo "<INFO> Die Bridge-Einstellung $BRF.json ist leer oder nicht lesbar - die Zweitschrift $PFOLDER.backup.$BRF.json bleibt unveraendert."
         elif (umask 077; cp "$PCONFIG/$BRF.json" "$BRZ.neu") 2>/dev/null && chmod 600 "$BRZ.neu" 2>/dev/null \
-             && mv -f "$BRZ.neu" "$BRZ" 2>/dev/null; then
+             && cmp -s "$PCONFIG/$BRF.json" "$BRZ.neu" && mv -f "$BRZ.neu" "$BRZ" 2>/dev/null; then
             echo "<OK> Bridge-Einstellung gesichert: $PFOLDER.backup.$BRF.json"
         else
             rm -f "$BRZ.neu" 2>/dev/null
@@ -328,7 +343,7 @@ fi
 NRALT="$PDATA/nummern.json"
 NRNEU="$BASE/data/plugins/$PFOLDER.nummern.json"
 if [ -f "$NRALT" ] && [ ! -f "$NRNEU" ]; then
-    if cp -p "$NRALT" "$NRNEU"; then
+    if zs_hinlegen "$NRALT" "$NRNEU"; then
         echo "<OK> Geraetenummern gesichert: $PFOLDER.nummern.json"
     else
         echo "<FAIL> Die Geraetenummern liessen sich NICHT sichern."
