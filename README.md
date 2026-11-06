@@ -11,6 +11,10 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.49
+
+- Gemeinsames Sprachmodul 1.4.2: Wird eine Ansage bewusst nicht gesprochen (gerade eben schon gesagt, gesperrt oder Ruhezeit), steht das im Protokoll jetzt so – und nicht mehr als Fehler.
+
 ## Neu in 0.9.48
 
 - **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
