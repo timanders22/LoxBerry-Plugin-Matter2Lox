@@ -186,7 +186,7 @@ ORDNER_BEFEHLE = PDATA / "befehle"
 # darin als Befehl - er verwarf zustand.json/waechter.json beim Start und beanspruchte jede frische
 # zustand.json als "Unbekannte Aktion" (Probe des Entwurfs). Befehle traegt nur, was mt_befehl_absetzen()
 # seit 0.9.35 schreibt: sprintf("%010d%06d_%s", ...) mit vier Zufallsbytes. Aeltere Namen gibt es nicht - der
-# Datenordner wird bei jedem Update geleert. Die Stammfassung bleibt byte-gleich.
+# Datenordner wird bei jedem Update geleert. MQTT-Sprachen betreffen nur den Transport der Befehlsbruecke.
 KENNUNG = re.compile(r"^[0-9]{16}_[0-9a-f]{8}$")
 ORDNER_ANTWORTEN = PDATA / "antworten"
 # 0.9.39: das offene Kopplungsfenster (Codes, Ende). Geschrieben von der
@@ -207,6 +207,7 @@ VORGABEN = {
     "bluetooth_adapter": 0,
     "mqtt_ein": 1,
     "mqtt_topic": "matter",
+    "mqtt_language": "de",
     "roh_ein": 0,
     "steuerung_ein": 0,
     "aktionstoken": "",
@@ -700,6 +701,31 @@ def mqtt_zustand() -> dict:
     }
 
 
+_MQTT_ENGLISH = None
+
+
+def mqtt_language(cfg: dict) -> str:
+    return "en" if cfg.get("mqtt_language") == "en" else "de"
+
+
+def mqtt_topic(topic: str, cfg=None, decode=False) -> str:
+    """Translate relative wire names; internal keys and payloads never change."""
+    if mqtt_language(cfg or {}) != "en":
+        return topic
+    global _MQTT_ENGLISH
+    if _MQTT_ENGLISH is None:
+        _MQTT_ENGLISH = tabelle().get("mqtt_english")
+    if not _MQTT_ENGLISH:
+        raise ValueError("MQTT English schema missing")
+    mapping = {v: k for k, v in _MQTT_ENGLISH.items()} if decode else _MQTT_ENGLISH
+    parts = []
+    for part in topic.split("/"):
+        match = re.fullmatch(r"device([0-9]+|N)" if decode else r"geraet([0-9]+|N)", part)
+        parts.append((("geraet" if decode else "device") + match[1]) if match
+                     else mapping.get(part, part))
+    return "/".join(parts)
+
+
 def mqtt_praefix(cfg: dict) -> str:
     """Das Themenpraefix, gesaeubert.
 
@@ -1157,7 +1183,7 @@ def _altlast_vorher_leeren(schluessel: str, praefix: str) -> bool:
     return False
 
 
-def mqtt_senden(paare: dict, praefix: str, allein_leeren=(), retain_alle: bool = False) -> set:
+def mqtt_senden(paare: dict, praefix: str, allein_leeren=(), retain_alle: bool = False, cfg=None) -> set:
     """Veroeffentlichen. Rueckgabe: die Schluessel, die WIRKLICH hinausgingen.
 
     Bis 0.9.16 gab die Funktion nichts zurueck, und der Aufrufer schrieb den
@@ -1195,6 +1221,7 @@ def mqtt_senden(paare: dict, praefix: str, allein_leeren=(), retain_alle: bool =
                 continue    # fehlender Wert: nichts senden statt einer erfundenen 0
             sauber_k = re.sub(r"[^A-Za-z0-9_/\-]", "_", str(k))
             befehl = "retain" if (retain_alle or ist_zustand(sauber_k)) else "publish"
+            sauber_k = mqtt_topic(sauber_k, cfg)
             nachricht = (f"{befehl} {sauber_praefix}/{sauber_k} "
                          f"{mqtt_wert_saeubern(v)}").encode("utf-8")
             try:
@@ -2915,7 +2942,7 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
             # (Regeln/07). Bis 0.9.30 sagte dieser Kommentar mehr zu, als
             # sendto() belegen kann; die Luecke schliesst der Vollversand alle
             # 30 Minuten (M4). Bis 0.9.16 stand der Merker sogar vor dem Senden.
-            for k in mqtt_senden(senden, praefix, allein_leeren=allein):
+            for k in mqtt_senden(senden, praefix, allein_leeren=allein, cfg=cfg):
                 if k in paare:
                     _LETZTE_PAARE[k] = str(paare[k])
                 else:
@@ -2974,7 +3001,7 @@ def gateway_dateien_pflegen(cfg: dict, paare=None) -> None:
     # sind nach einem Wiederverbinden fort; die Datei darf dann nicht fehlen.
     taster = {k.rsplit("/", 1)[0] for k in (paare or {})
               if k.count("/") == 2 and k.rsplit("/", 1)[-1].startswith(("taster_", "taste"))}
-    reset = sorted({gateway_name(f"{praefix}/{basis}/{t}") for basis in taster
+    reset = sorted({gateway_name(praefix + "/" + mqtt_topic(f"{basis}/{t}", cfg)) for basis in taster
                     for t in GW_RESET_THEMEN})
     for datei, zeilen in ((DATEI_GW_ABOS, abos), (DATEI_GW_RESET, reset)):
         inhalt = "".join(z + "\n" for z in zeilen)
@@ -3028,7 +3055,7 @@ def abbild_stoerung(cfg: dict, fehler: str) -> None:
         # Nur das Signal, nicht die Werte: die stehen im Broker und sind das
         # Letzte, was gemessen wurde. Sie jetzt zu ueberschreiben hiesse, eine
         # Stoerung als Messwert auszugeben.
-        if "ok" in mqtt_senden({"ok": 0}, praefix):
+        if "ok" in mqtt_senden({"ok": 0}, praefix, cfg=cfg):
             _LETZTE_PAARE["ok"] = "0"
 
 
@@ -3101,7 +3128,7 @@ def herzschlag_senden(cfg: dict, ok: int) -> None:
     # weiss der Dienst nichts Neues ueber die Geraete.
     if ok:
         paare.update(_ERREICHBAR)
-    mqtt_senden(paare, praefix)
+    mqtt_senden(paare, praefix, cfg=cfg)
 
 
 def zustand_schreiben(**felder) -> None:
@@ -3683,9 +3710,16 @@ LEEREN_PAUSE_S = 1.0
 
 def _leer_passt(praefix: str):
     themen = "|".join(re.escape(t) for t in tuple(ZUSTANDSTHEMEN) + ALTE_ZUSTANDSTHEMEN)
-    muster = re.compile(r"^%s/geraet[0-9]+/((name|knoten|erreichbar)|[0-9]+/(%s))$"
-                        % (re.escape(praefix), themen))
-    return lambda t: bool(muster.match(t))
+    muster = re.compile(r"^geraet[0-9]+/((name|knoten|erreichbar)|[0-9]+/(%s))$" % themen)
+    def passt(topic):
+        if not topic.startswith(praefix + "/"):
+            return False
+        relative = topic[len(praefix) + 1:]
+        if relative.startswith("device"):
+            canonical = mqtt_topic(relative, {"mqtt_language": "en"}, decode=True)
+            return mqtt_topic(canonical, {"mqtt_language": "en"}) == relative and bool(muster.fullmatch(canonical))
+        return bool(muster.fullmatch(relative))
+    return passt
 
 
 def mqtt_leer_themen_aus_bestand(praefix: str) -> list:
@@ -3715,7 +3749,8 @@ def mqtt_leer_themen_aus_bestand(praefix: str) -> list:
                     t = f"{praefix}/geraet{nr}/{ep}/{thema}"
                     if passt(t):
                         themen.append(t)
-    return themen
+    return sorted(set(themen + [praefix + "/" + mqtt_topic(t[len(praefix) + 1:],
+                         {"mqtt_language": "en"}) for t in themen]))
 
 
 # M5 (Durchgang 30.09.2026): jedes je benutzte Praefix wird gemerkt, NEBEN
@@ -3762,16 +3797,55 @@ def praefix_vergessen(praefix: str) -> bool:
     return _praefixe_schreiben([p for p in liste if p != praefix])
 
 
+DATEI_MQTT_SCHEMA = PCONFIG.parent / (PNAME + ".mqtt_schema.json")
+_MQTT_SCHEMA = {"active": None, "cleaned": False, "retry": 0.0}
+
+
+def mqtt_schema_pflegen(cfg: dict) -> bool:
+    if not cfg.get("mqtt_ein"):
+        return False
+    prefix, language = mqtt_praefix(cfg), mqtt_language(cfg)
+    active = (prefix, language)
+    changed = _MQTT_SCHEMA["active"] != active
+    if changed:
+        saved = json_lesen(DATEI_MQTT_SCHEMA)
+        previous = _MQTT_SCHEMA["active"] or (saved.get("prefix", prefix), saved.get("language", "de"))
+        pending = previous != active or bool(saved.get("pending"))
+        _MQTT_SCHEMA.update(active=active, cleaned=not pending, retry=0.0)
+        # A language switch is not a new button press. Keep event deduplication across the full resend.
+        pulses = {k: v for k, v in _LETZTE_PAARE.items() if k.rsplit("/", 1)[-1] in EREIGNIS_IMPULSE}
+        _LETZTE_PAARE.clear()
+        _LETZTE_PAARE.update(pulses)
+        _ERREICHBAR.clear()
+        if pending:
+            # Persist the cleanup obligation before the new schema starts publishing.
+            json_schreiben(DATEI_MQTT_SCHEMA, {"prefix": prefix, "language": language, "pending": True}, 0o600)
+    # Only the opposite device namespace is removed; no current topics, raw data, commands or shared house topics.
+    if not _MQTT_SCHEMA["cleaned"] and time.time() >= _MQTT_SCHEMA["retry"]:
+        root = prefix + ("/geraet" if language == "en" else "/device")
+        known = _leer_passt(prefix)
+        fits = lambda t: t.startswith(root) and known(t)
+        _, confirmed = themen_leeren([prefix + "/#"], fits,
+            lambda: [t for t in mqtt_leer_themen_aus_bestand(prefix) if fits(t)],
+            "MQTT previous language", 1, 0, lambda t: _LOG.info("%s", t))
+        _MQTT_SCHEMA["cleaned"] = confirmed
+        if confirmed:
+            json_schreiben(DATEI_MQTT_SCHEMA, {"prefix": prefix, "language": language, "pending": False}, 0o600)
+        _MQTT_SCHEMA["retry"] = time.time() + 60
+    return changed
+
+
 def praefix_pflegen(cfg: dict) -> bool:
     """Rueckgabe True: das Praefix hat gewechselt, das naechste Abbild muss
     voll hinausgehen. Beim ersten Aufruf je Prozess (Dienststart) werden die
     gemerkten, nicht mehr gueltigen Praefixe abgeraeumt."""
     if not cfg.get("mqtt_ein"):
         return False
+    schema_changed = mqtt_schema_pflegen(cfg)
     neu = mqtt_praefix(cfg)
     alt = _PRAEFIX["aktiv"]
     if alt == neu:
-        return False
+        return schema_changed
     _PRAEFIX["aktiv"] = neu
     if not praefix_merken(neu):
         melde_gebremst("praefix_merken", f"MQTT: das Praefix {neu} liess sich nicht in "
@@ -3786,7 +3860,7 @@ def praefix_pflegen(cfg: dict) -> bool:
         _rc, bestaetigt = praefix_leeren(p, melden=lambda t: _LOG.info("%s", t))
         if bestaetigt:
             praefix_vergessen(p)
-    return alt is not None
+    return schema_changed or alt is not None
 
 
 def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> int:
@@ -3905,13 +3979,13 @@ def geraet_leeren(nr: int, runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PA
     liste = [aktuell] + [p for p in praefixe_gemerkt() if p != aktuell]
     rc = 0
     for p in liste:
-        kopf = f"{p}/geraet{int(nr)}/"
+        kopf = (f"{p}/geraet{int(nr)}/", f"{p}/device{int(nr)}/")
         grund = _leer_passt(p)
         r, _bestaetigt = themen_leeren(
-            [f"{kopf}#"],
+            [k + "#" for k in kopf],
             lambda t, g=grund, k=kopf: t.startswith(k) and g(t),
             lambda p=p, k=kopf: [t for t in mqtt_leer_themen_aus_bestand(p) if t.startswith(k)],
-            kopf, runden, pause, melden)
+            " / ".join(kopf), runden, pause, melden)
         rc = max(rc, r)
     rc_haus = haus_leeren(nur_geraet=int(nr), runden=runden, pause=pause, melden=melden)
     # 0.9.35 (D2): der feste Name unter haus/tuer/ wird freigegeben - beim

@@ -546,6 +546,14 @@ if ($mt_post && isset($_POST['speichern'])) {
 if ($mt_post && isset($_POST['save_mqtt'])) {
     $mt_mcfg = mt_config();
     $mt_praefix_vorher = mt_mqtt_praefix($mt_mcfg);
+    $mt_language_vorher = mt_mqtt_language($mt_mcfg);
+    $mt_language = isset($_POST['mqtt_language']) ? $_POST['mqtt_language'] : $mt_language_vorher;
+    if (!is_string($mt_language) || !in_array($mt_language, array('de', 'en'), true)) {
+        $mt_fehler[] = mt_t('MQTT.LANGUAGE_ERROR');
+        $mt_bean[] = 'mqtt_language';
+    } else {
+        $mt_mcfg['mqtt_language'] = $mt_language;
+    }
     $mt_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     /* Der Haken fuer die Rohdurchreichung steht in DIESEM Formular (Reiter
      * MQTT) und wird deshalb auch hier gelesen. Bis 0.9.16 las ihn der
@@ -615,6 +623,9 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
              * Deinstallation raeumt unter beiden ab, und ein laufender Dienst
              * sendet unter dem neuen den vollen Satz und raeumt das alte ab. */
             $mt_praefix_nachher = mt_mqtt_praefix($mt_mcfg);
+            if ($mt_language_vorher !== mt_mqtt_language($mt_mcfg)) {
+                $mt_meldungen[] = mt_e(mt_t('MQTT.LANGUAGE_CHANGED'));
+            }
             if ($mt_praefix_nachher !== $mt_praefix_vorher) {
                 mt_praefix_merken(array($mt_praefix_vorher, $mt_praefix_nachher));
                 $mt_meldungen[] = mt_e(sprintf(mt_t('MQTT.PRAEFIX_GEWECHSELT'),
@@ -622,7 +633,7 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
             }
             /* Gruppe 8 (0.9.44, Entwurf 3.9): die Befehlsbruecke gleich starten bzw. anhalten (nach einem
              * Praefixwechsel neu); sonst tut es der Waechter in cron.01min binnen einer Minute. */
-            $mt_bbr = mt_bruecke_schalten($mt_praefix_nachher !== $mt_praefix_vorher);
+            $mt_bbr = mt_bruecke_schalten($mt_praefix_nachher !== $mt_praefix_vorher || $mt_language_vorher !== mt_mqtt_language($mt_mcfg));
             $mt_bbs = mt_bruecke_satz($mt_bbr);
             if ($mt_bbs !== '') {
                 if (in_array($mt_bbr[0], array('ein', 'aus'), true)) {
@@ -2986,6 +2997,33 @@ if ($mt_fz) { ?>
   </label>
 </div>
 <div class="sm-feld">
+  <label for="mqtt_language"><?= mt_e(mt_t('MQTT.LANGUAGE')) ?></label>
+  <select data-role="none" id="mqtt_language" name="mqtt_language" aria-describedby="mqtt-language-help mqtt-language-warning" data-saved-language="<?= mt_e(mt_mqtt_language($mt_cfg)) ?>"<?= mt_markierung('save_mqtt', 'mqtt_language') ?>>
+    <?php foreach (array('de' => mt_t('MQTT.LANGUAGE_DE'), 'en' => mt_t('MQTT.LANGUAGE_EN')) as $mt_lc => $mt_ln) { ?>
+    <option value="<?= mt_e($mt_lc) ?>" <?= mt_eingabe('save_mqtt', 'mqtt_language', mt_mqtt_language($mt_cfg)) === $mt_lc ? 'selected' : '' ?>><?= mt_e($mt_ln) ?></option>
+    <?php } ?>
+  </select>
+  <div class="sm-hilfe" id="mqtt-language-help"><?= mt_e(mt_t('MQTT.LANGUAGE_HELP')) ?></div>
+  <div class="sm-warnung" id="mqtt-language-warning">
+    <b><?= mt_e(mt_t('MQTT.LANGUAGE_WARNING_TITLE')) ?></b><br>
+    <?= mt_e(mt_t('MQTT.LANGUAGE_WARNING')) ?>
+    <p id="mqtt-language-pending" role="status" aria-live="polite"<?= mt_eingabe('save_mqtt', 'mqtt_language', mt_mqtt_language($mt_cfg)) === mt_mqtt_language($mt_cfg) ? ' hidden' : '' ?>><b><?= mt_e(mt_t('MQTT.LANGUAGE_PENDING')) ?></b></p>
+  </div>
+</div>
+<script>
+(function () {
+  var choice = document.getElementById('mqtt_language');
+  var pending = document.getElementById('mqtt-language-pending');
+  if (!choice || !pending) { return; }
+  function updateLanguageNotice() {
+    pending.hidden = choice.value === choice.getAttribute('data-saved-language');
+  }
+  choice.addEventListener('change', updateLanguageNotice);
+  window.addEventListener('pageshow', updateLanguageNotice);
+  updateLanguageNotice();
+})();
+</script>
+<div class="sm-feld">
   <label for="mqtt_topic"><?= mt_e(mt_t('EINST.L_MQTT_TOPIC')) ?></label>
   <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= mt_e(mt_eingabe('save_mqtt', 'mqtt_topic', $mt_cfg['mqtt_topic'])) ?>"<?= mt_markierung('save_mqtt', 'mqtt_topic') ?> placeholder="matter">
 </div>
@@ -3019,7 +3057,7 @@ if ($mt_fz) { ?>
     <input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= !empty(mt_eingabe('save_mqtt', 'befehle_mqtt_ein', $mt_cfg['befehle_mqtt_ein'])) ? 'checked' : '' ?>>
     <?= mt_e(mt_t('BEFEHL.L_EIN')) ?>
   </label>
-  <div class="sm-hilfe"><?= sprintf(mt_t('BEFEHL.H_EIN'), '<span class="sm-mono">' . mt_e(mt_mqtt_praefix($mt_cfg) . '/befehl/#') . '</span>') ?></div>
+  <div class="sm-hilfe"><?= sprintf(mt_t('BEFEHL.H_EIN'), '<span class="sm-mono">' . mt_e(mt_mqtt_praefix($mt_cfg) . '/' . mt_mqtt_topic('befehl/#', $mt_cfg)) . '</span>') ?></div>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
@@ -3078,13 +3116,13 @@ if ($mt_fz) { ?>
    (mt_themen_fest()), gegen die auch die Pruefzeile im Reiter Test die
    Themen des Dienstes haelt. */
 foreach (mt_themen_fest() as $mt_ft => $mt_fi) { ?>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e($mt_fi[0] . $mt_ft) ?></span></td><td><?= mt_e(mt_retain_text($mt_ft)) ?></td><td><?= mt_t($mt_fi[1]) ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e(mt_mqtt_topic($mt_fi[0] . $mt_ft, $mt_cfg)) ?></span></td><td><?= mt_e(mt_retain_text($mt_ft)) ?></td><td><?= mt_t($mt_fi[1]) ?></td></tr>
 <?php } ?>
 <?php /* Gruppe 8 (0.9.44): die Themen der Befehlsbruecke - status/befehle sendet die Bruecke selbst. */ ?>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/status/befehle</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_STATUS_BEFEHLE') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/befehl/&lt;Befehl&gt;/quittung</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_QUITTUNG') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/&lt;Endpunkt&gt;/&lt;Thema&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
-<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/geraetN/roh/&lt;Pfad&gt;</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e(mt_mqtt_topic('status/befehle', $mt_cfg)) ?></span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_STATUS_BEFEHLE') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e(mt_mqtt_topic('befehl/<command>/quittung', $mt_cfg)) ?></span></td><td><?= mt_e(mt_t('MQTT.RETAIN_NEIN')) ?></td><td><?= mt_t('MQTT.B_QUITTUNG') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e(mt_mqtt_topic('geraetN/<endpoint>/<topic>', $mt_cfg)) ?></span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_WERT') ?></td></tr>
+<tr><td><span class="sm-mono"><?= mt_e($mt_cfg['mqtt_topic']) ?>/<?= mt_e(mt_mqtt_topic('geraetN/roh/<path>', $mt_cfg)) ?></span></td><td><?= mt_e(mt_t('MQTT.RETAIN_TABELLE')) ?></td><td><?= mt_t('MQTT.B_ROH') ?></td></tr>
 <?php /* Tuer-1: ein eigener Baum, unabhaengig vom Praefix - nur mit dem Haken
    "Tueren und Schloesser zusaetzlich unter dem Haus-Thema melden". */ ?>
 <tr><td><span class="sm-mono">haus/tuer/&lt;Name&gt;/offen</span></td><td><?= mt_e(mt_t('MQTT.RETAIN_JA')) ?></td><td><?= mt_t('MQTT.B_TUER_OFFEN') ?></td></tr>
@@ -3105,7 +3143,7 @@ foreach (mt_themen_fest() as $mt_ft => $mt_fi) { ?>
     foreach ((array) $mt_d['attribute'] as $mt_at => $mt_a) { ?>
 <tr><td><span class="sm-mono"><?= mt_e($mt_d['name']) ?></span></td>
     <td><span class="sm-mono">E/<?= mt_e($mt_cl) ?>/<?= mt_e($mt_at) ?></span></td>
-    <td><span class="sm-mono"><?= mt_e($mt_a['thema']) ?></span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_mqtt_topic($mt_a['thema'], $mt_cfg)) ?></span></td>
     <td><?= mt_e(mt_retain_text($mt_a['thema'])) ?></td>
     <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
     <td><?= mt_t($mt_a['text']) ?></td></tr>
@@ -3119,7 +3157,7 @@ foreach ((array) (isset($mt_tabelle['ereignisthemen']['themen'])
         ? $mt_tabelle['ereignisthemen']['themen'] : array()) as $mt_a) { ?>
 <tr><td><span class="sm-mono">Switch</span></td>
     <td><span class="sm-mono"><?= mt_e(mt_t('MQTT.T_EREIGNIS')) ?></span></td>
-    <td><span class="sm-mono"><?= mt_e($mt_a['thema']) ?></span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_mqtt_topic($mt_a['thema'], $mt_cfg)) ?></span></td>
     <td><?= mt_e(mt_retain_text($mt_a['thema'])) ?></td>
     <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
     <td><?= mt_t($mt_a['text']) ?></td></tr>
@@ -3135,7 +3173,7 @@ foreach ((array) (isset($mt_tabelle['abgeleitete_themen']['themen'])
         ? $mt_tabelle['abgeleitete_themen']['themen'] : array()) as $mt_a) { ?>
 <tr><td><span class="sm-mono">ColorControl</span></td>
     <td><span class="sm-mono"><?= mt_e(mt_t('MQTT.T_AUSGERECHNET')) ?></span></td>
-    <td><span class="sm-mono"><?= mt_e($mt_a['thema']) ?></span></td>
+    <td><span class="sm-mono"><?= mt_e(mt_mqtt_topic($mt_a['thema'], $mt_cfg)) ?></span></td>
     <td><?= mt_e(mt_retain_text($mt_a['thema'])) ?></td>
     <td><?= mt_e(mt_t('UMR.' . strtoupper($mt_a['typ']))) ?></td>
     <td><?= mt_t($mt_a['text']) ?></td></tr>
@@ -3187,7 +3225,7 @@ $mt_v2text = function ($k) {
 <table class="sm-tbl" id="mt_hakenliste">
 <tr><th>#</th><th><?= mt_e(mt_t('LOX.T_NAME_GATEWAY')) ?></th><th><?= mt_e(mt_t('LOX.T_V2')) ?></th></tr>
 <?php foreach ($mt_lh as $mt_hi => $mt_hz) { ?>
-<tr><td><?= (int) $mt_hi + 1 ?></td><td><span class="sm-mono"><?= mt_e(mt_gateway_name($mt_lpr . '/' . $mt_hz[0])) ?></span></td><td><?= mt_e($mt_hz[1] !== '' ? $mt_v2text($mt_hz[1]) : mt_t('LOX.V2_HAKEN')) ?></td></tr>
+<tr><td><?= (int) $mt_hi + 1 ?></td><td><span class="sm-mono"><?= mt_e(mt_gateway_name($mt_lpr . '/' . mt_mqtt_topic($mt_hz[0], $mt_cfg))) ?></span></td><td><?= mt_e($mt_hz[1] !== '' ? $mt_v2text($mt_hz[1]) : mt_t('LOX.V2_HAKEN')) ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -3232,7 +3270,7 @@ $mt_v2text = function ($k) {
 </div>
 
 <div class="sm-step" id="befehle_loxone"><b><?= mt_e(mt_t('LOX.MQ3_TITEL')) ?></b><br>
-<?= sprintf(mt_t('LOX.MQ3_TEXT'), '<span class="sm-mono">' . mt_e($mt_lpr . '/befehl/#') . '</span>') ?>
+<?= sprintf(mt_t('LOX.MQ3_TEXT'), '<span class="sm-mono">' . mt_e($mt_lpr . '/' . mt_mqtt_topic('befehl/#', $mt_cfg)) . '</span>') ?>
 <?php if (empty($mt_cfg['befehle_mqtt_ein'])) { ?>
 <div class="sm-warnung"><?= mt_t('LOX.MQ3_HAKEN_AUS') ?></div>
 <?php } ?>
@@ -3251,7 +3289,7 @@ $mt_v2text = function ($k) {
     } else {
         $mt_bw = $mt_bz['art'] === 'schalter' ? '0 / 1' : '1';
     } ?>
-<tr><td><?= mt_e($mt_bz['titel']) ?></td><td><span class="sm-mono"><?= mt_e(str_replace(array('{geraet}', '{ep}'), array('geraet<N>', '<E>'), $mt_bz['thema'])) ?></span></td><td><span class="sm-mono"><?= mt_e($mt_bw) ?></span></td><td><?= mt_e(mt_t($mt_bz['eingreifend'] ? 'BEFEHL.T_JA_ZWEITER' : 'BEFEHL.T_NEIN')) ?></td><td><?= (int) $mt_bz['sperre_s'] ?> s</td></tr>
+<tr><td><?= mt_e($mt_bz['titel']) ?></td><td><span class="sm-mono"><?= mt_e(str_replace(array('{geraet}', '{ep}'), array(mt_mqtt_language($mt_cfg) === 'en' ? 'device<N>' : 'geraet<N>', '<E>'), $mt_bz['thema'])) ?></span></td><td><span class="sm-mono"><?= mt_e($mt_bw) ?></span></td><td><?= mt_e(mt_t($mt_bz['eingreifend'] ? 'BEFEHL.T_JA_ZWEITER' : 'BEFEHL.T_NEIN')) ?></td><td><?= (int) $mt_bz['sperre_s'] ?> s</td></tr>
 <?php } ?>
 </table>
 </div>
@@ -3335,14 +3373,14 @@ $mt_v2text = function ($k) {
    Verschluss aus dem Reiter Einstellungen, und eine Schleife hier haette
    ihn ueberschrieben. */
 foreach (mt_status_felder() as $mt_sfeld => $mt_info) { ?>
-<tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_sfeld) ?></span></td>
+<tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e(mt_loxone_key($mt_sfeld, $mt_cfg)) ?></span></td>
     <td><span class="sm-mono"><?= mt_e(mt_check($mt_sfeld)) ?></span></td><td>&mdash;</td>
     <td><?= mt_t($mt_info[1]) ?></td></tr>
 <?php }
 foreach ((array) $mt_feld($mt_g, 'endpunkte', array()) as $mt_ep => $mt_felder) {
     foreach ((array) $mt_felder as $mt_thema => $mt_w) {
         $mt_marke = strtoupper($mt_ep . '_' . $mt_thema); ?>
-<tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e($mt_marke) ?></span></td>
+<tr><td><span class="sm-mono">MATTER_<?= mt_e($mt_nr) ?>_<?= mt_e(strtoupper($mt_ep . '_' . mt_mqtt_topic($mt_thema, $mt_cfg))) ?></span></td>
     <td><span class="sm-mono"><?= mt_e(mt_check($mt_marke)) ?></span></td>
     <td><span class="sm-mono"><?= mt_e(mt_endpunkt_adresse('wert', $mt_nr) . '&endpunkt=' . $mt_ep . '&thema=' . $mt_thema) ?></span></td>
     <td><?= mt_e(mt_thema_text($mt_thema, $mt_tabelle)) ?></td></tr>
@@ -3601,8 +3639,11 @@ function mt_bausteinliste($mt_praefix)
         foreach ($mt_s[2] as $mt_i => $mt_z) {
             $mt_c = array_pad(explode(' | ', $mt_z[0], 4), 4, '');
             if (isset($mt_z[1]) && $mt_z[1] === 'gw' && strpos($mt_c[1], 'matter_') === 0) {
-                $mt_c[1] = $mt_gw . '_' . substr($mt_c[1], strlen('matter_'));
+                $mt_c[1] = $mt_gw . '_' . mt_mqtt_gateway_example(substr($mt_c[1], strlen('matter_')));
             }
+            $mt_c[2] = preg_replace_callback('#publish matter/([a-zA-Z0-9_/-]+)#', function ($m) {
+                return 'publish matter/' . mt_mqtt_topic($m[1]);
+            }, $mt_c[2]);
             $mt_c[2] = str_replace(array('publish matter/', ' matter/#'),
                                    array('publish ' . $mt_tp . '/', ' ' . $mt_tp . '/#'), $mt_c[2]);
             $mt_zeilen[] = array_merge(array($mt_i + 1), $mt_c);

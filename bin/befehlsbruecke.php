@@ -430,6 +430,9 @@ function bb_einstellungen(array $z)
     if (!is_array($e) || !isset($e['praefix'])) { return null; }
     return array(
         'praefix' => (string) $e['praefix'],
+        'transport_id' => isset($e['transport_id']) ? (string) $e['transport_id'] : '',
+        'encode_topic' => isset($e['encode_topic']) && is_callable($e['encode_topic']) ? $e['encode_topic'] : null,
+        'decode_topic' => isset($e['decode_topic']) && is_callable($e['decode_topic']) ? $e['decode_topic'] : null,
         'annehmen' => !empty($e['annehmen']),
         'eingreifend' => !empty($e['eingreifend']),
         'mqtt_ein' => array_key_exists('mqtt_ein', $e) ? !empty($e['mqtt_ein']) : true,
@@ -509,6 +512,14 @@ function bb_neuer_zustand()
     );
 }
 
+/** Optional relative-topic translation; without hooks the original bridge is byte-compatible. */
+function bb_wire($e, $relative)
+{
+    $topic = isset($e['encode_topic']) && is_callable($e['encode_topic'])
+        ? call_user_func($e['encode_topic'], $relative) : $relative;
+    return $e['praefix'] . '/' . $topic;
+}
+
 /**
  * Einen Stapel Zeilen bearbeiten (alles, was im Lesepuffer stand).
  *   $e       Einstellungen; 'praefix' ist das des laufenden Abos
@@ -533,6 +544,12 @@ function bb_stapel(array $zeilen, array &$st, array $z, array $e, $senden, $uhr)
             $st['zaehler']['verworfen']++;
             bb_log_gebremst($st, 'form', 'WARN', 'Zeile in unerwarteter Form verworfen (mosquitto_sub -F).', 3600);
             continue;
+        }
+        $root = $e['praefix'] . '/';
+        if (isset($e['decode_topic']) && is_callable($e['decode_topic']) && strpos($r['thema'], $root) === 0) {
+            $relative = call_user_func($e['decode_topic'], substr($r['thema'], strlen($root)));
+            if ($relative === null) { $st['zaehler']['verworfen']++; continue; }
+            $r['thema'] = $root . $relative;
         }
         if (strpos($r['thema'], $vor) !== 0) {
             $st['zaehler']['verworfen']++;
@@ -725,7 +742,7 @@ function bb_status_senden(array $p, $e, $wert)
     if (!is_array($e) || empty($e['mqtt_ein']) || !bb_praefix_gueltig($e['praefix'])) { return false; }
     $b = bb_broker($p);
     $opt = bb_optionen($p, $b);
-    return bb_mqtt_senden($b, $opt, $e['praefix'] . '/status/befehle', (string) (int) $wert);
+    return bb_mqtt_senden($b, $opt, bb_wire($e, 'status/befehle'), (string) (int) $wert);
 }
 
 /** argv aus /proc/<pid>/cmdline */
@@ -919,7 +936,7 @@ function bb_dienst()
         // 18.10.2026, Probe P1). Ohne -R: die Bruecke sieht jede retained Nachricht selbst (%r = 1),
         // verwirft sie und protokolliert sie (Reiter Test nennt sie).
         $kmd = array($sub, '-h', $b['host'], '-p', (string) $b['port'], '-V', 'mqttv5', '--retain-as-published',
-                     '-F', '%r %t %x', '-t', $praefix . '/befehl/#');
+                     '-F', '%r %t %x', '-t', bb_wire($e, 'befehl/#'));
         $rohr = array();
         $proz = @proc_open($kmd, array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
                            $rohr, null, bb_umgebung($opt));
@@ -1002,9 +1019,10 @@ function bb_dienst()
                 $e2 = bb_einstellungen($z);
                 if ($e2 === null) { $e2 = $e; }
                 $GLOBALS['bb_einst'] = $e2;
+                if (($e2['transport_id'] ?? '') !== ($e['transport_id'] ?? '') || $e2['praefix'] !== $praefix) { break; }
                 $e2['praefix'] = $praefix;   // die Zeilen gehoeren zum laufenden Abo
-                $senden = function ($name, $text) use ($b, $opt, $praefix, &$st) {
-                    if (!bb_mqtt_senden($b, $opt, $praefix . '/befehl/' . $name . '/quittung', $text)) {
+                $senden = function ($name, $text) use ($b, $opt, $praefix, $e, &$st) {
+                    if (!bb_mqtt_senden($b, $opt, bb_wire($e, 'befehl/' . $name . '/quittung'), $text)) {
                         bb_log_gebremst($st, 'quittung', 'WARN', 'Quittung liess sich nicht senden (mosquitto_pub).', 3600);
                     }
                 };
@@ -1032,7 +1050,7 @@ function bb_dienst()
                     bb_status_senden($p, $e2, 0);
                     return 0;
                 }
-                if ($e2 !== null && $e2['praefix'] !== $praefix) {
+                if ($e2 !== null && ($e2['praefix'] !== $praefix || ($e2['transport_id'] ?? '') !== ($e['transport_id'] ?? ''))) {
                     bb_log('INFO', 'Praefix geaendert - neues Abo.');
                     break;
                 }
@@ -1218,11 +1236,16 @@ function bb_thema_text($praefix, $name)
 function bb_liste(array $z, $e = null)
 {
     $praefix = (is_array($e) && bb_praefix_gueltig($e['praefix'])) ? $e['praefix'] : '';
+    $wire = function ($relative) use ($e, $praefix) {
+        $settings = is_array($e) ? $e : array();
+        $settings['praefix'] = $praefix !== '' ? $praefix : '<praefix>';
+        return bb_wire($settings, $relative);
+    };
     $bef = array();
     foreach ($z['befehle'] as $name => $x) {
         $name = (string) $name;
         $art = $x['art'];
-        $l = array('name' => $name, 'thema' => bb_thema_text($praefix, $name), 'art' => $art,
+        $l = array('name' => $name, 'thema' => $wire('befehl/' . $name), 'art' => $art,
                    'muster' => strpos($name, '{') !== false,
                    'eingreifend' => !empty($x['eingreifend']),
                    'sperre_s' => isset($x['sperre_s']) ? (int) $x['sperre_s'] : BB_SPERRE_VORGABE,
@@ -1240,9 +1263,9 @@ function bb_liste(array $z, $e = null)
         'plugin' => isset($z['plugin']) ? (string) $z['plugin'] : (string) $z['linie'],
         'haken' => array('befehle_mqtt_ein' => 'Befehle ueber MQTT annehmen (ab Werk aus)',
                          'zweiter_haken' => isset($z['zweiter_haken']) ? (string) $z['zweiter_haken'] : ''),
-        'abo' => bb_thema_text($praefix, '#'),
-        'lebenszeichen' => ($praefix !== '' ? $praefix : '<praefix>') . '/status/befehle',
-        'gateway_v2_haken' => array(($praefix !== '' ? $praefix : '<praefix>') . '/status/befehle'),
+        'abo' => $wire('befehl/#'),
+        'lebenszeichen' => $wire('status/befehle'),
+        'gateway_v2_haken' => array($wire('status/befehle')),
         'befehle' => $bef,
     );
 }
@@ -1412,7 +1435,7 @@ function bb_pruefen()
         $zeile('FEHL', 'einstellungen() lieferte nichts');
     } else {
         $zeile(bb_praefix_gueltig($e['praefix']) ? 'OK' : 'FEHL', 'Praefix ' . ($e['praefix'] !== '' ? $e['praefix'] : '(leer)')
-            . ' - Abo ' . $e['praefix'] . '/befehl/#');
+            . ' - Abo ' . bb_wire($e, 'befehl/#'));
         $zeile('INFO', 'Befehle ueber MQTT annehmen: ' . ($e['annehmen'] ? 'an' : 'aus') . '; zweiter Haken'
             . (isset($z['zweiter_haken']) ? ' (' . $z['zweiter_haken'] . ')' : '') . ': ' . ($e['eingreifend'] ? 'an' : 'aus'));
     }

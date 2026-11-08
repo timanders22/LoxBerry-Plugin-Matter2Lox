@@ -550,7 +550,7 @@ fi
 rm -f "$LIEFMARKE" "$UPGRADEMARKE" "$BASE/data/plugins/$PDIR.startsperre" 2>/dev/null
 # M5 (Durchgang 30.09.2026): die Liste der je benutzten MQTT-Praefixe. Der
 # Schritt "MQTT" oben hat unter jedem davon abgeraeumt; danach geht sie.
-rm -f "$BASE/config/plugins/$PDIR.mqtt_praefixe.json" 2>/dev/null
+rm -f "$BASE/config/plugins/$PDIR.mqtt_praefixe.json" "$BASE/config/plugins/$PDIR.mqtt_schema.json" 2>/dev/null
 # Tuer-1 (Verbesserungsbau 30.09.2026): die Liste der je unter haus/tuer/
 # gesendeten Themen. Der Schritt "MQTT" oben hat sie abgeraeumt (--mqtt-leeren).
 rm -f "$BASE/config/plugins/$PDIR.haus_themen.json" 2>/dev/null

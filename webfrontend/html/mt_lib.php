@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/mqtt_schema.php';
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
 /**
  * Matter to Loxone - gemeinsame Bibliothek
@@ -259,6 +260,7 @@ function mt_vorgaben()
         'bluetooth_adapter' => 0,
         'mqtt_ein'          => 1,
         'mqtt_topic'        => 'matter',
+        'mqtt_language'     => 'de',
         'roh_ein'           => 0,
         'steuerung_ein'     => 0,
         'aktionstoken'      => '',
@@ -737,7 +739,7 @@ function mt_sicherung_neue_schluessel()
 {
     /* 0.9.35 (Nr. 1): die vier neuen Schluessel duerfen in einer Sicherung
      * bis 0.9.34 fehlen; sie behalten dann ihre Vorgabe. */
-    return array('tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse',
+    return array('mqtt_language', 'tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse',
                  /* 0.9.39 */ 'fabric_entfernen_ein',
                  /* 0.9.44 (Gruppe 8) */ 'befehle_mqtt_ein', 'befehle_mqtt_entsperren', 'endpunkt_ein');
 }
@@ -796,7 +798,7 @@ function mt_eingabe_felder()
                                   'server_lokal' => 'haken', 'primary_interface' => 'text',
                                   // 0.9.39 (Entscheidung 8)
                                   'fabric_entfernen_ein' => 'haken'),
-        'save_mqtt'      => array('mqtt_ein' => 'haken', 'mqtt_topic' => 'text', 'mqtt_nur' => 'text',
+        'save_mqtt'      => array('mqtt_language' => 'text', 'mqtt_ein' => 'haken', 'mqtt_topic' => 'text', 'mqtt_nur' => 'text',
                                   'roh_ein' => 'haken', 'tuer_haus' => 'haken',
                                   // 0.9.44 (Gruppe 8, E1-E3): die Haken der Befehlsbruecke
                                   'befehle_mqtt_ein' => 'haken', 'befehle_mqtt_entsperren' => 'haken'),
@@ -1725,14 +1727,14 @@ function mt_mqtt_probe()
     $cfg = mt_config();
     $praefix = mt_mqtt_praefix($cfg);
     $wert = date('Y-m-d H:i:s');
-    $anzahl = mt_mqtt_senden(array('probe' => $wert), $praefix);
+    $anzahl = mt_mqtt_senden(array(mt_mqtt_topic('probe', $cfg) => $wert), $praefix);
     if (!$anzahl) {
         return array(0, mt_t('MQTT.M_PROBE_FEHL'));
     }
     // Gesendet ist nicht angekommen - das Gateway bestaetigt nichts. Genau das
     // gehoert dazugesagt, statt einen Erfolg zu melden, den niemand geprueft
     // hat.
-    return array(1, sprintf(mt_t('MQTT.M_PROBE_OK'), mt_e($praefix . '/probe'), mt_e($wert),
+    return array(1, sprintf(mt_t('MQTT.M_PROBE_OK'), mt_e($praefix . '/' . mt_mqtt_topic('probe', $cfg)), mt_e($wert),
                             (int) $z['udpport']));
 }
 
@@ -4017,7 +4019,7 @@ function mt_vorlage_cmds($nummer, $g, $tab, $mit_status = true, $markenpraefix =
     if ($mit_status) {
         foreach (mt_status_felder() as $feld => $info) {
             $cmds[] = array(
-                'title'   => 'MATTER_' . (int) $nummer . '_' . $feld,
+                'title'   => 'MATTER_' . (int) $nummer . '_' . mt_loxone_key($feld),
                 'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8'))),
                 'check'   => mt_check($feld),
                 'typ'     => isset($info[2]) ? $info[2] : 'zahl',
@@ -4033,7 +4035,7 @@ function mt_vorlage_cmds($nummer, $g, $tab, $mit_status = true, $markenpraefix =
                 $marke = $markenpraefix . strtoupper($ep . '_' . $thema);
                 $i = mt_thema_info($thema, $tab);
                 $cmds[] = array(
-                    'title'   => 'MATTER_' . (int) $nummer . '_' . strtoupper($ep . '_' . $thema),
+                    'title'   => 'MATTER_' . (int) $nummer . '_' . strtoupper($ep . '_' . mt_mqtt_topic($thema)),
                     'comment' => $i['text'],
                     'check'   => mt_check($marke),
                     'typ'     => $i['typ'],
@@ -4083,7 +4085,7 @@ function mt_vorlage_alle()
     $cmds = array();
     foreach (mt_status_felder() as $feld => $info) {
         $cmds[] = array(
-            'title'   => 'MATTER_' . $feld,
+            'title'   => 'MATTER_' . mt_loxone_key($feld),
             'comment' => trim(strip_tags(html_entity_decode(mt_t($info[1]), ENT_QUOTES, 'UTF-8'))),
             'check'   => mt_check($feld),
             'typ'     => isset($info[2]) ? $info[2] : 'zahl',
@@ -4102,7 +4104,7 @@ function mt_vorlage_alle()
             // Welle Bild 19 (E11): "Geraete" mit Umlaut - als UTF-8-Bytes, damit
             // diese Datei in ihrem Code ASCII bleibt. Neuer Behaeltertitel nur bei
             // einem Neuimport; eingelesene Vorlagen laufen unveraendert weiter.
-            'title'   => "Matter alle Ger\xc3\xa4te",
+             'title'   => mt_mqtt_language() === 'en' ? 'Matter all devices' : "Matter alle Ger\xc3\xa4te",
             // 0.9.35 (Nr. 8/11): Lesetoken, wenn gesetzt.
             'address' => mt_endpunkt_adresse('statusalle'),
             'polling' => '60',
@@ -4164,7 +4166,7 @@ function mt_vorlage_out($nummer = 1)
     /* Titel und Kommentar je Endpunkt (siehe Kopf: ohne EP bei nur einem). */
     $kopf = function ($teil, $ep, $mehrere, $titel) use ($nummer, $text) {
         return array(
-            'title'   => 'MATTER_' . (int) $nummer . '_' . ($mehrere ? strtoupper($ep) . '_' : '') . $teil,
+            'title'   => 'MATTER_' . (int) $nummer . '_' . ($mehrere ? strtoupper($ep) . '_' : '') . mt_loxone_key($teil),
             'comment' => $text($titel) . ($mehrere ? ' - ' . sprintf($text('LOX.A_ENDPUNKT'), $ep) : ''),
         );
     };
@@ -4209,7 +4211,7 @@ function mt_vorlage_out($nummer = 1)
     return array(
         'VQ_matter_geraet' . (int) $nummer . '.xml',
         mt_xml_virtual_out(array(
-            'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . ' Befehle',
+            'title'   => 'Matter ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . (mt_mqtt_language() === 'en' ? ' Commands' : ' Befehle'),
             'address' => $adresse,
             // Welle Bild 19 (E11): bis 0.9.42 fest deutsch mit Tagesdatum im Code.
             'comment' => mt_t('LOX.VQ_KOMMENTAR'),
@@ -4949,6 +4951,7 @@ function mt_wert_pruefen($schluessel, $wert)
         /* Das Thema geht roh in die publish-Zeile des Gateways. Ein
          * Zeilenumbruch darin zerlegt das Datagramm - deshalb steht dieselbe
          * enge Positivliste hier wie im Formular. */
+        'mqtt_language'     => '/^(de|en)$/D',
         'mqtt_topic'        => '#^[A-Za-z0-9_/\-]{1,64}$#',
         /* mqtt_nur: mt_mqtt_nur_gueltig() weiter unten (Nachtrag). */
         'aktionstoken'      => '/^[A-Za-z0-9_.\-]{0,64}$/',
@@ -6384,7 +6387,7 @@ function mt_endpunkt_zuletzt()
 function mt_bb_einstellungen()
 {
     $c = mt_config(false);
-    return array('praefix' => mt_mqtt_praefix($c),
+    return mt_mqtt_transport($c) + array('praefix' => mt_mqtt_praefix($c),
                  'annehmen' => !empty($c['befehle_mqtt_ein']),
                  'eingreifend' => !empty($c['steuerung_ein']),
                  'mqtt_ein' => !empty($c['mqtt_ein']));
@@ -6485,7 +6488,15 @@ function mt_bb_liste()
     if ($f) {
         return null;
     }
-    return bb_liste($z, bb_einstellungen($z));
+    $list = bb_liste($z, bb_einstellungen($z));
+    if (mt_mqtt_language() === 'en') {
+        foreach ($list['befehle'] as &$command) {
+            $parts = explode('/', $command['name']);
+            $command['titel'] = 'Matter2Lox ' . mt_mqtt_title(end($parts)) . ' (MQTT)';
+        }
+        unset($command);
+    }
+    return $list;
 }
 
 /**
@@ -6621,15 +6632,17 @@ function mt_udp_host($cfg = null)
  */
 function mt_mqtt_befehle_geraet($nummer, $g, $praefix)
 {
+    $cfg = mt_config(false);
+    $english = mt_mqtt_language($cfg) === 'en';
     $themen = mt_geraet_themen($g);
     $name = $g !== null && isset($g['name']) && is_scalar($g['name']) ? trim((string) $g['name']) : '';
     if ($name === '') {
-        $name = "GerÃ¤t " . (int) $nummer;
+        $name = ($english ? 'Device ' : 'Gerät ') . (int) $nummer;
     }
     $text = function ($schl) {
         return trim(strip_tags(html_entity_decode(mt_t($schl), ENT_QUOTES, 'UTF-8')));
     };
-    $basis = trim((string) $praefix, '/') . '/befehl/geraet' . (int) $nummer . '/';
+    $basis = trim((string) $praefix, '/') . '/' . mt_mqtt_topic('befehl/geraet' . (int) $nummer . '/', $cfg);
     $aus = array();
     foreach (mt_befehl_tabelle() as $b) {
         $eps = array();
@@ -6642,20 +6655,21 @@ function mt_mqtt_befehle_geraet($nummer, $g, $praefix)
         sort($eps, SORT_NUMERIC);
         foreach ($eps as $ep) {
             $mehrere = count($eps) > 1;
-            $titel = 'Matter2Lox: ' . $name . ($b['wort'] !== '' ? ' ' . $b['wort'] : '')
-                   . ($mehrere ? ' (Endpunkt ' . $ep . ')' : '');
+            $titel = 'Matter2Lox: ' . $name . ($b['wort'] !== '' ? ' ' . ($english ? mt_mqtt_title(is_array($b['mqtt']) ? $b['mqtt'][0] : $b['mqtt'], $cfg) : $b['wort']) : '')
+                   . ($mehrere ? ($english ? ' (Endpoint ' : ' (Endpunkt ') . $ep . ')' : '');
             $c = array('title' => $titel, 'comment' => $text($b['titel']), 'eingreifend' => true);
             if ($b['art'] === 'digital') {
                 $c['analog'] = false;
-                $c['on'] = 'publish ' . $basis . $ep . '/' . $b['mqtt'][0] . ' ' . $b['mqtt'][1];
-                $c['off'] = 'publish ' . $basis . $ep . '/' . $b['mqtt'][2] . ' ' . $b['mqtt'][3];
+                $c['on'] = 'publish ' . $basis . $ep . '/' . mt_mqtt_topic($b['mqtt'][0], $cfg) . ' ' . $b['mqtt'][1];
+                $c['off'] = 'publish ' . $basis . $ep . '/' . mt_mqtt_topic($b['mqtt'][2], $cfg) . ' ' . $b['mqtt'][3];
                 $c['befehl'] = $b['mqtt'][0] . ($b['mqtt'][2] !== $b['mqtt'][0] ? ' / ' . $b['mqtt'][2] : '');
             } else {
                 $c['analog'] = true;
-                $c['on'] = 'publish ' . $basis . $ep . '/' . $b['mqtt'] . ' ' . $b['platz'];
+                $c['on'] = 'publish ' . $basis . $ep . '/' . mt_mqtt_topic($b['mqtt'], $cfg) . ' ' . $b['platz'];
                 $c['off'] = '';
                 $c['befehl'] = $b['mqtt'];
             }
+            $c['befehl'] = implode(' / ', array_map(function ($command) use ($cfg) { return mt_mqtt_topic($command, $cfg); }, explode(' / ', $c['befehl'])));
             $aus[] = $c;
         }
     }
@@ -6681,7 +6695,7 @@ function mt_vorlage_mqtt_out($nummer = 1)
     return array(
         'VQ_matter_geraet' . (int) $nummer . '_mqtt.xml',
         mt_xml_virtual_out(array(
-            'title'   => 'Matter2Lox ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . ' MQTT-Befehle',
+            'title'   => 'Matter2Lox ' . (int) $nummer . ($g !== null ? ' ' . $g['name'] : '') . (mt_mqtt_language($cfg) === 'en' ? ' MQTT Commands' : ' MQTT-Befehle'),
             'address' => '/dev/udp/' . mt_udp_host($cfg) . '/' . ($port > 0 ? $port : 11884),
             'comment' => mt_t('BEFEHL.V_KOMMENTAR'),
         ), $cmds),
@@ -6766,11 +6780,12 @@ function mt_mqtt_namen($cfg = null)
     }
     $aus = array();
     foreach ($zeilen as $z) {
-        $voll = $p . '/' . $z[0];
+        $wire = mt_mqtt_topic($z[0], $cfg);
+        $voll = $p . '/' . $wire;
         $letzter = substr(strrchr('/' . $z[0], '/'), 1);
         $v2 = isset($muster[$z[0]]) ? $muster[$z[0]]
             : (in_array($letzter, array('ok', 'erreichbar'), true) ? 'N' : (in_array($letzter, mt_impulsthemen(), true) ? 'R' : ''));
-        $aus[] = array('thema' => $z[0], 'voll' => $voll, 'name' => mt_gateway_name($voll), 'art' => $z[1],
+        $aus[] = array('thema' => $wire, 'voll' => $voll, 'name' => mt_gateway_name($voll), 'art' => $z[1],
                        'retained' => mt_ist_retained($z[0]), 'v2' => $v2, 'muster' => isset($muster[$z[0]]),
                        'bedeutung' => $z[2]);
     }
@@ -6914,7 +6929,7 @@ function mt_pruef_namen($namen = null, $staemme = null)
     $falsch = array();
     foreach ($namen as $z) {
         $stamm = substr(strrchr('/' . $z[0], '/'), 1);
-        if (!in_array($stamm, $staemme, true) || $z[1] !== strtr($z[0], array('/' => '_', '%' => '_'))) {
+        if (!in_array(mt_mqtt_topic($stamm, $cfg, true), $staemme, true) || $z[1] !== strtr($z[0], array('/' => '_', '%' => '_'))) {
             $falsch[] = $z[1];
         }
     }

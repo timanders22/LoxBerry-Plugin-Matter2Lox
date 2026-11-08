@@ -4,8 +4,8 @@
  *
  * Gruppe 8 / MQTT (0.9.44; Bauvorschrift wz_bild/GRUPPE8_BAUVORSCHRIFT.md, Entwurf Musterprojekt/entwurf_gruppe8_mt.txt
  * Abschnitte 3.2-3.4, ENTSCHEIDUNGEN_GRUPPE8_MATTER2LOX.md E1-E14; Muster vb_g7_ic_bau/bin/befehle_zuordnung.php). Die
- * Bruecke selbst (bin/befehlsbruecke.php und .sh) ist byte-gleich die Stammfassung Werkzeuge/gemeinsam/ - linieneigen
- * ist nur diese Datei.
+ * Befehlsbruecke basiert auf Werkzeuge/gemeinsam/. Die lokale MQTT-Spracherweiterung ergaenzt optionale
+ * Transport-Hooks in befehlsbruecke.php; diese kanonische Befehlstabelle bleibt unveraendert.
  *
  * Themen: <praefix>/befehl/geraet<N>/<ep>/<befehl> - symmetrisch zu den Werten <praefix>/geraet<N>/<ep>/<thema>.
  * <N> ist die feste Geraetenummer des Plugins (nummern.json, wie &geraet= am HTTP-Endpunkt), <ep> der Endpunkt

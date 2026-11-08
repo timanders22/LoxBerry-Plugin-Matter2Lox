@@ -1790,3 +1790,10 @@ unter beiden Fassungen und im Aktualisierungsfall, die erzeugten
 Loxone-Vorlagen auf Wohlgeformtheit, die Formulare auf Vollständigkeit, alle
 Sprachschlüssel in beiden Sprachen, und die Lage im installierten Aufbau mit
 getrennten Bäumen für `html/` und `htmlauth/`.
+
+## Optional English MQTT and Loxone naming
+
+The MQTT tab can select German (legacy/default) or English identifiers independently
+of the interface language. Existing integrations keep their German schema until
+explicitly changed. See [MQTT language and migration](docs/MQTT-LANGUAGE.md) for
+examples, compatibility boundaries and the required Loxone migration.
