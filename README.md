@@ -13,6 +13,12 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 
 ## Neu in 0.9.49
 
+**Zusätzlich in diesem Entwicklungszweig:** Im Reiter *Geräte anlernen* lässt sich
+ein Matter-QR-Code mit dem Telefon einlesen: Live-Kamera über HTTPS, alternativ
+Foto aufnehmen oder Bild auswählen (auch über HTTP). Das füllt nur das Codefeld;
+erst *Anlernen* startet die Kopplung. Bilder werden lokal im Browser verarbeitet.
+Das Telefon übernimmt keine BLE-Inbetriebnahme. [Usage and tests (English)](docs/PHONE-QR.md).
+
 - Gemeinsames Sprachmodul 1.4.2: Wird eine Ansage bewusst nicht gesprochen (gerade eben schon gesagt, gesperrt oder Ruhezeit), steht das im Protokoll jetzt so – und nicht mehr als Fehler.
 
 ## Neu in 0.9.48

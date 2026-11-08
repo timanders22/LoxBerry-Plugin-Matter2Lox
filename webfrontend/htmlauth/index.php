@@ -2473,9 +2473,10 @@ if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
 <div class="sm-feld">
   <label for="code"><?= mt_e(mt_t('ANLERN.L_CODE')) ?></label>
-  <input data-role="none" type="text" id="code" name="code" value="" placeholder="MT:Y.ABCDEFG123456789">
+  <input data-role="none" type="text" id="code" name="code" value="" placeholder="MT:Y.ABCDEFG123456789" autocapitalize="off" spellcheck="false" autocomplete="off">
   <div class="sm-hilfe"><?= mt_t('ANLERN.HILFE_CODE') ?></div>
 </div>
+<?php require __DIR__ . '/mt_qr.php'; ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="nur_netz" value="1" <?= !empty(mt_eingabe('anlernen', 'nur_netz', 0)) ? 'checked' : '' ?>>
@@ -3787,6 +3788,8 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 </div>
 
 </div><!-- /sm-wrap -->
+
+<script src="qr-scanner.js?v=1" defer></script>
 
 <?php /* 0.9.42: auch fuer das Kopplungsfenster der Bridge (Reiter Bridge). */
 if ($mt_fenster || $mt_brcodes) { ?>

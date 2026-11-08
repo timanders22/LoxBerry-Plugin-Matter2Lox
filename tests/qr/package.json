@@ -1,0 +1,6 @@
+{
+  "name": "matter2lox-qr-tests",
+  "private": true,
+  "scripts": { "test": "node --test qr.test.cjs" },
+  "devDependencies": { "playwright": "1.55.0" }
+}
