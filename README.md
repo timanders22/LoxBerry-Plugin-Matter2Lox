@@ -1653,6 +1653,12 @@ den angezeigten Code hier. Umgekehrt geht es genauso: *Kopplungsfenster öffnen*
 im Abschnitt *Angelernte Geräte verwalten* zeigt seit 0.9.39 ein QR-Bild mit
 Restzeit, *Gekoppelte Systeme anzeigen* die Systeme, die das Gerät kennen.
 
+## OTBR dataset input and Multi-Admin
+
+Dataset responses are validated without showing credential-bearing response fragments.
+Network-only commissioning uses strict boolean parsing and clearer sharing-code guidance.
+See [behavior and validation](docs/OTBR-MULTIADMIN.md).
+
 ## Der Datenordner ist heilig
 
 In `data/plugins/matter2lox.matter` (neben dem Datenordner, seit 0.9.17)

@@ -3687,12 +3687,24 @@ function mt_thread_dataset_holen($adresse)
      * text/plain erbeten war - dann stehen Anfuehrungszeichen darum. Das ist
      * das Auspacken einer fremden Antwort, nicht das Zurechtbiegen einer
      * Eingabe: was danach kein Dataset ist, wird abgewiesen. */
-    $ds = trim($ds, "\"'");
-    if (!preg_match('/^[0-9A-Fa-f]{20,600}$/', $ds)) {
-        return array(2, sprintf(mt_t('ANLERN.BR_KEIN_HEX'),
-                     substr(mt_mqtt_wert_saeubern($ds), 0, 80)));
+    $ds = mt_thread_dataset_antwort($ds);
+    if ($ds === null) {
+        // Nie Antwortfragmente anzeigen: auch eine fehlerhafte Antwort kann
+        // Netzschluessel enthalten und in der Einmalmeldung landen.
+        return array(2, mt_t('ANLERN.BR_KEIN_HEX'));
     }
     return array(1, $ds);
+}
+
+/** OTBR text/plain oder JSON-Zeichenkette, keine erfundenen JSON-Feldnamen. */
+function mt_thread_dataset_antwort($body)
+{
+    if (!is_string($body) || strlen($body) > 4096) { return null; }
+    $ds = trim($body);
+    if (substr($ds, 0, 1) === '"') {
+        $ds = json_decode($ds, true);
+    }
+    return is_string($ds) && preg_match('/^(?:[0-9A-Fa-f]{2}){10,300}$/D', $ds) ? $ds : null;
 }
 
 /**
