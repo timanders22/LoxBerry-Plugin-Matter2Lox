@@ -1037,6 +1037,35 @@ function mt_pruef_qr()
     return array(1, sprintf(mt_t('TEST.A_QR_OK'), $ms, strlen($svg)));
 }
 
+/** 0.9.50 (PR #2): liegt der QR-Leser der Koppelseite vollstaendig da, und ist jsQR die unveraenderte
+ *  Fassung 1.4.0? Gelesen wird die Datei selbst (SHA-256), nicht ihr Name. Soll-Pruefsumme: dist/jsQR.js
+ *  aus dem npm-Paket jsqr 1.4.0, gemessen 10.11.2026. $ordner nur fuer den Pruefstand. */
+function mt_pruef_jsqr($ordner = null)
+{
+    if ($ordner === null) {
+        $ordner = __DIR__;
+    }
+    $soll = 'bc40c8a15196236b2314db0856f72ca0b49980cd5413b8c852a7349f5fee0859';
+    $fehlt = array();
+    foreach (array('mt_qr.php', 'qr-scanner.js', 'vendor/jsQR-1.4.0.js', 'vendor/jsQR-LICENSE') as $f) {
+        if (!is_file($ordner . '/' . $f)) {
+            $fehlt[] = $f;
+        }
+    }
+    if ($fehlt) {
+        return array(0, sprintf(mt_t('TEST.A_JSQR_FEHLT'), mt_e(implode(', ', $fehlt))));
+    }
+    $ist = @hash_file('sha256', $ordner . '/vendor/jsQR-1.4.0.js');
+    if (!is_string($ist) || strlen($ist) !== 64) {
+        return array(-1, mt_t('TEST.A_JSQR_UNLESBAR'));
+    }
+    if (!hash_equals($soll, $ist)) {
+        return array(0, sprintf(mt_t('TEST.A_JSQR_ANDERS'), mt_e(substr($ist, 0, 16))));
+    }
+    return array(1, sprintf(mt_t('TEST.A_JSQR_OK'), (int) @filesize($ordner . '/vendor/jsQR-1.4.0.js'),
+                            mt_e(substr($soll, 0, 16))));
+}
+
 function mt_pruefungen()
 {
     $cfg = mt_config();
@@ -1361,6 +1390,8 @@ function mt_pruefungen()
     $zeilen[] = mt_pruefzeile($vw[0], mt_t('TEST.F_VERWALTUNGSWEG'), $vw[1]);
     $qp = mt_pruef_qr();
     $zeilen[] = mt_pruefzeile($qp[0], mt_t('TEST.F_QR'), $qp[1]);
+    $jq = mt_pruef_jsqr();
+    $zeilen[] = mt_pruefzeile($jq[0], mt_t('TEST.F_JSQR'), $jq[1]);
 
     $th = mt_pruef_themen();
     $zeilen[] = mt_pruefzeile($th[0], mt_t('TEST.F_THEMEN'), $th[1]);

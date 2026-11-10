@@ -2473,9 +2473,10 @@ if ((string) $mt_cfg['wlan_passwort'] !== '' || (string) $mt_cfg['thread_dataset
 <input data-role="none" type="hidden" name="activetab" value="tab-commission">
 <div class="sm-feld">
   <label for="code"><?= mt_e(mt_t('ANLERN.L_CODE')) ?></label>
-  <input data-role="none" type="text" id="code" name="code" value="" placeholder="MT:Y.ABCDEFG123456789">
+  <input data-role="none" type="text" id="code" name="code" value="" placeholder="MT:Y.ABCDEFG123456789" autocapitalize="off" spellcheck="false" autocomplete="off">
   <div class="sm-hilfe"><?= mt_t('ANLERN.HILFE_CODE') ?></div>
 </div>
+<?php require __DIR__ . '/mt_qr.php'; ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="nur_netz" value="1" <?= !empty(mt_eingabe('anlernen', 'nur_netz', 0)) ? 'checked' : '' ?>>
@@ -3231,6 +3232,22 @@ $mt_v2text = function ($k) {
 </script>
 </div>
 
+<?php /* 0.9.50 (nach einem Vorschlag von centauri, PR #1): nur in der englischen Oberflaeche eine Lesehilfe zu
+   den deutschen Themen-Endstuecken. Die Themen bleiben deutsch; die deutsche Oberflaeche zeigt hier nichts. */
+if (mt_sprache() === 'en') { ?>
+<details class="sm-step" id="mt_lesehilfe"><summary><b><?= mt_e(mt_t('LOX.LH_TITEL')) ?></b></summary>
+<p class="sm-hilfe"><?= mt_t('LOX.LH_TEXT') ?></p>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= mt_e(mt_t('LOX.LH_T_ENDSTUECK')) ?></th><th><?= mt_e(mt_t('LOX.LH_T_ENGLISCH')) ?></th><th><?= mt_e(mt_t('LOX.LH_T_ART')) ?></th><th><?= mt_e(mt_t('LOX.LH_T_BEDEUTUNG')) ?></th><th><?= mt_e(mt_t('LOX.LH_T_BEREICH')) ?></th></tr>
+<?php foreach (mt_themen_lesehilfe($mt_tabelle) as $mt_lz) { ?>
+<tr><td><span class="sm-mono"><?= mt_e($mt_lz[0]) ?></span></td><td><?= $mt_lz[1] !== '' ? '<span class="sm-mono">' . mt_e($mt_lz[1]) . '</span>' : mt_e(mt_t('LOX.LH_FEHLT')) ?></td><td><?= mt_e(mt_t($mt_lz[4] === 'befehl' ? 'LOX.LH_ART_BEFEHL' : 'LOX.LH_ART_WERT')) ?></td><td><?= mt_e($mt_lz[2]) ?></td><td><?= mt_e($mt_lz[3]) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+</details>
+<?php } ?>
+
 <div class="sm-step" id="befehle_loxone"><b><?= mt_e(mt_t('LOX.MQ3_TITEL')) ?></b><br>
 <?= sprintf(mt_t('LOX.MQ3_TEXT'), '<span class="sm-mono">' . mt_e($mt_lpr . '/befehl/#') . '</span>') ?>
 <?php if (empty($mt_cfg['befehle_mqtt_ein'])) { ?>
@@ -3787,6 +3804,9 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 </div>
 
 </div><!-- /sm-wrap -->
+
+<?php /* 0.9.50 (PR #2): QR-Leser im Reiter Geraete anlernen, siehe mt_qr.php. */ ?>
+<script src="qr-scanner.js?v=0.9.50" defer></script>
 
 <?php /* 0.9.42: auch fuer das Kopplungsfenster der Bridge (Reiter Bridge). */
 if ($mt_fenster || $mt_brcodes) { ?>

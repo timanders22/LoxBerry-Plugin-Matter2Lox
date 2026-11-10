@@ -11,6 +11,17 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.50
+
+Diese Fassung entstand nach Vorschlägen von centauri (PR #1, #2, #3).
+
+- **QR-Code per Kamera oder Foto:** Im Reiter *Geräte anlernen* stehen unter dem Codefeld drei Knöpfe: *Mit Kamera scannen*, *QR-Foto aufnehmen* und *QR-Bild auswählen*. Das Bild wird im Browser gelesen und nicht hochgeladen; der erkannte Code landet nur im Codefeld, abgesendet wird erst mit *Jetzt anlernen*. Die Kamera lässt sich nur auf einer über HTTPS geladenen Seite verwenden, über HTTP bleiben Foto und Bild. Der Leser ist jsQR 1.4.0 (Apache-2.0), er liegt mit seiner Lizenz im Plugin und wird von keinem fremden Server geholt. An einem echten Telefon ist das noch nicht geprüft.
+- **Dataset vom Border-Router:** Die Antwort wird strenger gelesen. Angenommen wird nur eine gerade Zahl von 20 bis 600 Hexadezimalziffern, als reiner Text oder als JSON-Zeichenkette; ungerade Längen, Objekte und einseitige oder einfache Anführungszeichen werden abgewiesen. Die Fehlermeldung zeigt keinen Teil der Antwort mehr an, denn eine fehlerhafte Antwort kann den Netzschlüssel enthalten. Bisher standen bis zu 80 Zeichen darin, auch im Zwischenspeicher des Reiters *Test*.
+- **Nur im Netz suchen:** Der Haken wird im Dienst jetzt so ausgewertet wie alle anderen Haken. Aus der Oberfläche kam schon bisher nur 0 oder 1, deshalb ändert sich am Verhalten nichts.
+- **Lesehilfe für die englische Oberfläche** (nach einem Vorschlag von centauri, PR #1): Im Reiter *Einbindung in Loxone* steht in der englischen Oberfläche eine aufklappbare Tabelle. Sie nennt zu jedem Endstück der MQTT-Themen und Befehle das englische Wort, die Bedeutung und den Wertebereich, etwa `helligkeit` = brightness, 0–100 %. Die Themen selbst bleiben deutsch und unverändert, denn an jedem Namen hängen bestehende Loxone-Projekte. Die deutsche Oberfläche bleibt, wie sie ist. Die Loxone-Vorlagen tragen in der englischen Oberfläche schon bisher englische Kommentare; Titel, Suchtexte, Themen und Adressen sind in beiden Sprachen gleich.
+- **Reiter Test:** Eine neue Zeile prüft, ob der QR-Leser vollständig daliegt und jsQR unverändert ist (SHA-256 der Datei).
+- Der Titel der MQTT-Befehlsvorlage eines Geräts ohne Namen zeigt wieder „Gerät“ statt einer verstümmelten Zeichenfolge.
+
 ## Neu in 0.9.49
 
 - Gemeinsames Sprachmodul 1.4.2: Wird eine Ansage bewusst nicht gesprochen (gerade eben schon gesagt, gesperrt oder Ruhezeit), steht das im Protokoll jetzt so – und nicht mehr als Fehler.

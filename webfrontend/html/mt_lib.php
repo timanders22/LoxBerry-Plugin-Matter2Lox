@@ -3683,16 +3683,45 @@ function mt_thread_dataset_holen($adresse)
     if ($code !== 200) {
         return array(2, sprintf(mt_t('ANLERN.BR_HTTP'), $code));
     }
-    /* Manche Aufbauten geben die Zeichenkette als JSON heraus, obwohl
-     * text/plain erbeten war - dann stehen Anfuehrungszeichen darum. Das ist
-     * das Auspacken einer fremden Antwort, nicht das Zurechtbiegen einer
-     * Eingabe: was danach kein Dataset ist, wird abgewiesen. */
-    $ds = trim($ds, "\"'");
-    if (!preg_match('/^[0-9A-Fa-f]{20,600}$/', $ds)) {
-        return array(2, sprintf(mt_t('ANLERN.BR_KEIN_HEX'),
-                     substr(mt_mqtt_wert_saeubern($ds), 0, 80)));
+    /* 0.9.50 (nach einem Vorschlag von centauri, PR #3): streng gelesen in
+     * mt_thread_dataset_antwort(). Die Meldung nennt KEINEN Teil der Antwort
+     * mehr - bis 0.9.49 standen bis zu 80 Zeichen darin, und eine fehlerhafte
+     * Antwort kann den Netzschluessel tragen (etwa ein JSON-Objekt mit
+     * NetworkKey). Der Reiter Test legt diese Meldung in .border.cache ab. */
+    $ds = mt_thread_dataset_antwort($ds);
+    if ($ds === null) {
+        return array(2, mt_t('ANLERN.BR_KEIN_HEX'));
     }
     return array(1, $ds);
+}
+
+/**
+ * Die Antwort des Border-Routers auf GET /node/dataset/active streng lesen.
+ *
+ * Angenommen wird genau eine Form: eine gerade Zahl von Hexziffern (20 bis
+ * 600, also 10 bis 300 Byte), entweder als reiner Text (text/plain) oder als
+ * JSON-Zeichenkette - manche Aufbauten antworten so, obwohl text/plain
+ * erbeten war. Die JSON-Zeichenkette wird mit json_decode() ausgepackt, nicht
+ * mit trim(): ein einseitiges Anfuehrungszeichen, einfache Anfuehrungszeichen,
+ * ein Objekt oder eine ungerade Laenge sind kein Dataset und werden
+ * abgewiesen, nicht zurechtgebogen. Antworten ueber 4096 Byte werden gar
+ * nicht erst untersucht.
+ *
+ * Rueckgabe: das Dataset als Text oder null.
+ */
+function mt_thread_dataset_antwort($body)
+{
+    if (!is_string($body) || strlen($body) > 4096) {
+        return null;
+    }
+    $ds = trim($body);
+    if (substr($ds, 0, 1) === '"') {
+        $ds = json_decode($ds, true);
+    }
+    if (!is_string($ds) || !preg_match('/^(?:[0-9A-Fa-f]{2}){10,300}$/D', $ds)) {
+        return null;
+    }
+    return $ds;
 }
 
 /**
@@ -6624,7 +6653,7 @@ function mt_mqtt_befehle_geraet($nummer, $g, $praefix)
     $themen = mt_geraet_themen($g);
     $name = $g !== null && isset($g['name']) && is_scalar($g['name']) ? trim((string) $g['name']) : '';
     if ($name === '') {
-        $name = "GerÃ¤t " . (int) $nummer;
+        $name = "Gerät " . (int) $nummer;
     }
     $text = function ($schl) {
         return trim(strip_tags(html_entity_decode(mt_t($schl), ENT_QUOTES, 'UTF-8')));
@@ -6775,6 +6804,102 @@ function mt_mqtt_namen($cfg = null)
                        'bedeutung' => $z[2]);
     }
     return $aus;
+}
+
+/**
+ * 0.9.50 (nach einem Vorschlag von centauri, PR #1): die englischen Woerter zu den deutschen Themen-Endstuecken,
+ * NUR fuer die Anzeige in der englischen Oberflaeche. Die Themen selbst bleiben deutsch - an jedem Namen haengen
+ * fremde Anlagen. Quelle templates/mqtt_themen_en.json (der Dienst liest sie nicht). Rueckgabe array(thema => wort).
+ */
+function mt_themen_englisch()
+{
+    static $w = null;
+    if ($w !== null) {
+        return $w;
+    }
+    $w = array();
+    $p = mt_paths();
+    foreach (array(dirname($p['tabelle']) . '/mqtt_themen_en.json',
+                   dirname(dirname(__DIR__)) . '/templates/mqtt_themen_en.json') as $kand) {
+        $d = mt_json_lesen($kand);
+        if (!empty($d['woerter']) && is_array($d['woerter'])) {
+            foreach ($d['woerter'] as $de => $en) {
+                if (is_string($de) && is_string($en)) {
+                    $w[$de] = $en;
+                }
+            }
+            break;
+        }
+    }
+    return $w;
+}
+
+/**
+ * Lesehilfe der englischen Oberflaeche (Reiter Einbindung in Loxone): jedes Themen-Endstueck, das das Plugin
+ * bildet, mit englischem Wort, Bedeutung und Wertebereich. Die Liste kommt aus denselben Quellen, aus denen die
+ * Themen entstehen: mt_themen_fest(), die Cluster-Tabelle (Attribute, Ereignisse, ausgerechnete Themen) und
+ * mt_befehl_tabelle() samt Quittung. Ein Endstueck ohne englisches Wort steht mit leerem Wort darin und wird
+ * nicht erfunden. Rueckgabe Liste array(thema, englisch, bedeutung, bereich, art), art 'wert' oder 'befehl'.
+ */
+function mt_themen_lesehilfe($tab = null)
+{
+    if ($tab === null) {
+        $tab = mt_tabelle();
+    }
+    $en = mt_themen_englisch();
+    $klar = function ($s) {
+        return trim(strip_tags(html_entity_decode((string) $s, ENT_QUOTES, 'UTF-8')));
+    };
+    $wort = function ($thema) use ($en) {
+        $teile = array();
+        foreach (explode('/', (string) $thema) as $t) {
+            if (!isset($en[$t])) {
+                return '';
+            }
+            $teile[] = $en[$t];
+        }
+        return implode('/', $teile);
+    };
+    $bereich = function ($a) {
+        if (isset($a['typ']) && in_array($a['typ'], array('bool', 'bit0'), true)) {
+            return '0 / 1';
+        }
+        if (!isset($a['min'], $a['max'])) {
+            return '';
+        }
+        $einheit = isset($a['einheit']) ? (string) $a['einheit'] : '';
+        if ($einheit === 'Grad') {
+            $einheit = 'degrees';
+        }
+        return $a['min'] . "\xe2\x80\x93" . $a['max'] . ($einheit !== '' ? ' ' . $einheit : '');
+    };
+    $zeilen = array();
+    $dazu = function ($art, $thema, $bedeutung, $ber) use (&$zeilen, $wort) {
+        if (!isset($zeilen[$art . ' ' . $thema])) {
+            $zeilen[$art . ' ' . $thema] = array($thema, $wort($thema), $bedeutung, $ber, $art);
+        }
+    };
+    foreach (mt_themen_fest() as $t => $i) {
+        $dazu('wert', $t, $klar(mt_t($i[1])), '');
+    }
+    foreach ((array) $tab['cluster'] as $d) {
+        foreach ((array) $d['attribute'] as $a) {
+            $dazu('wert', (string) $a['thema'], $klar(mt_t($a['text'])), $bereich($a));
+        }
+    }
+    foreach (array('ereignisthemen', 'abgeleitete_themen') as $k) {
+        foreach ((array) (isset($tab[$k]['themen']) ? $tab[$k]['themen'] : array()) as $a) {
+            $dazu('wert', (string) $a['thema'], $klar(mt_t($a['text'])), $bereich($a));
+        }
+    }
+    foreach (mt_befehl_tabelle() as $b) {
+        $m = is_array($b['mqtt']) ? array($b['mqtt'][0], $b['mqtt'][2]) : array($b['mqtt']);
+        foreach (array_unique($m) as $t) {
+            $dazu('befehl', $t, $klar(mt_t($b['titel'])), '');
+        }
+    }
+    $dazu('befehl', 'quittung', $klar(mt_t('MQTT.B_QUITTUNG')), '');
+    return array_values($zeilen);
 }
 
 /* ------------------------------------------------------------------

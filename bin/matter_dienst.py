@@ -2185,7 +2185,9 @@ async def befehl_ausfuehren(v: MatterVerbindung, b: dict, cfg: dict, tab: dict):
         if not re.match(r"^(MT:[A-Z0-9.\-]{5,60}|[0-9]{11,21})$", code):
             return (0, "Das ist weder ein Matter-QR-Code (beginnt mit MT:) noch ein "
                        "manueller Kopplungscode (11 oder 21 Ziffern).")
-        nur_netz = bool(b.get("nur_netz")) or bool(str(b.get("ip") or "").strip())
+        # 0.9.50 (nach einem Vorschlag von centauri, PR #3): ueber haken() wie
+        # die uebrigen Haken - bool("0") waere True gewesen.
+        nur_netz = haken(b, "nur_netz") or bool(str(b.get("ip") or "").strip())
         if not nur_netz and not v.server_info.get("bluetooth_enabled"):
             return (0, "Der Matter-Server meldet, dass er kein Bluetooth hat. Ein fabrikneues "
                        "Funkgeraet laesst sich damit nicht anlernen. Abhilfe: dem Container "
