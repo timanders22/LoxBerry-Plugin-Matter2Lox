@@ -4417,6 +4417,31 @@ def dienstsperre_nehmen() -> bool:
     return True
 
 
+def konfiguration_vervollstaendigen() -> str:
+    """Seit 0.9.52 (Regeln/05): fehlende Vorgaben einmal in die Konfiguration schreiben - beim Dienststart.
+
+    Geschrieben wird ueber bin/mt_vervollstaendigen.php und damit ueber mt_lib.php (mt_config_speichern(),
+    0600, Zweitschrift), nicht von hier: der Dienst schreibt die Konfiguration nicht selbst. Waehrend einer
+    Aktualisierung (Marke .upgrade_laeuft) tut das Skript nichts - postinstall.sh startet den Dienst noch mit
+    Marke, und vor dessen Uebergang fuer endpunkt_ein darf nichts eingetragen werden; dann holt es
+    postupgrade.sh nach. Eine Zeile ins Protokoll nur, wenn etwas ergaenzt wurde oder der Aufruf scheiterte;
+    nie ein Wert. Rueckgabe: die Ausgabezeile des Skripts oder "" (fuer die Pruefung)."""
+    aufruf = ["php", str(SELF / "mt_vervollstaendigen.php"), PNAME]
+    try:
+        r = subprocess.run(aufruf, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError) as err:
+        _LOG.warning("Konfiguration nicht vervollstaendigt: Aufruf von mt_vervollstaendigen.php scheiterte (%s)", err)
+        return ""
+    zeilen = r.stdout.decode("utf-8", "replace").strip().splitlines()
+    zeile = zeilen[-1] if zeilen else ""
+    if r.returncode != 0 or not zeile.startswith("VERVOLLSTAENDIGEN;"):
+        _LOG.warning("Konfiguration nicht vervollstaendigt: Rueckgabe %s, Ausgabe %r", r.returncode, zeile[:200])
+    elif ";STAND=ergaenzt;" in zeile:
+        _LOG.info("Konfiguration vervollstaendigt - fehlende Vorgaben in die Datei geschrieben: %s",
+                  zeile.split("SCHLUESSEL=", 1)[-1])
+    return zeile
+
+
 # C6 (Durchgang 30.09.2026): die bekannten Schalter. Bis 0.9.30 lief jeder
 # andere Aufruf ("--selftest", ein Tippfehler) als Dienst - neben dem
 # eigentlichen und ohne PID-Datei (gemessen, Bericht code C6).
@@ -4483,6 +4508,8 @@ def main() -> int:
         _LOG.warning(satz)
         print(satz, file=sys.stderr)
         return 3
+    # 0.9.52: vor dem ersten Lesen der Konfiguration (Regeln/05, Bauform Docker NG 1.3.7)
+    konfiguration_vervollstaendigen()
     signal.signal(signal.SIGTERM, signal_behandeln)
     signal.signal(signal.SIGINT, signal_behandeln)
     try:

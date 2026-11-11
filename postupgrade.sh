@@ -59,4 +59,22 @@ MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 if [ -f "$MARKE" ]; then
     rm -f "$MARKE" 2>/dev/null && echo "<INFO> Die Marke 'Aktualisierung laeuft' lag noch und wurde entfernt."
 fi
+# --- Konfiguration vervollstaendigen (0.9.52, Regeln/05) ---------------------
+# Fehlende Einstellungen werden einmal mit ihrer Vorgabe in matter2lox.json eingetragen - ueber mt_lib.php, den
+# einzigen Schreiber (bin/mt_vervollstaendigen.php). Hier und nicht im Dienststart von postinstall.sh: der laeuft
+# noch mit Marke, und erst NACH dem Uebergang dort (endpunkt_ein=1 fuer eine bestehende Anlage) darf etwas
+# eingetragen werden; postupgrade.sh laeuft nach postinstall.sh (Regeln/06). Liegt die Marke noch (rm scheiterte),
+# antwortet das Skript mit STAND=ruht und schreibt nichts. Dieses Skript laeuft als loxberry; Eigentuemer und
+# Rechte (0600) bleiben die des Speicherns. cd /: der Arbeitsordner des Installers wird danach geloescht.
+MT_VV="$BASE/bin/plugins/$PFOLDER/mt_vervollstaendigen.php"
+if [ -f "$BASE/config/plugins/$PFOLDER/matter2lox.json" ] && [ -f "$MT_VV" ]; then
+    MT_VV_ZEILE=$(cd / && LBHOMEDIR="$BASE" php "$MT_VV" "$PFOLDER" 2>&1 | tail -1)
+    case "$MT_VV_ZEILE" in
+        *";STAND=ergaenzt;"*)     echo "<OK> Konfiguration vervollstaendigt: ${MT_VV_ZEILE#*SCHLUESSEL=}" ;;
+        *";STAND=vollstaendig;"*) echo "<OK> Konfiguration vollstaendig, nichts ergaenzt." ;;
+        *";STAND=ohne_merkwort;"*|*";STAND=ohne_datei;"*) echo "<INFO> Konfiguration nicht vervollstaendigt (keine lesbare Datei mit Aktionstoken) - das Speichern im Formular schreibt sie vollstaendig." ;;
+        *";STAND=ruht;"*)         echo "<INFO> Konfiguration nicht vervollstaendigt - die Marke 'Aktualisierung laeuft' liegt noch. Der Dienst holt es beim naechsten Start nach." ;;
+        *) echo "<WARNING> Konfiguration nicht vervollstaendigt: ${MT_VV_ZEILE:-keine Ausgabe}. Der Dienst versucht es beim Start erneut." ;;
+    esac
+fi
 exit 0

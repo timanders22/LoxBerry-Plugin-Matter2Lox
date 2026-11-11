@@ -11,6 +11,14 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.52
+
+- **Konfiguration wird vervollständigt:** Fehlen in `matter2lox.json` Einstellungen, die eine neuere Fassung mitbringt, trägt das Plugin sie jetzt einmal mit ihrer Vorgabe in die Datei ein – beim Start des Dienstes und am Ende einer Aktualisierung (`postupgrade.sh`). Bisher ergänzte das Plugin fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern im Formular. Das Protokoll nennt die ergänzten Namen in einer Zeile, nie die Werte; das Installationsprotokoll sagt, was geschah.
+- Geschrieben werden die Werte, die in der Datei stehen, plus die fehlenden Vorgaben. Schlüssel, die das Plugin nicht kennt, bleiben stehen; geschrieben wird nur, wenn etwas fehlt, auf demselben Weg wie beim Speichern (Rechte 0600, Zweitschrift). Eine fehlende Einstellung galt beim Lesen schon bisher mit ihrer Vorgabe, am Verhalten ändert sich deshalb nichts. `endpunkt_ein` trägt das Vervollständigen nicht ein: den Übergang einer bestehenden Anlage setzt weiter allein die Aktualisierung, und ein hier festgeschriebenes „aus“ könnte eine spätere Aktualisierung nicht mehr berichtigen.
+- Während einer Aktualisierung geschieht nichts: Der Übergang in `postinstall.sh`, der einer bestehenden Anlage den HTTP-Endpunkt einschaltet, läuft vorher. Eine fehlende, leere oder beschädigte Datei und eine Datei ohne Aktionstoken oder mit leerem Aktionstoken werden nicht angefasst; das Aktionstoken selbst wird nie eingetragen, damit die Oberfläche beim ersten Aufruf weiterhin ein neues erzeugt.
+- Gemessen ist das im Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, einschließlich der neuen Kommandozeile `bin/mt_vervollstaendigen.php` und des Aufrufs aus dem Dienst. Nicht gemessen ist es an einem LoxBerry, also weder die Reihenfolge der Installationsskripte bei einer echten Aktualisierung noch der Start des Dienstes dort.
+- Leere Objekte (`{}`) in der Datei bleiben beim Vervollständigen erhalten, auch verschachtelte und solche unter unbekannten Schlüsseln; sie werden dabei nicht mehr zu leeren Listen (`[]`). Das Speichern im Formular bleibt, wie es war.
+
 ## Neu in 0.9.51
 
 - **Ansage-Brücke des Dienstes:** `bin/mt_ansage.php` nimmt eine LoxBerry-Wurzel nur noch an, wenn `config/plugins`, `data/plugins` und `config/system/general.json` vorhanden sind; sonst antwortet es mit `KENNUNG=WURZEL` und Rückgabewert 1.

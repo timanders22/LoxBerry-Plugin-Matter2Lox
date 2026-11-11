@@ -572,6 +572,102 @@ function mt_token()
     return (string) $cfg['aktionstoken'];
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026),
+ *  damit json_encode() sie als {} und nicht als [] schreibt - oben wie verschachtelt, auch unter fremden
+ *  Schluesseln. Nur fuer mt_config_vervollstaendigen(); das Speichern im Formular bleibt, wie es ist.
+ *  Bauart Bewaesserung 0.9.56 (bw_json_leere_objekte()). */
+function mt_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = mt_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = mt_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Fehlende Einstellungen EINMAL mit ihrer Vorgabe in die Datei schreiben (0.9.52; Regeln/05, Bauform Docker NG
+ * 1.3.7).
+ *
+ * Bis 0.9.51 ergaenzte mt_config() fehlende Schluessel nur im Speicher; in die Datei kamen sie erst beim naechsten
+ * Speichern im Formular. Aufgerufen ueber bin/mt_vervollstaendigen.php vom Dienst beim Start (vor dem ersten
+ * Lesen der Konfiguration) und von postupgrade.sh - nach postinstall.sh und damit nach dessen Uebergang fuer
+ * endpunkt_ein.
+ *
+ *  - nur mit LoxBerry-Wurzel (nicht im Archivmodus) und nicht waehrend einer Aktualisierung (Marke
+ *    .upgrade_laeuft, dieselbe Grenze wie mt_upgrade_marke()): sonst kaeme endpunkt_ein mit der Vorgabe 0 in die
+ *    Datei, BEVOR postinstall.sh einer bestehenden Anlage die 1 eintraegt - der HTTP-Weg waere still aus;
+ *  - nur eine Datei, die ein JSON-Objekt ist und ein NICHT LEERES Aktionstoken traegt. aktionstoken selbst wird nie
+ *    ergaenzt: fehlt es, erzeugt mt_token() beim ersten Aufruf ein neues - ein hier eingetragenes '' gaelte dort als
+ *    "bewusst geleert" und verhinderte das fuer immer. Ein leer vorhandenes Token (bewusst geleert) laesst die Datei
+ *    ebenfalls unberuehrt; mt_config_speichern() zoege ohne Token auch die Zweitschrift nicht nach. Eine fehlende,
+ *    leere oder beschaedigte Datei ist Sache der Selbstheilung in mt_config();
+ *  - geschrieben werden die WERTE AUS DER DATEI, so wie sie dort stehen, plus die fehlenden Vorgaben. mt_config()
+ *    legt die Datei ohne Lese-Regel ueber mt_vorgaben() (array_merge) - jeder fehlende Schluessel gilt beim Lesen
+ *    also schon heute mit seiner Vorgabe, auch endpunkt_ein mit 0 (so sagt es postinstall.sh, wenn sein Uebergang
+ *    scheitert). Am Verhalten aendert das Eintragen nichts;
+ *  - nur Schluessel aus mt_vorgaben(); das Speichern im Formular schreibt dieselben (es speichert mt_config()),
+ *    die Ansageschluessel eingeschlossen (ansage_token_herkunft dort ebenso mit [], wenn er fehlt);
+ *  - fremde Schluessel bleiben stehen; geschrieben wird nur, wenn etwas fehlt; Weg, Rechte (0600) und Zweitschrift
+ *    wie beim Speichern (mt_config_speichern()); eine Protokollzeile mit den Namen, nie mit Werten.
+ *
+ * Rueckgabe: array('stand' => ohne_wurzel|ruht|ohne_datei|ohne_merkwort|vollstaendig|ergaenzt|fehler,
+ *                  'schluessel' => Namen der eingetragenen bzw. fehlenden Schluessel)
+ */
+function mt_config_vervollstaendigen()
+{
+    $p = mt_paths();
+    if ($p['home'] === '') {
+        return array('stand' => 'ohne_wurzel', 'schluessel' => array());
+    }
+    $marke = mt_upgrade_marke();
+    if ($marke[0] === 1) {
+        return array('stand' => 'ruht', 'schluessel' => array());
+    }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config'])) {
+        return array('stand' => 'ohne_datei', 'schluessel' => array());
+    }
+    $roh = trim((string) @file_get_contents($p['config']));
+    $datei = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    if (!is_array($datei) || !array_key_exists('aktionstoken', $datei) || !is_string($datei['aktionstoken'])
+        || trim($datei['aktionstoken']) === '') {
+        return array('stand' => 'ohne_merkwort', 'schluessel' => array());
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim
+    // Schreiben als [] zurueck - der Rohwert wird erhalten, bevor ergaenzt wird (11.11.2026).
+    $datei = mt_json_leere_objekte($datei, json_decode($roh));
+    $fehlend = array();
+    foreach (mt_vorgaben() as $k => $w) {
+        /* endpunkt_ein bleibt aussen vor (11.11.2026): den Uebergang fuer Bestandsanlagen setzt das
+         * Update; ein hier festgeschriebenes "aus" koennte ein spaeteres Update nicht mehr berichtigen. */
+        if ($k === 'aktionstoken' || $k === 'endpunkt_ein' || array_key_exists($k, $datei)) {
+            continue;
+        }
+        $datei[$k] = $w;
+        $fehlend[] = $k;
+    }
+    if (!$fehlend) {
+        return array('stand' => 'vollstaendig', 'schluessel' => array());
+    }
+    if (!mt_config_speichern($datei)) {
+        mt_log_gebremst('vervollstaendigen', 'FEHLER: Die Konfiguration liess sich nicht vervollstaendigen - '
+            . $p['config'] . ' liess sich nicht schreiben (fehlend: ' . implode(', ', $fehlend) . ').');
+        return array('stand' => 'fehler', 'schluessel' => $fehlend);
+    }
+    mt_log('Konfiguration vervollstaendigt: ' . count($fehlend) . ' fehlende Einstellung(en) mit der Vorgabe '
+        . 'eingetragen (' . implode(', ', $fehlend) . ').');
+    return array('stand' => 'ergaenzt', 'schluessel' => $fehlend);
+}
+
 /* ---------------- Zwischenspeicher ---------------- */
 
 function mt_loxone()
