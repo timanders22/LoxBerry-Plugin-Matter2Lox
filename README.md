@@ -11,6 +11,11 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.51
+
+- **Ansage-Brücke des Dienstes:** `bin/mt_ansage.php` nimmt eine LoxBerry-Wurzel nur noch an, wenn `config/plugins`, `data/plugins` und `config/system/general.json` vorhanden sind; sonst antwortet es mit `KENNUNG=WURZEL` und Rückgabewert 1.
+- **Gemeinsames Sprachmodul 1.4.3:** Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.
+
 ## Neu in 0.9.50
 
 Diese Fassung entstand nach Vorschlägen von centauri (PR #1, #2, #3).
