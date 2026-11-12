@@ -502,6 +502,86 @@ function mt_pruef_vorgaben()
 }
 
 /**
+ * 0.9.53 (Punkte G2, G3): passt die Verbindungsart zum LoxBerry? Wirkung statt Rueckgabewert: verglichen wird mit
+ * der Konfiguration, die der Bridge-Container tatsaechlich liest (<bridge>/.matterbridge/matterbridge-loxone.config.json,
+ * nur host und port - das Kennwort darin wird nie ausgegeben). Rot: ungueltige Einstellung, tls 0 bei einem LoxBerry
+ * mit https (G3, nicht umgedeutet), oder der Container verbindet noch anders, als die Einstellung sagt.
+ */
+function mt_pruef_verbindung($cfg)
+{
+    $ms = mt_br_miniserver($cfg);
+    if ($ms === null) {
+        return array(-1, mt_t('TEST.A_VERB_KEIN_MS'));
+    }
+    if ($ms['tls'] === null) {
+        return array(0, sprintf(mt_t('TEST.A_VERB_UNGUELTIG'), mt_e(mt_kurz((string) json_encode($ms['wahl']), 40))));
+    }
+    if ($ms['widerspruch']) {
+        return array(0, sprintf(mt_t('TEST.A_VERB_WIDERSPRUCH'), mt_e($ms['basis'])));
+    }
+    /* 0.9.53 (Weg 2): bei TLS verbindet der Container mit dem Cloud-Namen - fehlt er, wird nicht ueber die IP verbunden. */
+    if ($ms['tls'] && $ms['tls_host'] === '') {
+        return array(0, mt_t($ms['tls_host_grund'] === 'ipv4' ? 'TEST.A_VERB_IPV4' : 'TEST.A_VERB_SERIAL'));
+    }
+    if ($ms['serial_widerspruch'] !== '') {
+        return array(0, mt_t($ms['serial_widerspruch'] === 'ip' ? 'TEST.A_VERB_ORT_IP' : 'TEST.A_VERB_ORT_SERIAL'));
+    }
+    $lb = mt_t($ms['lb_https'] ? 'TEST.A_VERB_LB_HTTPS' : 'TEST.A_VERB_LB_HTTP');
+    $soll = $ms['container_host'];
+    $ziel = (strpos($soll, '://') === false ? 'http://' . $soll : $soll) . ':' . (int) $ms['port'];
+    $datei = mt_br_pfade()['ordner'] . '/.matterbridge/matterbridge-loxone.config.json';
+    if (!is_file($datei)) {
+        return array(1, sprintf(mt_t('TEST.A_VERB_OK'), mt_e($ziel), $lb));
+    }
+    $d = is_readable($datei) ? mt_json_lesen($datei) : array();
+    if (!isset($d['host']) || !is_string($d['host']) || !isset($d['port']) || !is_numeric($d['port'])) {
+        return array(-1, sprintf(mt_t('TEST.A_VERB_UNLESBAR'), mt_e($ziel)));
+    }
+    $ist = (strpos($d['host'], '://') === false ? 'http://' . $d['host'] : $d['host']) . ':' . (int) $d['port'];
+    if ($d['host'] !== $soll || (int) $d['port'] !== (int) $ms['port']) {
+        return array(0, sprintf(mt_t('TEST.A_VERB_BRIDGE_ALT'), mt_e($ist), mt_e($ziel)));
+    }
+    return array(1, sprintf(mt_t('TEST.A_VERB_OK_BRIDGE'), mt_e($ziel), $lb));
+}
+
+/** 0.9.53 (Weg 2): loest der Cloud-Name auf die eingetragene IP auf? Wirkung statt Rueckgabewert: gefragt wird der
+ *  Namensdienst des LoxBerry, den der Container (--network host) ebenso benutzt. Ein DNS-Rebind-Schutz im Router
+ *  (z. B. Fritz!Box) verwirft Antworten mit privaten Adressen. null = keine Zeile (nicht verschluesselt). */
+function mt_pruef_dns($cfg)
+{
+    $ms = mt_br_miniserver($cfg);
+    if ($ms === null || $ms['tls'] !== true) {
+        return null;
+    }
+    if ($ms['tls_host'] === '') {
+        return array(0, mt_t($ms['tls_host_grund'] === 'ipv4' ? 'TEST.A_VERB_IPV4' : 'TEST.A_VERB_SERIAL'));
+    }
+    $ips = mt_br_dns_aufloesen($ms['tls_host']);
+    if (!$ips) {
+        return array(0, sprintf(mt_t('TEST.A_DNS_KEINE'), mt_e($ms['tls_host'])));
+    }
+    if (in_array($ms['host'], $ips, true)) {
+        return array(1, sprintf(mt_t('TEST.A_DNS_OK'), mt_e($ms['tls_host']), mt_e($ms['host'])));
+    }
+    return array(0, sprintf(mt_t('TEST.A_DNS_ANDERS'), mt_e($ms['tls_host']), mt_e(implode(', ', $ips)), mt_e($ms['host'])));
+}
+
+/** 0.9.53 (Punkt G4): hat der Miniserver auf https umgeleitet - bei der Testanmeldung (Merker anmeldung) oder im
+ *  Protokoll des Bridge-Containers (Merker des Waechters)? null = keine Umleitung gesehen, dann keine Zeile. */
+function mt_pruef_umleitung()
+{
+    $a = mt_br_anmeldung();
+    if (isset($a['ergebnis']) && $a['ergebnis'] === 'umleitung') {
+        return array(0, sprintf(mt_t('TEST.A_UMLEITUNG_TEST'), mt_e(date('d.m.Y H:i', isset($a['ts']) ? (int) $a['ts'] : 0))));
+    }
+    $w = mt_json_lesen(mt_br_pfade()['waechter']);
+    if (isset($w['umleitung']) && is_string($w['umleitung']) && $w['umleitung'] !== '') {
+        return array(0, mt_t('TEST.A_UMLEITUNG_BRIDGE'));
+    }
+    return null;
+}
+
+/**
  * Tuer-1 (Verbesserungsbau 30.09.2026): meldet das Plugin Tueren und
  * Schloesser unter haus/tuer/? Gelesen wird die Merkdatei des Dienstes
  * (config/plugins/<ordner>.haus_themen.json) - sie nennt jedes Thema, das je
@@ -1405,6 +1485,19 @@ function mt_pruefungen()
     $zeilen[] = mt_pruefzeile($r[0], mt_t('TEST.F_REITER'), $r[1]);
     $vg = mt_pruef_vorgaben();
     $zeilen[] = mt_pruefzeile($vg[0], mt_t('TEST.F_VORGABEN'), $vg[1]);
+
+    /* 0.9.53 (Punkte G2-G4): Verbindungsart zum Miniserver - gemessen an der Konfiguration, mit der der
+     * Bridge-Container wirklich verbindet - und die Umleitung auf https (nur, wenn eine gesehen wurde). */
+    $vb = mt_pruef_verbindung($cfg);
+    $zeilen[] = mt_pruefzeile($vb[0], mt_t('TEST.F_VERBINDUNG'), $vb[1]);
+    $dn = mt_pruef_dns($cfg);
+    if ($dn !== null) {
+        $zeilen[] = mt_pruefzeile($dn[0], mt_t('TEST.F_DNS'), $dn[1]);
+    }
+    $ul = mt_pruef_umleitung();
+    if ($ul !== null) {
+        $zeilen[] = mt_pruefzeile($ul[0], mt_t('TEST.F_UMLEITUNG'), $ul[1]);
+    }
 
     /* Gruppe 8 (0.9.44, Entwurf 2.0/2.2/2.4/3.7/3.9): Befehlsbruecke, Warteschlange (F1), HTTP-Endpunkt,
      * Herzschlag, Namenstabelle - hinter dem M17-Schutz, damit sie ohne php-xml nicht fehlen. */

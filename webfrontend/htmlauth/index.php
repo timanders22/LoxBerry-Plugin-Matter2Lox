@@ -1193,6 +1193,48 @@ if ($mt_post && isset($_POST['br_zugang'])) {
     }
     $mt_tab = 'tab-bridge';
 }
+/* 0.9.53 (Punkt G2): Verbindung zum Miniserver - tls 'auto' (wie LoxBerry), 0 oder 1. Der Wert steht in
+ * matter2lox.json (Sicherung, Vervollstaendigen), wirkt aber nur auf die Bridge: nur sie spricht den Miniserver an
+ * (mt_br_miniserver()). Ein anderer Wert wird abgewiesen und bleibt im Feld sichtbar (Regeln/04 X-2). Eine Aenderung
+ * startet eine laufende eigene Bridge neu (bridge_neustart schreibt ihre Konfiguration neu); eine angehaltene bleibt
+ * angehalten. Das Protokoll nennt alt, neu und was mit der Bridge geschah. */
+if ($mt_post && isset($_POST['br_verbindung'])) {
+    $mt_cfg = mt_config();
+    $mt_troh = isset($_POST['tls']) && is_string($_POST['tls']) ? $_POST['tls'] : null;
+    $mt_tneu = $mt_troh === 'auto' ? 'auto' : ($mt_troh === '0' ? 0 : ($mt_troh === '1' ? 1 : null));
+    if ($mt_tneu === null) {
+        $mt_fehler[] = mt_t('EINST.FEHLER_TLS');
+        $mt_eingaben = mt_eingaben_sammeln('br_verbindung', array('tls'));
+    } else {
+        $mt_talt = array_key_exists('tls', $mt_cfg) ? $mt_cfg['tls'] : 'auto';
+        $mt_cfg['tls'] = $mt_tneu;
+        if (!mt_config_speichern($mt_cfg)) {
+            $mt_fehler[] = sprintf(mt_t('EINST.FEHLER_SPEICHERN'), mt_e($mt_p['config']));
+            $mt_eingaben = mt_eingaben_sammeln('br_verbindung', array());
+        } else {
+            $mt_meldungen[] = mt_t('EINST.GESPEICHERT');
+            if ($mt_talt !== $mt_tneu) {
+                $mt_bneu = 'die Bridge laeuft nicht, die Einstellung gilt beim naechsten Start';
+                $mt_bc = mt_br_cfg();
+                if ($mt_bc['bridge_ein'] && mt_docker_da()) {
+                    list($mt_be, ) = mt_br_eigen();
+                    $mt_bi = $mt_be === 1 ? mt_br_ist() : null;
+                    if ($mt_bi !== null && $mt_bi['laeuft']) {
+                        list($mt_ok, $mt_ausgabe) = mt_ct_vorgang_starten('bridge_neustart');
+                        if ($mt_ok) { $mt_meldungen[] = $mt_ausgabe; } else { $mt_fehler[] = $mt_ausgabe; }
+                        $mt_bneu = $mt_ok ? 'die Bridge wird neu gestartet' : 'Neustart der Bridge nicht moeglich';
+                    }
+                }
+                if (strpos($mt_bneu, 'laeuft nicht') !== false) {
+                    $mt_meldungen[] = mt_t('BRIDGE.M_TLS_START');
+                }
+                mt_log('Verbindung zum Miniserver: tls=' . (is_int($mt_tneu) ? $mt_tneu : 'auto') . ' (vorher '
+                       . (is_scalar($mt_talt) ? mt_kurz((string) json_encode($mt_talt), 20) : '?') . '); ' . $mt_bneu . '.');
+            }
+        }
+    }
+    $mt_tab = 'tab-bridge';
+}
 if ($mt_post && (isset($_POST['br_pruefen']) || !empty($mt_bpruefen))) {
     list($mt_berg, $mt_bzahl) = mt_br_testanmeldung();
     if ($mt_berg === 'ok') {
@@ -2691,8 +2733,46 @@ if ($mt_fz) { ?>
 <div class="sm-hinweis"><?= mt_t('BRIDGE.S2_BENUTZER') ?></div>
 <div class="sm-warnung"><?= mt_t('BRIDGE.S2_SPERRE') ?></div>
 <p class="sm-hilfe"><?= $mt_brms !== null
-    ? sprintf(mt_t('BRIDGE.S2_MS'), mt_e($mt_brms['host'] . ':' . $mt_brms['port']))
+    ? sprintf(mt_t('BRIDGE.S2_MS'), mt_e($mt_brms['basis'] !== '' ? $mt_brms['basis'] : $mt_brms['host']))
     : mt_t('BRIDGE.S2_KEIN_MS') ?></p>
+<?php if ($mt_brms !== null && $mt_brms['tls'] === true && $mt_brms['tls_host'] !== '') { ?>
+<p class="sm-hilfe"><?= sprintf(mt_t('BRIDGE.S2_TLS_NAME'), mt_e($mt_brms['tls_host'] . ':' . $mt_brms['port'])) ?></p>
+<?php } elseif ($mt_brms !== null && $mt_brms['tls'] === true) { ?>
+<div class="sm-fehler"><?= mt_t($mt_brms['tls_host_grund'] === 'ipv4' ? 'BRIDGE.V_TLS_IPV4' : 'BRIDGE.V_TLS_SERIAL') ?></div>
+<?php } ?>
+<?php /* 0.9.53 (Punkt G2/G3): Auswahl "Verbindung zum Miniserver"; Widerspruch und ungueltiger Wert in Rot. */
+$mt_tgesp = array_key_exists('tls', $mt_cfg) ? $mt_cfg['tls'] : 'auto';
+$mt_tzeig = mt_eingabe('br_verbindung', 'tls', is_int($mt_tgesp) ? (string) $mt_tgesp : (is_string($mt_tgesp) ? $mt_tgesp : (string) json_encode($mt_tgesp)));
+$mt_tzeig = is_string($mt_tzeig) ? $mt_tzeig : '';
+$mt_twahl = array('auto' => 'BRIDGE.TLS_AUTO', '0' => 'BRIDGE.TLS_AUS', '1' => 'BRIDGE.TLS_EIN');
+if ($mt_brms !== null && $mt_brms['tls'] === null) { ?>
+<div class="sm-fehler"><?= mt_e(mt_t('EINST.FEHLER_TLS')) ?></div>
+<?php } elseif ($mt_brms !== null && $mt_brms['widerspruch']) { ?>
+<div class="sm-fehler"><?= mt_t('BRIDGE.TLS_WIDERSPRUCH') ?></div>
+<?php } ?>
+<form action="index.php" method="post">
+  <?php echo mt_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-bridge">
+<?php if (mt_eingaben_aktiv('br_verbindung')) { ?>
+<div class="sm-warnung"><?= mt_e(mt_t('EINST.EINGABEN_ZURUECK')) ?></div>
+<?php } ?>
+  <div class="sm-feld">
+    <label for="tls"><?= mt_e(mt_t('BRIDGE.L_TLS')) ?></label>
+    <select data-role="none" id="tls" name="tls"<?= mt_markierung('br_verbindung', 'tls') ?>>
+<?php foreach ($mt_twahl as $mt_tw => $mt_tt) { ?>
+      <option value="<?= mt_e($mt_tw) ?>"<?= $mt_tzeig === (string) $mt_tw ? ' selected' : '' ?>><?= mt_e(mt_t($mt_tt)) ?></option>
+<?php } ?>
+<?php if (!isset($mt_twahl[$mt_tzeig])) { ?>
+      <option value="<?= mt_e($mt_tzeig) ?>" selected><?= mt_e(sprintf(mt_t('BRIDGE.TLS_UNGUELTIG'), $mt_tzeig)) ?></option>
+<?php } ?>
+    </select>
+    <div class="sm-hilfe"><?= mt_t('BRIDGE.H_TLS') ?></div>
+  </div>
+  <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= mt_t('LEGENDE.AKTION') ?></span></div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="br_verbindung" value="1"><?= mt_e(mt_t('ALLG.SPEICHERN')) ?></button>
+  </div>
+</form>
 <form action="index.php" method="post" autocomplete="off">
   <?php echo mt_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-bridge">

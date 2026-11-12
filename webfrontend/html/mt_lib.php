@@ -297,6 +297,12 @@ function mt_vorgaben()
         'befehle_mqtt_ein'        => 0,
         'befehle_mqtt_entsperren' => 0,
         'endpunkt_ein'            => 0,
+        /* 0.9.53 (Punkt G1, Entscheidung des Hausherrn 11.11.2026: neue Standardkonfiguration in allen Plugins):
+         * Verbindung zum Miniserver. 'auto' = wie LoxBerry (Preferhttps 1 oder Transport https -> TLS mit Porthttps),
+         * daneben 0 (unverschluesselt) und 1 (verschluesselt). Nur die Matter-Bridge spricht den Miniserver an
+         * (mt_br_miniserver()). Fehlt der Schluessel, gilt 'auto'; ein in der Datei stehendes 0 bleibt 0 (G3) -
+         * gemeldet wird der Widerspruch, umgedeutet wird nichts. */
+        'tls'                     => 'auto',
     );
 }
 
@@ -835,7 +841,8 @@ function mt_sicherung_neue_schluessel()
      * bis 0.9.34 fehlen; sie behalten dann ihre Vorgabe. */
     return array('tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse',
                  /* 0.9.39 */ 'fabric_entfernen_ein',
-                 /* 0.9.44 (Gruppe 8) */ 'befehle_mqtt_ein', 'befehle_mqtt_entsperren', 'endpunkt_ein');
+                 /* 0.9.44 (Gruppe 8) */ 'befehle_mqtt_ein', 'befehle_mqtt_entsperren', 'endpunkt_ein',
+                 /* 0.9.53 (Punkt G1): fehlt er, gilt 'auto' */ 'tls');
 }
 
 /**
@@ -905,6 +912,8 @@ function mt_eingabe_felder()
         /* M20 (0.9.44, Pruefbericht; Regeln/04 X-2): der Zugang der Matter-Bridge (Reiter Bridge, Schritt 2).
          * Das Kennwort reist nie mit. */
         'br_zugang'      => array('br_benutzer' => 'text', 'br_kennwort' => 'geheim'),
+        /* 0.9.53 (Punkt G2): die Auswahl "Verbindung zum Miniserver" im Reiter Bridge. */
+        'br_verbindung'  => array('tls' => 'text'),
         /* 0.9.35 (Nr. 4): die Felder der Reiter Anlernen und Test bleiben nach
          * der Umleitung stehen - auch nach einem Erfolg, nicht nur nach einer
          * Beanstandung. Der Code vom Geraet reist nie mit (ein zweiter Druck
@@ -4999,6 +5008,14 @@ function mt_zahlgrenzen()
                  'herzschlag' => array(0, 3600));
 }
 
+/** Ist tls ein erlaubter Wert? '' oder der Grund (0.9.53, Punkt G1). Nur genau 'auto', 0 und 1 - kein true, kein "1",
+ *  kein 1.0 (dieselbe Regel wie db_wert_tls() im Dashboard 0.9.44). Gilt fuer das Formular, das Zurueckspielen einer
+ *  Sicherung und mt_br_miniserver(). */
+function mt_wert_tls($w)
+{
+    return ($w === 'auto' || $w === 0 || $w === 1) ? '' : mt_t('EINST.FEHLER_TLS');
+}
+
 /** Die Haken der Konfiguration - dieselbe Liste wie HAKEN im Dienst. */
 function mt_haken()
 {
@@ -5040,6 +5057,11 @@ function mt_mqtt_nur_gueltig($s)
 
 function mt_wert_pruefen($schluessel, $wert)
 {
+    /* 0.9.53 (Punkt G1): tls ist weder Haken noch Zahl - genau 'auto', 0 oder 1, geprueft VOR der Umwandlung in eine
+     * Zeichenkette darunter (sonst gaelte "1" wie 1 und true wie 1). */
+    if ($schluessel === 'tls') {
+        return mt_wert_tls($wert);
+    }
     /* 1. Am Eingang: taugt der Wert ueberhaupt fuer eine Konfigurationsdatei? */
     if (!is_scalar($wert) || is_bool($wert)) {
         return mt_t('EINST.SICH_W_TYP');

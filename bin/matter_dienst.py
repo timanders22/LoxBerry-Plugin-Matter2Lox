@@ -259,6 +259,10 @@ VORGABEN = {
     "befehle_mqtt_ein": 0,
     "befehle_mqtt_entsperren": 0,
     "endpunkt_ein": 0,
+    # 0.9.53 (Punkt G1): Verbindung zum Miniserver, "auto", 0 oder 1. Der Dienst spricht den Miniserver nicht an - nur
+    # die Matter-Bridge (mt_br_miniserver() in mt_bridge.php); der Schluessel steht hier, weil beide Seiten dieselben
+    # Vorgaben fuehren (Pruefzeile F_VORGABEN).
+    "tls": "auto",
 }
 
 # Wie lange ein Stellbefehl in der Warteschlange gueltig bleibt. Was laenger

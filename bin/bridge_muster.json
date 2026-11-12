@@ -3,5 +3,6 @@
   "fehlerzeile": ["error", "fail", "reconnect", "refused", "denied", "reject"],
   "anmeldung": ["4003", "\\b401\\b", "unauthori[sz]ed", "temporarily blocked", "user blocked", "getjwt", "authenticat", "invalid credentials"],
   "netz": ["ECONNREFUSED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ECONNRESET", "EAI_AGAIN", "socket hang up", "timed? ?out", "WebSocket upgrade error"],
-  "erfolg": ["Creating devices", "Created device of type"]
+  "erfolg": ["Creating devices", "Created device of type"],
+  "umleitung": ["Unexpected server response: 30[1278]"]
 }

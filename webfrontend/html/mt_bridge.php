@@ -161,6 +161,8 @@ function mt_br_pfade()
         'anmeldung'   => $d . '.bridge_anmeldung.json',
         'waechter'    => $d . '.bridge_waechter.json',
         'struktur'    => $d . '.bridge_struktur.json',
+        /* 0.9.53: gemessene Seriennummern fuer den Cloud-Namen (TLS des Containers), 0600 */
+        'cloudname'   => $d . '.bridge_cloudname.json',
         'fenster'     => $d . '/bridge_fenster.json',
         'cfg'         => $p['configdir'] . '/bridge.json',
         'zugang'      => $p['configdir'] . '/bridge_zugang.json',
@@ -277,33 +279,274 @@ function mt_br_benutzer_gueltig($b)
 
 /* ---------------- Miniserver und Testanmeldung (Stufe 1) ---------------- */
 
-/** Adresse und Port aus den LoxBerry-Miniserver-Einstellungen (nicht aus
- *  der Vorgabe 8080 des Plugins). Der erste Miniserver. null = keiner. */
-function mt_br_miniserver()
+/** Fuehrt der LoxBerry diesen Miniserver verschluesselt? (0.9.53, Punkt G1; dieselbe Regel wie lb_sagt_https() und
+ *  db_ms_verbindung() im Dashboard 0.9.44.) Am Geraet gemessen 11.11.2026 (Stand-Protokolle, Nacht-Firmware-HTTPS):
+ *  Transport "https", Preferhttps "1", Porthttps "443", Port "80". Wahr bei Preferhttps 1 oder Transport https. */
+function mt_br_lb_https(array $m)
+{
+    $pref = isset($m['Preferhttps']) ? $m['Preferhttps'] : null;
+    return ($pref === true || (is_scalar($pref) && !is_bool($pref) && trim((string) $pref) === '1'))
+        || (isset($m['Transport']) && is_string($m['Transport']) && strtolower(trim($m['Transport'])) === 'https');
+}
+
+/**
+ * Der Miniserver, wie das Plugin ihn anspricht - die EINZIGE Stelle dafuer (0.9.53, Punkt G1). Beide Zugriffe des
+ * Plugins auf den Miniserver gehen hier durch: die Testanmeldung (mt_br_testanmeldung(), hier in PHP) und die
+ * Konfiguration des Bridge-Containers (mt_br_konfig_schreiben(); matterbridge-loxone verbindet dann selbst). Der erste
+ * Miniserver der LoxBerry-Einstellungen, nicht die Vorgabe 8080 von matterbridge-loxone.
+ *
+ * Verbindungsart aus der Einstellung tls (matter2lox.json): 'auto' = TLS genau dann, wenn der LoxBerry https sagt
+ * (mt_br_lb_https()); 1 immer, 0 nie; jeder andere Wert wird nicht gedeutet (tls null, basis leer - die Aufrufer
+ * verbinden dann nicht). Port bei TLS Porthttps (fehlt oder ungueltig: 443), sonst Port (fehlt oder keine Zahl: 80).
+ * Bis 0.9.52 galt hier immer Port und http: ein Miniserver ab Firmware 17.3 leitet http mit 308 auf eine https-Adresse
+ * um (am Geraet gemessen 11.11.2026), und weder der curl-Weg noch der Ersatzweg folgen ihr (gemessen
+ * Pruefung-Matter2Lox-0.9.53/messung_308_vorher.txt).
+ *
+ * Zwei Adressen bei TLS (Entscheidung der Hauptsitzung 12.11.2026, Weg 2): die Testanmeldung in PHP geht wie das
+ * Dashboard 0.9.44 zur IP aus Ipaddress, verschluesselt, das Zertifikat aber nicht beglaubigt (an der rohen IP zeigt
+ * der Miniserver ein selbstsigniertes) - nur so laesst sich die Seriennummer lernen, aus der der Name entsteht. Der
+ * Bridge-Container (matterbridge-loxone, Node.js prueft das Zertifikat) bekommt den Cloud-Namen
+ * <ip-mit-bindestrichen>.<seriennummer>.dyndns.loxonecloud.com (container_host). Fehlt die Seriennummer oder ist die
+ * Adresse keine IPv4, ist container_host leer und tls_host_grund nennt den Grund - nie still die IP.
+ *
+ * Rueckgabe null = kein brauchbarer Miniserver eingetragen; sonst host, port, tls (true/false, null bei ungueltiger
+ * Wahl), wahl (der Wert aus der Konfiguration), lb_https, widerspruch (tls 0, der LoxBerry sagt aber https),
+ * basis ('http(s)://<ip>:<port>', '' bei ungueltiger Wahl) und name.
+ */
+function mt_br_miniserver($cfg = null)
 {
     $p = mt_paths();
     $home = $p['home'] !== '' ? $p['home'] : $p['archiv'];
     if ($home === '') {
         return null;
     }
+    if (!is_array($cfg)) {
+        $cfg = mt_config(false);
+    }
+    $wahl = array_key_exists('tls', $cfg) ? $cfg['tls'] : 'auto';
     $g = mt_json_lesen($home . '/config/system/general.json');
     $ms = isset($g['Miniserver']) && is_array($g['Miniserver']) ? $g['Miniserver'] : array();
     $nummern = array_keys($ms);
     sort($nummern);
     foreach ($nummern as $n) {
-        $m = $ms[$n];
-        $ip = is_array($m) && isset($m['Ipaddress']) ? trim((string) $m['Ipaddress']) : '';
-        $port = is_array($m) && isset($m['Port']) && preg_match('/^[0-9]{1,5}$/', (string) $m['Port']) ? (int) $m['Port'] : 80;
-        if ($ip !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9.\-]{0,80}$/', $ip) && $port >= 1 && $port <= 65535) {
-            return array('host' => $ip, 'port' => $port, 'name' => isset($m['Name']) ? mt_kurz((string) $m['Name'], 40) : '');
+        $m = is_array($ms[$n]) ? $ms[$n] : array();
+        $ip = isset($m['Ipaddress']) && is_scalar($m['Ipaddress']) ? trim((string) $m['Ipaddress']) : '';
+        if ($ip === '' || !preg_match('/^[A-Za-z0-9][A-Za-z0-9.\-]{0,80}$/', $ip)) {
+            continue;
         }
+        $lb_https = mt_br_lb_https($m);
+        $tls = mt_wert_tls($wahl) === '' ? ($wahl === 'auto' ? $lb_https : $wahl === 1) : null;
+        if ($tls === true) {
+            $roh = isset($m['Porthttps']) && is_scalar($m['Porthttps']) ? trim((string) $m['Porthttps']) : '';
+            $port = (preg_match('/^[0-9]{1,5}$/', $roh) && (int) $roh >= 1 && (int) $roh <= 65535) ? (int) $roh : 443;
+        } else {
+            $port = isset($m['Port']) && is_scalar($m['Port']) && preg_match('/^[0-9]{1,5}$/', trim((string) $m['Port']))
+                ? (int) trim((string) $m['Port']) : 80;
+            if ($port < 1 || $port > 65535) {
+                continue;
+            }
+        }
+        /* Cloud-Name fuer den Container (0.9.53): nur aus gemessener Seriennummer, nur aus einer IPv4. */
+        $strich = mt_br_ip_strich($ip);
+        $cm = mt_br_cloudname_merk();
+        $serial = $cm['struktur'] !== '' ? $cm['struktur'] : $cm['umleitung'];
+        $tls_host = '';
+        $grund = '';
+        if ($tls === true) {
+            if ($strich === '') {
+                $grund = 'ipv4';
+            } elseif ($serial === '') {
+                $grund = 'serial';
+            } else {
+                $tls_host = $strich . '.' . $serial . '.dyndns.loxonecloud.com';
+            }
+        }
+        return array('host' => $ip, 'port' => $port, 'tls' => $tls, 'wahl' => $wahl, 'lb_https' => $lb_https,
+                     'widerspruch' => ($wahl === 0 && $lb_https),
+                     'basis' => $tls === null ? '' : (($tls ? 'https' : 'http') . '://' . $ip . ':' . $port),
+                     'tls_host' => $tls_host, 'tls_host_grund' => $grund,
+                     'serial_quelle' => $cm['struktur'] !== '' ? 'struktur' : ($cm['umleitung'] !== '' ? 'umleitung' : ''),
+                     'serial_widerspruch' => mt_br_cloudname_widerspruch($cm, $strich),
+                     'container_host' => $tls === true ? ($tls_host !== '' ? 'https://' . $tls_host : '') : $ip,
+                     'name' => isset($m['Name']) ? mt_kurz((string) $m['Name'], 40) : '');
     }
     return null;
 }
 
-/** Ein HTTP-GET. Rueckgabe array(code, rumpf, fehler); code 0 = keine Antwort. */
+/* ---------------- Cloud-Name fuer TLS (0.9.53, Weg 2 der Hauptsitzung 12.11.2026) ----------------
+ * Das gueltige Zertifikat des Miniservers lautet auf <ip-mit-bindestrichen>.<seriennummer>.dyndns.loxonecloud.com;
+ * auf genau diese Form leitet er http und ws um (gemessen 11.11.2026, Gross-/Kleinschreibung der Seriennummer
+ * beliebig). Die Seriennummer wird nie geraten. Quellen: msInfo.serialNr der Strukturdatei, die die Testanmeldung
+ * holt, und die Location einer Umleitung des Miniservers. Ins Protokoll kommt nie die Nummer selbst. */
+
+/** Seriennummer in der Form des Namens: 12 Hex-Zeichen, klein; '' = keine erkennbare Seriennummer. */
+function mt_br_serial_form($s)
+{
+    $s = strtolower(str_replace(array(':', '-', ' '), '', is_scalar($s) && !is_bool($s) ? trim((string) $s) : ''));
+    return preg_match('/^[0-9a-f]{12}$/', $s) ? $s : '';
+}
+
+/** IPv4 mit Bindestrichen ('192-0-2-10'); '' = keine IPv4-Adresse (Rechnername, IPv6, Unsinn). */
+function mt_br_ip_strich($ip)
+{
+    if (!is_string($ip) || !preg_match('/^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$/', $ip, $m)) {
+        return '';
+    }
+    for ($i = 1; $i <= 4; $i++) {
+        if ((int) $m[$i] > 255 || (strlen($m[$i]) > 1 && $m[$i][0] === '0')) {
+            return '';
+        }
+    }
+    return $m[1] . '-' . $m[2] . '-' . $m[3] . '-' . $m[4];
+}
+
+/** Aus der Location einer Umleitung: array(ip mit Bindestrichen, Seriennummer klein) oder null. */
+function mt_br_name_aus_ort($ort)
+{
+    if (!is_string($ort) || !preg_match('#^https://([0-9]{1,3}(?:-[0-9]{1,3}){3})\.([0-9a-f]{12})\.dyndns\.loxonecloud\.com(?::[0-9]{1,5})?(?:/|$)#i',
+                                        trim($ort), $m)) {
+        return null;
+    }
+    return array($m[1], strtolower($m[2]));
+}
+
+/** Die gemessenen Seriennummern: struktur, umleitung und die IP (mit Bindestrichen) aus der Umleitung. */
+function mt_br_cloudname_merk()
+{
+    $d = mt_json_lesen(mt_br_pfade()['cloudname']);
+    $aus = array('struktur' => '', 'umleitung' => '', 'umleitung_ip' => '');
+    foreach (array('struktur', 'umleitung') as $k) {
+        $aus[$k] = isset($d[$k]) ? mt_br_serial_form($d[$k]) : '';
+    }
+    if (isset($d['umleitung_ip']) && is_string($d['umleitung_ip']) && preg_match('/^[0-9]{1,3}(-[0-9]{1,3}){3}$/', $d['umleitung_ip'])) {
+        $aus['umleitung_ip'] = $d['umleitung_ip'];
+    }
+    return $aus;
+}
+
+/** Eine gemessene Seriennummer ablegen (Quelle 'struktur' oder 'umleitung'), 0600. */
+function mt_br_cloudname_merken($quelle, $serial, $ip_strich = '')
+{
+    $m = mt_br_cloudname_merk();
+    $m[$quelle] = $serial;
+    if ($quelle === 'umleitung') {
+        $m['umleitung_ip'] = $ip_strich;
+    }
+    $m['ts'] = time();
+    return mt_json_schreiben(mt_br_pfade()['cloudname'], $m, 0600);
+}
+
+/** Widersprechen sich die Quellen? '' | 'serial' (Strukturdatei gegen Umleitung) | 'ip' (Umleitung nennt eine andere
+ *  IP als die LoxBerry-Einstellungen). Gemeldet wird, gesperrt nicht: der Name nimmt die Strukturdatei. */
+function mt_br_cloudname_widerspruch(array $m, $ip_strich)
+{
+    if ($m['umleitung'] === '') {
+        return '';
+    }
+    if ($m['struktur'] !== '' && $m['struktur'] !== $m['umleitung']) {
+        return 'serial';
+    }
+    if ($m['umleitung_ip'] !== '' && $ip_strich !== '' && $m['umleitung_ip'] !== $ip_strich) {
+        return 'ip';
+    }
+    return '';
+}
+
+/** Den Widerspruch der Quellen einmal je Lauf ins Protokoll, ohne Nummern. */
+function mt_br_cloudname_pruefen($ip)
+{
+    static $gemeldet = false;
+    $w = mt_br_cloudname_widerspruch(mt_br_cloudname_merk(), mt_br_ip_strich((string) $ip));
+    if ($w === '' || $gemeldet) {
+        return $w;
+    }
+    $gemeldet = true;
+    mt_log($w === 'serial'
+        ? 'Bridge: Die Seriennummer aus der Strukturdatei und die aus der Umleitung des Miniservers stimmen nicht ueberein. '
+          . 'Der Cloud-Name nimmt die aus der Strukturdatei. Unter System, Miniserver pruefen, ob die IP zum richtigen Miniserver gehoert.'
+        : 'Bridge: Die Umleitung des Miniservers nennt eine andere IP als die LoxBerry-Einstellungen. Unter System, Miniserver die IP pruefen.');
+    return $w;
+}
+
+/** Fehlt der Cloud-Name bei TLS - einmal je Lauf ins Protokoll, mit dem, was zu tun ist. */
+function mt_br_tlsname_melden($ms)
+{
+    static $gemeldet = false;
+    if ($gemeldet || !is_array($ms) || $ms['tls'] !== true || $ms['tls_host'] !== '') {
+        return false;
+    }
+    $gemeldet = true;
+    mt_log($ms['tls_host_grund'] === 'ipv4'
+        ? 'Bridge: Verschluesselt verbindet die Bridge mit dem Cloud-Namen des Miniservers, und der ist nur aus einer IPv4-Adresse '
+          . 'zu bilden; in den LoxBerry-Einstellungen steht keine. Unter System, Miniserver die IPv4-Adresse eintragen oder im '
+          . 'Reiter Bridge "unverschluesselt" waehlen. Ueber die IP wird nicht verbunden.'
+        : 'Bridge: Verschluesselt verbindet die Bridge mit dem Cloud-Namen des Miniservers; dafuer fehlt die Seriennummer. Im '
+          . 'Reiter Bridge, Schritt 2, "Anmeldung erneut pruefen" druecken. Ueber die IP wird nicht verbunden.');
+    return true;
+}
+
+/** Den Cloud-Namen aufloesen (Reiter Test). Nur der Pruefstand gibt das Ergebnis ueber MT_PRUEFSTAND_DNS vor (JSON:
+ *  Name => Liste), wie MT_PRUEFSTAND_BEOBACHTEN die Frist. Rueckgabe: Liste der IPv4-Adressen, leer = keine Antwort. */
+function mt_br_dns_aufloesen($name)
+{
+    $p = getenv('MT_PRUEFSTAND_DNS');
+    if (is_string($p) && $p !== '') {
+        $d = json_decode($p, true);
+        return (is_array($d) && isset($d[$name]) && is_array($d[$name])) ? array_values(array_filter($d[$name], 'is_string')) : array();
+    }
+    $l = @gethostbynamel($name);
+    return is_array($l) ? $l : array();
+}
+
+/** G3 (0.9.53): eine ausdrueckliche tls 0 bei einem LoxBerry, der https fuehrt, oder ein ungueltiger Wert - EINMAL je
+ *  Lauf ins Protokoll; umgedeutet wird nichts. Ein Lauf ist ein PHP-Aufruf, der den Miniserver anspricht
+ *  (Testanmeldung, Hintergrundvorgang der Bridge); der Seitenaufbau ruft das nicht auf. Rueckgabe: gemeldet? */
+function mt_br_verbindung_melden($ms)
+{
+    static $gemeldet = false;
+    if ($gemeldet || !is_array($ms)) {
+        return false;
+    }
+    if ($ms['tls'] === null) {
+        $gemeldet = true;
+        mt_log('Bridge: Die Einstellung "Verbindung zum Miniserver" (tls) hat den ungueltigen Wert '
+               . mt_kurz((string) json_encode($ms['wahl']), 40) . '; erlaubt sind auto, 0 und 1. Es wird nicht verbunden.');
+        return true;
+    }
+    if ($ms['widerspruch']) {
+        $gemeldet = true;
+        mt_log('Bridge: Verbindungsart - eingestellt ist "unverschluesselt" (tls=0), der LoxBerry fuehrt den Miniserver '
+               . 'aber mit https. Rat: im Reiter Bridge "Verbindung zum Miniserver" auf "wie LoxBerry" stellen.');
+        return true;
+    }
+    return false;
+}
+
+/** G4 (0.9.53): ist das eine Umleitung auf https? Eine Antwort 301, 302, 307 oder 308 mit einer Location auf https. */
+function mt_br_umleitung_erkannt($code, $ort)
+{
+    return in_array((int) $code, array(301, 302, 307, 308), true) && stripos(ltrim((string) $ort), 'https://') === 0;
+}
+
+/** G4 (0.9.53): die Umleitung EINMAL je Lauf als eigene Protokollzeile. Rueckgabe: jetzt gemeldet? */
+function mt_br_umleitung_melden()
+{
+    static $gemeldet = false;
+    if ($gemeldet) {
+        return false;
+    }
+    $gemeldet = true;
+    mt_log('Bridge: Der Miniserver verlangt eine verschluesselte Verbindung (Umleitung auf https). Im Reiter Bridge '
+           . '"Verbindung zum Miniserver" auf "wie LoxBerry" oder "verschluesselt (TLS)" stellen.');
+    return true;
+}
+
+/** Ein HTTP-GET. Rueckgabe array(code, rumpf, fehler, location); code 0 = keine Antwort. Einer Umleitung wird nie
+ *  gefolgt (Regeln/03, beide Abrufwege gleich); seit 0.9.53 kommt ihr Ziel als vierter Wert mit (Punkt G4). Bei https
+ *  wird verschluesselt, das Zertifikat aber nicht beglaubigt (Begruendung an mt_br_miniserver()). */
 function mt_br_http($url, array $kopf, $frist)
 {
+    $tls = stripos((string) $url, 'https://') === 0;
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
         curl_setopt_array($ch, array(
@@ -311,17 +554,22 @@ function mt_br_http($url, array $kopf, $frist)
             CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_HTTPHEADER => $kopf,
             CURLOPT_FOLLOWLOCATION => false,
         ));
+        if ($tls) {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        }
         $body = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $ort = (string) curl_getinfo($ch, CURLINFO_REDIRECT_URL);
         $fehler = $body === false ? curl_error($ch) : '';
         // M14 (0.9.44): wie mt_lib.php - unter PHP 8.5 ist curl_close() veraltet (Deprecated), ab 8.0 wirkungslos.
         if (PHP_VERSION_ID < 80000) { curl_close($ch); }
-        return array($body === false ? 0 : $code, $body === false ? '' : (string) $body, $fehler);
+        return array($body === false ? 0 : $code, $body === false ? '' : (string) $body, $fehler, $ort);
     }
     $ctx = stream_context_create(array('http' => array(
         'method' => 'GET', 'header' => implode("\r\n", $kopf), 'timeout' => (int) $frist,
         'ignore_errors' => true, 'follow_location' => 0,
-    )));
+    ), 'ssl' => array('verify_peer' => false, 'verify_peer_name' => false)));
     $body = @file_get_contents($url, false, $ctx);
     $code = 0;
     /* Hausform (C7): die Funktion ab 8.4, darunter die Variable ueber ihren
@@ -331,15 +579,19 @@ function mt_br_http($url, array $kopf, $frist)
         $kn = 'http_response_header';
         $kz = isset($$kn) ? $$kn : null;
     }
+    $ort = '';
     if (is_array($kz)) {
         foreach ($kz as $z) {
             if (preg_match('#^HTTP/[0-9.]+\s+([0-9]{3})#', $z, $m)) {
                 $code = (int) $m[1];
+                $ort = '';
+            } elseif (preg_match('#^Location:\s*(\S+)#i', $z, $m)) {
+                $ort = $m[1];
             }
         }
     }
     return array($body === false ? 0 : $code, $body === false ? '' : (string) $body,
-                 $body === false ? 'keine Verbindung' : '');
+                 $body === false ? 'keine Verbindung' : '', $ort);
 }
 
 /**
@@ -360,16 +612,24 @@ function mt_br_testanmeldung()
     if ($ms === null) {
         return array('kein_ms', 0);
     }
-    $url = 'http://' . $ms['host'] . ':' . $ms['port'] . '/data/LoxAPP3.json';
-    list($code, $roh, ) = mt_br_http($url, array('Accept: application/json',
+    /* 0.9.53 (G1, G3): Adresse, Port und Verbindungsart aus der einzigen Stelle; ungueltige Wahl verbindet nicht. */
+    mt_br_verbindung_melden($ms);
+    if ($ms['tls'] === null) {
+        return array('tls', 0);
+    }
+    $url = $ms['basis'] . '/data/LoxAPP3.json';
+    list($code, $roh, , $ort) = mt_br_http($url, array('Accept: application/json',
         'Authorization: Basic ' . base64_encode($z['benutzer'] . ':' . $z['kennwort'])), 15);
     $merk = array('ok' => 0, 'ts' => time(), 'zugang_ts' => (int) $z['geaendert'], 'ergebnis' => '', 'anzahl' => 0);
     if ($code === 0) {
-        mt_log('Bridge: Testanmeldung - Miniserver ' . $ms['host'] . ':' . $ms['port'] . ' nicht erreichbar (zaehlt nicht als Fehlversuch).');
+        mt_log('Bridge: Testanmeldung - Miniserver ' . $ms['basis'] . ' nicht erreichbar (zaehlt nicht als Fehlversuch).');
         return array('netz', 0);
     }
     $gesperrt = $code === 403 || preg_match('/4003|temporarily blocked|blocked/i', substr($roh, 0, 400)) === 1;
-    if ($gesperrt) {
+    if (mt_br_umleitung_erkannt($code, $ort)) {
+        /* G4 (0.9.53): bis 0.9.52 hiess eine 308 hier "http" und die Meldung "antwortete unerwartet, Adresse pruefen". */
+        $merk['ergebnis'] = 'umleitung';
+    } elseif ($gesperrt) {
         $merk['ergebnis'] = 'gesperrt';
     } elseif ($code === 401) {
         $merk['ergebnis'] = 'abgelehnt';
@@ -378,6 +638,16 @@ function mt_br_testanmeldung()
     }
     if ($merk['ergebnis'] !== '') {
         mt_json_schreiben($f['anmeldung'], $merk, 0600);
+        if ($merk['ergebnis'] === 'umleitung') {
+            mt_br_umleitung_melden();
+            /* 0.9.53: die Location ist eine zweite gemessene Quelle fuer den Cloud-Namen. */
+            $mt_n = mt_br_name_aus_ort($ort);
+            if ($mt_n !== null) {
+                mt_br_cloudname_merken('umleitung', $mt_n[1], $mt_n[0]);
+                mt_br_cloudname_pruefen($ms['host']);
+            }
+            return array('umleitung', (int) $code);
+        }
         mt_log('Bridge: Testanmeldung des Benutzers ' . $z['benutzer'] . ' abgewiesen (HTTP ' . (int) $code . ', ' . $merk['ergebnis'] . ').');
         return array($merk['ergebnis'], (int) $code);
     }
@@ -386,6 +656,15 @@ function mt_br_testanmeldung()
         $merk['ergebnis'] = 'form';
         mt_json_schreiben($f['anmeldung'], $merk, 0600);
         return array('form', 0);
+    }
+    /* 0.9.53: die Seriennummer fuer den Cloud-Namen, nur aus msInfo.serialNr, nie geraten. */
+    $mt_sn = isset($d['msInfo']['serialNr']) ? mt_br_serial_form($d['msInfo']['serialNr']) : '';
+    if ($mt_sn !== '') {
+        mt_br_cloudname_merken('struktur', $mt_sn);
+        mt_br_cloudname_pruefen($ms['host']);
+    } else {
+        mt_log('Bridge: Die Strukturdatei nennt keine Seriennummer in bekannter Form (msInfo.serialNr, 12 Hex-Zeichen) - '
+               . 'der Cloud-Name fuer die verschluesselte Verbindung der Bridge wird daraus nicht gebildet.');
     }
     $struktur = mt_br_struktur_aus($d);
     $struktur['ts'] = time();
@@ -643,6 +922,14 @@ function mt_br_konfig_schreiben()
     if ($ms === null) {
         return array(0, mt_t('BRIDGE.V_KEIN_MS'));
     }
+    mt_br_verbindung_melden($ms);
+    if ($ms['tls'] === null) {
+        return array(0, mt_t('EINST.FEHLER_TLS'));
+    }
+    if ($ms['tls'] && $ms['tls_host'] === '') {
+        mt_br_tlsname_melden($ms);
+        return array(0, mt_t($ms['tls_host_grund'] === 'ipv4' ? 'BRIDGE.V_TLS_IPV4' : 'BRIDGE.V_TLS_SERIAL'));
+    }
     if ($z['benutzer'] === '' || $z['kennwort'] === '') {
         return array(0, mt_t('BRIDGE.V_ANMELDUNG_FEHLT'));
     }
@@ -653,7 +940,11 @@ function mt_br_konfig_schreiben()
     }
     $ok = mt_json_schreiben($ziel, array(
         'name' => 'matterbridge-loxone', 'type' => 'DynamicPlatform',
-        'host' => $ms['host'], 'port' => (int) $ms['port'],
+        /* 0.9.53 (G1): bei TLS "https://" und der Cloud-Name (container_host), sonst die IP. matterbridge-loxone 2.1.1 reicht "<host>:<port>" an
+         * loxone-ts-api 2.1.1 weiter (LoxonePlatform.ts); dessen resolveBaseUrl() nimmt eine Adresse mit Schema
+         * unveraendert, ohne Schema gilt http, und der WebSocket wird bei https zu wss (WebSocketConnection.ts).
+         * Aus dem Quelltext der Tags v2.1.1 gelesen 12.11.2026, nicht am Geraet gemessen. */
+        'host' => $ms['container_host'], 'port' => (int) $ms['port'],
         'username' => $z['benutzer'], 'password' => $z['kennwort'],
         'uuidsandtypes' => $liste,
         'dumpcontrols' => false, 'dumpstates' => false, 'logevents' => false,
@@ -663,7 +954,7 @@ function mt_br_konfig_schreiben()
         return array(0, sprintf(mt_t('BRIDGE.V_KONFIG_FEHL'), mt_e($ziel)));
     }
     mt_log('Bridge: Konfiguration geschrieben (' . count($liste) . ' Geraete, Benutzer ' . $z['benutzer']
-           . ', Miniserver ' . $ms['host'] . ':' . $ms['port'] . ').');
+           . ', Miniserver ' . ($ms['tls'] ? 'https://<Cloud-Name>:' . (int) $ms['port'] : $ms['basis']) . ').');
     return array(1, count($liste));
 }
 
@@ -723,7 +1014,10 @@ function mt_br_muster()
     $m = array('fehlerzeile' => array('error|fail|reconnect|refused|denied|reject'),
                'anmeldung' => array('4003', '\\b401\\b', 'unauthori[sz]ed', 'blocked', 'getjwt', 'authenticat'),
                'netz' => array('ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EAI_AGAIN', 'socket hang up', 'timed? ?out'),
-               'erfolg' => array('Creating devices'));
+               'erfolg' => array('Creating devices'),
+               /* G4 (0.9.53): ws 8.22.0 folgt keiner Umleitung und bricht mit "Unexpected server response: 308" ab
+                * (lib/websocket.js, followRedirects false) - aus dem Quelltext, nicht am Geraet gemessen. */
+               'umleitung' => array('Unexpected server response: 30[1278]'));
     foreach (array_keys($m) as $k) {
         if (isset($d[$k]) && is_array($d[$k]) && $d[$k]) {
             $m[$k] = array_values(array_filter($d[$k], 'is_string'));
@@ -942,6 +1236,8 @@ function mt_br_ist($name = null)
         'oom'     => !empty($d['State']['OOMKilled']),
         'health'  => isset($hz['Status']) && is_string($hz['Status']) ? $hz['Status'] : '',
         'neustarts' => isset($d['RestartCount']) ? (int) $d['RestartCount'] : 0,
+        /* 0.9.53 (G4): der Beginn dieses Laufs - die Umleitung wird je Lauf einmal gemeldet. */
+        'gestartet' => isset($d['State']['StartedAt']) && is_string($d['State']['StartedAt']) ? $d['State']['StartedAt'] : '',
     );
 }
 
@@ -1458,10 +1754,15 @@ function mt_br_beobachten($seit, array &$stand)
     mt_ct_vorgang_schreiben($stand);
     $bis = $seit + mt_br_beobachten_frist();
     $kennwort = 0;
+    $umleitung = 0;
     while (true) {
         sleep(2);
         list(, $log) = mt_docker('logs --since ' . (int) $seit . ' --tail 2000 ' . escapeshellarg($name), 20);
         list($fehler, , $letzte) = mt_br_zaehlen($log);
+        if (!$umleitung && mt_br_trifft(mt_br_muster()['umleitung'], (string) $log)) {
+            $umleitung = 1;            // G4 (0.9.53): ein Lauf des Containers, eine Zeile
+            mt_br_umleitung_melden();
+        }
         if ($fehler >= mt_br_schwelle_start()) {
             mt_br_sperren(2, $fehler, $letzte);
             return array('gesperrt', sprintf(mt_t('BRIDGE.V_GESPERRT_START'), (int) $fehler)
@@ -1488,9 +1789,12 @@ function mt_br_beobachten($seit, array &$stand)
      * steht (auch die Fehler, die zur Sperre fuehrten), hat Stufe 2 schon
      * gesehen. Im Pruefstand gemessen: mit einem geloeschten Merker zaehlte
      * der erste Waechterlauf die alten Zeilen der letzten 70 s mit. */
-    mt_json_schreiben(mt_br_pfade()['waechter'], array('summe' => 0, 'bis' => time(), 'letzte' => ''), 0600);
+    $ist = $umleitung ? mt_br_ist() : null;
+    mt_json_schreiben(mt_br_pfade()['waechter'], array('summe' => 0, 'bis' => time(), 'letzte' => '',
+        'umleitung' => ($umleitung ? ($ist !== null && $ist['gestartet'] !== '' ? $ist['gestartet'] : (string) $seit) : '')), 0600);
     return array('ok', sprintf(mt_t('BRIDGE.V_BEOBACHTET'), mt_br_beobachten_frist())
-                       . ($kennwort ? '' : ' ' . mt_t('BRIDGE.V_KENNWORT_OFFEN')));
+                       . ($kennwort ? '' : ' ' . mt_t('BRIDGE.V_KENNWORT_OFFEN'))
+                       . ($umleitung ? ' ' . mt_t('BRIDGE.T_UMLEITUNG') : ''));
 }
 
 /** Sperrmerker nach einem guten Start abraeumen. */
@@ -1773,7 +2077,20 @@ function mt_br_waechter_zaehlen(array $f)
     } else {
         $summe += $fehler;
     }
-    mt_json_schreiben($f['waechter'], array('summe' => $summe, 'bis' => $jetzt, 'letzte' => $letzte), 0600);
+    /* G4 (0.9.53): eine Umleitung auf https im Protokoll des Containers - einmal je Lauf (Startzeit) melden; nach
+     * einem Erfolg ohne Umleitung gilt sie als behoben. */
+    $mt_ul = isset($w['umleitung']) && is_string($w['umleitung']) ? $w['umleitung'] : '';
+    if (mt_br_trifft(mt_br_muster()['umleitung'], (string) $log)) {
+        $mt_lauf = $ist['gestartet'] !== '' ? $ist['gestartet'] : 'unbekannt';
+        if ($mt_ul !== $mt_lauf) {
+            mt_br_umleitung_melden();
+        }
+        $mt_ul = $mt_lauf;
+    } elseif ($erfolg > 0) {
+        $mt_ul = '';
+    }
+    mt_json_schreiben($f['waechter'], array('summe' => $summe, 'bis' => $jetzt, 'letzte' => $letzte,
+                                            'umleitung' => $mt_ul), 0600);
     if ($summe >= mt_br_schwelle_betrieb()) {
         mt_br_sperren(3, $summe, $letzte);
         return 'angehalten (' . $summe . ' Anmeldefehler seit dem letzten Erfolg)';
