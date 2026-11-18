@@ -1039,32 +1039,20 @@ if ($mt_post && isset($_POST['geraet_leeren'])) {
 
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken und, wenn die
+ * Matter-Bridge eingerichtet ist, ihre Einstellungen und ihr Zugang. Ohne sie
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin kaeme
+ * trotzdem nicht an die Anlage; die Datei waere wertlos. Damit traegt sie
+ * Geheimnisse, und der Hinweis am Knopf sagt das.
  *
- * Der lesbare Kopf (Schluessel mit fuehrendem Unterstrich) gehoert zum
- * Hausstandard; die Leseseite uebergeht ihn seit 0.9.17. Bis dahin gab es
- * ihn nicht - und eine Datei MIT Kopf haette die Leseseite abgewiesen. */
+ * 0.9.54: Kopf und Inhalt baut das gemeinsame Sicherungsmodul
+ * (mt_sicherung_daten(), sicherung_bauen()); der Kopf traegt das Kennzeichen
+ * _plugin. X-3 wie bisher: wuerde das eigene Zurueckspielen die Datei
+ * abweisen, sagt es der Kopf "_warnung" - nur mit den NAMEN, nie mit Werten;
+ * geliefert wird trotzdem vollstaendig. */
 if ($mt_post && isset($_POST['mt_sichern'])) {
-    $mt_sich = array(
-        '_hinweis' => mt_t('EINST.SICH_KOPF'),
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_fassung' => mt_fassung(),
-    ) + mt_ansage_fuer_sicherung(mt_config());     // nie ein Sprechtoken
-    /* X-3 (Verbesserungsbau 30.09.2026): wuerde das eigene Zurueckspielen
-     * einen gespeicherten Wert abweisen, sagt es der Kopf der Datei - nur die
-     * Namen, nie die Werte. Geliefert wird trotzdem vollstaendig; die gelbe
-     * Warnung am Knopf sagt es vorher. */
-    $mt_altwerte = mt_sicherung_altwerte(mt_config());
-    if ($mt_altwerte) {
-        $mt_sich = array('_warnung' => sprintf(mt_t('EINST.SICH_ALTWERT_KOPF'),
-                                               implode(', ', $mt_altwerte))) + $mt_sich;
-    }
-    $mt_js = json_encode($mt_sich,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($mt_js !== false) {
+    $mt_js = sicherung_json(mt_sicherung_daten());
+    if ($mt_js !== '') {
         /* M19 (0.9.44, Pruefbericht; Hausform Chromecast C16): den Ausgabepuffer leeren - eine Warnung, ein BOM oder
          * eine Leerzeile aus einer eingebundenen Datei laege sonst VOR der Datei. */
         while (ob_get_level() > 0) {
@@ -1081,41 +1069,47 @@ if ($mt_post && isset($_POST['mt_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen.
+ * 0.9.54: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang())
+ * - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts
+ * gelesen und nichts geaendert), dann is_uploaded_file() (sonst liesse sich
+ * jede Datei des Servers unterschieben) und die Groessengrenze des Moduls.
+ * Lesen, Pruefen, Speichern und die Messung der Zweitschriften macht
+ * sicherung_zurueckspielen(); was diese Linie dabei tut, steht in den
+ * Rueckrufen (mt_sicherung_*() in mt_lib.php). Eine halb gueltige Datei
+ * aendert GAR NICHTS, alle Beanstandungen werden genannt.
  *
  * Dieser Handler steht - wie alle anderen - VOR dem Ladeblock. Bis 0.9.16
  * stand er als einziger dahinter: die Seite meldete Erfolg und zeigte
  * danach in allen Feldern und in jeder Loxone-Adresse noch den alten Stand
- * samt altem Aktionstoken. Wer die Adresse dann abschrieb, trug ein Token
- * nach Loxone, das nicht mehr galt - und ein virtueller Eingang wertet die
- * 403-Antwort nicht aus. */
+ * samt altem Aktionstoken. */
 if ($mt_post && isset($_POST['mt_zurueck'])) {
-    if (!isset($_FILES['mt_sicherung']) || !is_array($_FILES['mt_sicherung'])
-        || !isset($_FILES['mt_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['mt_sicherung']['tmp_name'])) {
-        $mt_fehler[] = mt_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['mt_sicherung']['size'] > 262144) {
-        $mt_fehler[] = mt_t('EINST.SICH_ZU_GROSS');
+    list($mt_roh, $mt_ab) = sicherung_eingang(mt_sicherung_beschreibung(), $_POST, $_FILES, 'mt_sicherung');
+    if ($mt_ab !== null) {
+        $mt_m = sicherung_meldungen(mt_sicherung_beschreibung(), $mt_ab);
+        foreach ($mt_m['fehler'] as $mt_x) { $mt_fehler[] = $mt_x; }
     } else {
-        list($mt_neu, $mt_mangel, $mt_n, $mt_shinweise) = array_pad(mt_sicherung_lesen(
-            (string) @file_get_contents($_FILES['mt_sicherung']['tmp_name'])), 4, array());
-        if ($mt_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $mt_fehler[] = mt_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $mt_mangel);
-        } elseif (mt_config_speichern($mt_neu)) {
-            $mt_meldungen[] = sprintf(mt_t('EINST.SICH_UEBERNOMMEN'), $mt_n);
-            /* C5: das laufende Token blieb, weil die Datei ein leeres trug. */
-            foreach ((array) $mt_shinweise as $mt_sh) {
-                $mt_meldungen[] = mt_e($mt_sh);
-            }
-        } else {
-            $mt_fehler[] = mt_t('EINST.SICH_SCHREIBFEHLER');
+        $mt_b = mt_sicherung_beschreibung();
+        $mt_befehl_vorher = mt_container_befehl(mt_config());
+        $mt_b['jetzt'] = function () { return mt_config(); };
+        $mt_b['vorbereiten'] = 'mt_sicherung_vorbereiten';
+        $mt_b['speichern'] = 'mt_sicherung_speichern';
+        $mt_b['zweitschrift'] = 'mt_sicherung_zweitschriften';
+        $mt_b['nachziehen'] = function ($neu, $vorher, $r) use ($mt_befehl_vorher) {
+            return mt_sicherung_nachziehen($neu, $vorher, $r, $mt_befehl_vorher);
+        };
+        $mt_b['log'] = function ($z) { mt_log($z); };
+        $mt_r = sicherung_zurueckspielen($mt_b, $mt_roh);
+        $mt_m = sicherung_meldungen($mt_b, $mt_r);
+        foreach ($mt_m['fehler'] as $mt_x) { $mt_fehler[] = $mt_x; }
+        foreach ($mt_m['hinweise'] as $mt_x) { $mt_meldungen[] = $mt_x; }
+        if (mt_sicherung_schreiblage() === 'halb') {
+            $mt_fehler[] = mt_t('EINST.SICH_HALB');
+        }
+        if ($mt_r['gespeichert'] && in_array('endpunkt_ein', $mt_r['fehlt_uebergang'], true)) {
+            $mt_meldungen[] = mt_t('EINST.SICH_ENDPUNKT_AN');
         }
     }
+    $mt_tab = 'tab-settings';
 }
 
 /* ==================================================================
@@ -2256,7 +2250,7 @@ $mt_leer_knopf = function ($nr) {
 <div class="sm-warnung"><?= mt_t('EINST.SICH_WARNUNG') ?></div>
 <?php /* X-3 (Verbesserungsbau 30.09.2026): dieselbe Pruefung wie das
    Zurueckspielen (mt_sicherung_altwerte()); nur Namen, nie Werte. */
-$mt_sich_alt = mt_sicherung_altwerte($mt_cfg);
+$mt_sich_alt = mt_sicherung_altwerte();
 if ($mt_sich_alt) { ?>
 <div class="sm-warnung"><?= sprintf(mt_t('EINST.SICH_ALTWERT'), mt_e(implode(', ', $mt_sich_alt))) ?></div>
 <?php } ?>
@@ -2274,6 +2268,7 @@ if ($mt_sich_alt) { ?>
     <?php echo mt_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="mt_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(mt_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="mt_zurueck" value="1"><?= mt_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>

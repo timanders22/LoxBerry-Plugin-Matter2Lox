@@ -1,5 +1,9 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+/* 0.9.54: das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 18.11.2026). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden; Beschreibung dieser Linie:
+ * mt_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 /**
  * Matter to Loxone - gemeinsame Bibliothek
  *
@@ -293,7 +297,7 @@ function mt_vorgaben()
         'fabric_entfernen_ein' => 0,
         /* Gruppe 8 (0.9.44, E1-E3): Befehle ueber MQTT annehmen (Befehlsbruecke, ab Werk aus), Schloesser ueber
          * MQTT entsperren (ab Werk aus) und der HTTP-Endpunkt fuer Loxone (neu 0; ein Update traegt 1 ein,
-         * postinstall.sh; eine Sicherung ohne den Schluessel ebenso, mt_sicherung_lesen()). */
+         * postinstall.sh; eine Sicherung ohne den Schluessel ebenso, mt_sicherung_beschreibung()). */
         'befehle_mqtt_ein'        => 0,
         'befehle_mqtt_entsperren' => 0,
         'endpunkt_ein'            => 0,
@@ -503,13 +507,16 @@ function mt_config_speichern($cfg)
     if (!mt_json_schreiben($p['config'], $cfg, 0600)) {
         return false;
     }
-    // Wache: die Sicherung wird NUR ueberschrieben, wenn wirklich eine
-    // Konfiguration gespeichert wurde. Ohne Aktionstoken ist das die blanke
-    // Werkseinstellung - und die ueber eine gute Sicherung zu schreiben, war
-    // genau der Schaden, den diese Datei bis 0.9.9 angerichtet hat.
-    if (trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '')) !== '') {
-        @copy($p['config'], $p['sicherung']);
-        @chmod($p['sicherung'], 0600);
+    /* 0.9.54 (Entscheidung des Hausherrn 18.11.2026): jedes Speichern zieht die Zweitschrift nach, wie in den
+     * Linien mit dem gemeinsamen Sicherungsmodul. Bis 0.9.53 nur, wenn die Konfiguration ein Aktionstoken trug -
+     * der Schutz gegen die Kette von 0.9.9 (Werkseinstellung ueber eine gute Zweitschrift). Den traegt seit
+     * 0.9.17 die Wache oben (mt_config_darf_schreiben()): solange die Konfiguration als beschaedigt gilt, wird
+     * gar nichts geschrieben. Derselbe Schreibweg wie fuer die Konfiguration (Nebendatei, Rechte 0600 vor dem
+     * Inhalt, umbenennen), also dieselben Bytes; misslingt er, ist die Konfiguration trotzdem gespeichert, und
+     * das Zurueckspielen einer Sicherung meldet die abweichende Zweitschrift (Modul, 'zweitschrift'). */
+    if (!mt_json_schreiben($p['sicherung'], $cfg, 0600)) {
+        mt_log_gebremst('zweitschrift_fehl', 'FEHLER: die Zweitschrift ' . $p['sicherung']
+            . ' liess sich nicht schreiben.');
     }
     return true;
 }
@@ -827,51 +834,6 @@ function mt_haus_gemerkt()
     }
     ksort($aus);
     return $aus;
-}
-
-/* ==================================================================
- * X-3 (Verbesserungsbau 30.09.2026): "Einstellungen sichern" warnt, wenn
- * ein gespeicherter Wert das eigene Zurueckspielen nicht bestuende
- * ================================================================== */
-
-/** Schluessel, die in einer aelteren Sicherung fehlen duerfen (Tuer-1). */
-function mt_sicherung_neue_schluessel()
-{
-    /* 0.9.35 (Nr. 1): die vier neuen Schluessel duerfen in einer Sicherung
-     * bis 0.9.34 fehlen; sie behalten dann ihre Vorgabe. */
-    return array('tuer_haus', 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse',
-                 /* 0.9.39 */ 'fabric_entfernen_ein',
-                 /* 0.9.44 (Gruppe 8) */ 'befehle_mqtt_ein', 'befehle_mqtt_entsperren', 'endpunkt_ein',
-                 /* 0.9.53 (Punkt G1): fehlt er, gilt 'auto' */ 'tls');
-}
-
-/**
- * Welche gespeicherten Werte wuerde das Zurueckspielen abweisen? Geprueft
- * wird mit DERSELBEN Funktion wie dort (mt_wert_pruefen) und gegen dieselbe
- * Schluesselliste (mt_vorgaben); als Gegenprobe laeuft danach
- * mt_sicherung_lesen() ueber die ganze Datei - weist sie ab, ohne dass ein
- * Name gefunden wurde, steht "*" da. Rueckgabe: Liste der NAMEN, nie Werte.
- */
-function mt_sicherung_altwerte($cfg)
-{
-    $bekannt = mt_vorgaben();
-    $namen = array();
-    foreach ((array) $cfg as $k => $w) {
-        $k = (string) $k;
-        if ($k !== '' && $k[0] === '_') {
-            continue;
-        }
-        if (!array_key_exists($k, $bekannt) || mt_wert_pruefen($k, $w) !== '') {
-            $namen[] = $k;
-        }
-    }
-    if (!$namen) {
-        $erg = mt_sicherung_lesen((string) json_encode(mt_ansage_fuer_sicherung($cfg)));     // wie die Datei selbst: ohne Sprechtoken
-        if ($erg[0] === null) {
-            $namen[] = '*';
-        }
-    }
-    return $namen;
 }
 
 /* ==================================================================
@@ -4406,20 +4368,6 @@ function mt_thema_info($thema, $tab = null)
 }
 
 
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
- */
 /** Die Schluessel der Sprachansagen in der Hauptkonfiguration. */
 function mt_ansage_schluessel()
 {
@@ -4454,48 +4402,6 @@ function mt_ansage_wert($k, $w)
             return in_array($w, array(0, 1, '0', '1'), true);
     }
     return false;
-}
-
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function mt_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function mt_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = mt_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, mt_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = mt_tts($j);
-    }
-    foreach (array_diff(mt_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
 }
 
 /**
@@ -4875,112 +4781,353 @@ function mt_ansage_flanke($anlass, $gestoert, $name = '', $frist = 0, $jetzt = n
     return mt_ansage_legen(array($ein));
 }
 
-function mt_sicherung_lesen($roh)
+/* ==================================================================
+ * 0.9.54: Einstellungen sichern und zurueckspielen ueber das gemeinsame
+ * Sicherungsmodul (Abschrift webfrontend/html/sicherung.php der Stammfassung
+ * Werkzeuge/gemeinsam/sicherung.php; Auftrag des Hausherrn 18.11.2026 "Ja,
+ * umbauen", Regeln/05). Bis 0.9.53 lasen mt_sicherung_lesen() und
+ * mt_ansage_sicherung_vor() die Datei selbst. Was sich aendert:
+ *  - der Kopf traegt das Kennzeichen _plugin = LoxBerry-Plugin-Matter2Lox; eine
+ *    Datei mit fremdem Kennzeichen wird als Ganzes abgewiesen. Eine Sicherung
+ *    von 0.9.17 bis 0.9.53 (ohne _plugin) wird an ihrem Kopf _hinweis erkannt
+ *    (mt_sicherung_alt_erkennen()); eine ganz ohne Kopf (0.9.12 bis 0.9.16)
+ *    wird abgewiesen (Regel 1 des Moduls);
+ *  - ein unbekannter Schluessel wird verworfen und mit Namen gemeldet, die
+ *    Datei trotzdem zurueckgespielt (bis 0.9.53: ganze Datei abgewiesen);
+ *  - eine Einstellung, die eine fruehere Fassung noch nicht schrieb, behaelt
+ *    den geltenden Wert und wird genannt (mt_sicherung_spaet(); bis 0.9.53 galt
+ *    fuer die meisten die Werkseinstellung, und eine Sicherung von 0.9.17
+ *    wurde wegen thread_br abgewiesen);
+ *  - ein leerer Wert ('') ueberschreibt keinen bestehenden; er bleibt und wird
+ *    genannt (bis 0.9.53 nur beim Aktionstoken);
+ *  - die Datei traegt jetzt auch die Einstellungen und den Zugang der
+ *    Matter-Bridge (bridge.json, bridge_zugang.json; Regeln/05 und CLAUDE.md
+ *    Paragraph 9: Zugangsdaten gehoeren in die Sicherung). Die Fabric und die
+ *    Kopplungsdaten der Bridge bleiben draussen - sie haben eigene Knoepfe;
+ *  - "Einstellungen zurueckspielen" wirkt nur mit dem Haken des Moduls;
+ *  - nach dem Speichern misst das Modul, ob jede Zweitschrift inhaltsgleich
+ *    ist (mt_sicherung_zweitschriften()), und die Meldung sagt, was mit Dienst,
+ *    Befehlsbruecke, Container und Bridge geschah (mt_sicherung_nachziehen()).
+ * Wie bisher: jeder Wert geht durch mt_wert_pruefen() bzw. mt_ansage_wert()
+ * (dieselbe Positivliste wie das Formular), eine Datei mit Sprechtoken wird
+ * abgewiesen, eine halb gueltige Datei aendert nichts, alle Beanstandungen
+ * werden gesammelt, eine Sicherung ohne endpunkt_ein laesst den HTTP-Endpunkt
+ * an (Uebergang wie beim Update), die geltenden Sprechtoken und der Vermerk
+ * ansage_token_herkunft bleiben.
+ * ================================================================== */
+
+/**
+ * Was einer Sicherung fehlen darf: die Einstellungen, die eine Vorfassung noch
+ * nicht schrieb (Regel 6 des Moduls, Welle 1 Nr. 6). Sie behalten den geltenden
+ * Wert ('fehlt' => 'behalten'), und die Meldung nennt sie. Gemessen 18.11.2026
+ * an den Archiven 0.9.14 bis 0.9.54 (Schluessel aus mt_vorgaben() je Fassung;
+ * der Sichern-Knopf jeder Fassung schrieb array_merge(mt_vorgaben(),
+ * Konfiguration), also jede Vorgabe seiner Fassung): die 19 uebrigen
+ * Einstellungen schrieb schon 0.9.17, die erste Fassung mit Kopf; fehlt eine,
+ * wird die Datei abgewiesen (ab Werk 'pflicht').
+ */
+function mt_sicherung_spaet()
 {
-    $roh = mt_ansage_sicherung_vor($roh);     // Token und Vermerk bleiben die geltenden
+    return array('thread_br',                                                        // seit 0.9.18
+                 'tuer_haus',                                                        // seit 0.9.32
+                 'server_lokal', 'primary_interface', 'lesetoken', 'loxone_adresse', // seit 0.9.35
+                 'fabric_entfernen_ein',                                             // seit 0.9.39
+                 'befehle_mqtt_ein', 'befehle_mqtt_entsperren', 'endpunkt_ein',      // seit 0.9.44
+                 'tts', 'ansage_regeln', 'ansage_haken',                             // seit 0.9.47
+                 'tls');                                                             // seit 0.9.53
+}
+
+/** Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul. */
+function mt_sicherung_beschreibung()
+{
+    $p = mt_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $zahl = function ($w) { return (int) $w; };     // Haken und Zahlen als Zahl (C9, Durchgang 30.09.2026)
+    $schluessel = array(
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                                        + array('fehlt' => 'behalten')))
+                 + array(
+                     'sichern' => 'ansage_sicherung_bereinigen',
+                     'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                         /* Eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei eines, wird sie
+                          * abgewiesen (wie bis 0.9.53). Gemessen am Block der DATEI ($roh), denn Regel 3 des Moduls
+                          * setzt ein leeres Feld vorher auf den geltenden Wert. */
+                         if (ansage_sicherung_mangel($roh) || mt_ansage_wert('tts', ansage_sicherung_bereinigen($w)) !== true) {
+                             return 'tts: ' . mt_t('ANSAGEPLUGIN.M_FEHL');
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, mt_ansage_modi());
+                     }),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
+        'ansage_haken'  => sicherung_block(array_keys(mt_ansage_anlaesse())),
+        // Die Matter-Bridge: zwei eigene Dateien (0600), in der Sicherung als Teile (mt_sicherung_bridge*()). Der Merker
+        // namen_setzen reist nicht mit (mt_sicherung_teile()); traegt eine Datei ihn, verwirft das Modul ihn mit Namen.
+        'bridge'        => sicherung_block(array('bridge_ein'), array('auswahl' => sicherung_offen())),
+        'bridge_zugang' => sicherung_block(array('benutzer', 'kennwort', 'frontend_kennwort')),
+    );
+    foreach (array_merge(mt_haken(), array_keys(mt_zahlgrenzen())) as $k) {
+        $schluessel[$k] = array('wandeln' => $zahl);
+    }
+    foreach (mt_sicherung_spaet() as $k) {
+        if (!isset($schluessel[$k])) { $schluessel[$k] = array(); }
+        $schluessel[$k]['fehlt'] = 'behalten';
+    }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Matter2Lox',
+        'hinweis' => mt_t('EINST.SICH_KOPF'),
+        /* _fassung aus der Plugin-Datenbank bzw. plugin.cfg (sicherung_fassung_lesen()) - keine weitere Stelle neben
+         * denen, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => (string) $p['home'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => mt_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei'),
+        'teile' => array('bridge' => 'mt_sicherung_bridge', 'bridge_zugang' => 'mt_sicherung_bridge_zugang'),
+        'teile_jetzt' => array('bridge' => 'mt_br_cfg', 'bridge_zugang' => 'mt_sicherung_zugang_jetzt'),
+        'pruefen' => function ($k, $w) {
+            $a = mt_ansage_wert($k, $w);
+            if ($a !== null) { return $a ? '' : mt_e($k) . ': ' . mt_t('ANSAGEPLUGIN.M_FEHL'); }
+            $g = mt_wert_pruefen((string) $k, $w);
+            return $g === '' ? '' : sprintf(mt_t('EINST.SICH_WERT'), mt_e($k), $g);
+        },
+        /* Uebergang wie beim Update (postinstall.sh, Gruppe 8 0.9.44): eine Sicherung ohne endpunkt_ein stammt aus
+         * einer Fassung mit offenem HTTP-Endpunkt - er bleibt an. Die Meldung nennt ihn (K_FEHLT_UEBERGANG). */
+        'vorbehandeln' => function ($daten, $jetzt = null, $roh = null) {
+            if (is_array($daten) && !array_key_exists('endpunkt_ein', $daten)) { $daten['endpunkt_ein'] = 1; }
+            return $daten;
+        },
+        'uebersetzer' => 'mt_sicherung_alt_erkennen',
+        't' => 'mt_t',
+    );
+}
+
+/**
+ * Eine Sicherung dieser Linie aus der Zeit vor dem Kennzeichen _plugin (0.9.17 bis 0.9.53) traegt den lesbaren Kopf
+ * _hinweis, den nur der Sichern-Knopf dieser Linie schreibt (EINST.SICH_KOPF, deutsch oder englisch je nach Sprache
+ * der Oberflaeche), und daneben hoechstens _stand, _fassung und _warnung. Gemessen 18.11.2026 an den Archiven 0.9.14
+ * bis 0.9.54: 0.9.17 bis 0.9.54 schreiben genau diesen Kopf mit demselben Text, 0.9.14 bis 0.9.16 keinen; keine
+ * andere Linie im Arbeitsordner fuehrt den Text (Suche ueber Sprach-, PHP- und JSON-Dateien, angeschlagen an
+ * 0.9.53). Eine Datei ohne diesen Kopf ist nicht sicher von einer fremden zu unterscheiden und wird abgewiesen.
+ */
+function mt_sicherung_alt_erkennen($d)
+{
+    if (!is_array($d) || !isset($d['_hinweis']) || !is_string($d['_hinweis'])) { return null; }
+    if (strpos($d['_hinweis'], 'Sicherung der Einstellungen des LoxBerry-Plugins Matter to Loxone.') !== 0
+        && strpos($d['_hinweis'], 'Backup of the settings of the LoxBerry plugin Matter to Loxone.') !== 0) {
+        return null;
+    }
+    foreach (array_keys($d) as $k) {
+        $k = (string) $k;
+        if ($k !== '' && $k[0] === '_' && !in_array($k, array('_hinweis', '_stand', '_fassung', '_warnung'), true)) {
+            return null;
+        }
+    }
+    return $d;
+}
+
+/** Der geltende Zugang der Bridge ohne den Zeitstempel (der gehoert nicht in die Sicherung). */
+function mt_sicherung_zugang_jetzt()
+{
+    $z = mt_br_zugang();
+    unset($z['geaendert']);
+    return $z;
+}
+
+/**
+ * Der Teil "bridge" (bridge.json): Haken "Bridge betreiben" und Auswahl der Bausteine. Jeder Wert wird geprueft wie in
+ * mt_br_cfg(), aber eine Abweichung wird beanstandet, nicht still weggelassen. Fehlt ein Feld, gilt der geltende Wert.
+ * Der Merker namen_setzen kommt nie aus der Datei und behaelt immer den geltenden Wert (Frage 27 der Nacht 18.11.2026,
+ * Entscheidung des Hausherrn 18.11.2026 "Ich folge deinen Empfehlungen"): mt_br_vorbereiten() bestimmt ihn einmal beim
+ * ersten Anlegen der Bridge aus dem Inhalt der Knotenablage (null = noch nicht entschieden), und die Knotenablage
+ * (Fabric) reist nicht mit - ein Merker aus einer anderen Anlage passte nicht zu ihr. Traegt eine Datei ihn (nur die
+ * unveroeffentlichte erste Bauform von 0.9.54 schrieb ihn; gemessen 18.11.2026 an den Archiven 0.9.14 bis 0.9.53:
+ * keine sicherte bridge.json), verwirft das Modul ihn als unbekannten Unterschluessel und nennt bridge.namen_setzen
+ * (Regel 2). Rueckgabe fuer das Modul: array(Wert|null, Beanstandungen[]).
+ */
+function mt_sicherung_bridge($w, $jetzt = null)
+{
+    if (!is_array($w)) {
+        return array(null, array(sprintf(mt_t('EINST.SICH_WERT'), 'bridge', mt_t('EINST.SICH_W_TYP'))));
+    }
+    $c = mt_br_cfg();
     $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(mt_t('EINST.SICH_KEIN_JSON')), 0);
+    if (array_key_exists('bridge_ein', $w)) {
+        if (!in_array($w['bridge_ein'], array(0, 1, '0', '1'), true)) {
+            $mangel[] = sprintf(mt_t('EINST.SICH_WERT'), 'bridge.bridge_ein', mt_t('EINST.SICH_W_HAKEN'));
+        } else {
+            $c['bridge_ein'] = (int) $w['bridge_ein'];
+        }
     }
-    $neu = mt_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    $grenzen = mt_zahlgrenzen();
-    foreach ($daten as $k => $w) {
-        /* Der lesbare Kopf (_hinweis, _stand) wird UEBERGANGEN, nicht
-         * beanstandet - Hausstandard. Bis 0.9.16 hat ihn diese Funktion als
-         * fremden Schluessel abgewiesen und die ganze Datei verworfen. */
-        if ($k !== '' && $k[0] === '_') {
+    if (array_key_exists('auswahl', $w)) {
+        $aw = array();
+        if (!is_array($w['auswahl'])) {
+            $mangel[] = sprintf(mt_t('EINST.SICH_WERT'), 'bridge.auswahl', mt_t('EINST.SICH_W_FORM'));
+        } else {
+            foreach ($w['auswahl'] as $k => $t) {
+                if (!is_string($k) || !is_string($t) || !mt_br_schluessel_gueltig($k) || !preg_match('/^[a-z]{2,20}\z/', $t)) {
+                    $mangel[] = sprintf(mt_t('EINST.SICH_WERT'), 'bridge.auswahl', mt_t('EINST.SICH_W_FORM'));
+                    break;
+                }
+                $aw[$k] = $t;
+            }
+        }
+        $c['auswahl'] = $aw;
+    }
+    return $mangel ? array(null, $mangel) : array(array_intersect_key($c, mt_br_vorgaben()), array());
+}
+
+/**
+ * Der Teil "bridge_zugang" (bridge_zugang.json): Loxone-Benutzer und -Kennwort der Bridge und das Kennwort ihrer
+ * Oberflaeche. Dieselben Regeln wie das Formular (Benutzer mt_br_benutzer_gueltig(), Kennwort hoechstens 128 Zeichen
+ * ohne Steuerzeichen) und wie mt_br_frontend_kennwort() (32 Hexziffern). Fehlt ein Feld, gilt der geltende Wert; ein
+ * leeres Feld behaelt den geltenden Wert schon nach Regel 3 des Moduls. Den Zeitstempel setzt mt_sicherung_speichern().
+ */
+function mt_sicherung_bridge_zugang($w, $jetzt = null)
+{
+    if (!is_array($w)) {
+        return array(null, array(sprintf(mt_t('EINST.SICH_WERT'), 'bridge_zugang', mt_t('EINST.SICH_W_TYP'))));
+    }
+    $z = mt_sicherung_zugang_jetzt();
+    $mangel = array();
+    foreach (array('benutzer', 'kennwort', 'frontend_kennwort') as $f) {
+        if (!array_key_exists($f, $w)) { continue; }
+        $v = $w[$f];
+        $gut = is_string($v) && ($v === '' || ($f === 'benutzer' ? mt_br_benutzer_gueltig($v)
+            : ($f === 'kennwort' ? (strlen($v) <= 128 && preg_match('/[\x00-\x1F\x7F]/', $v) !== 1)
+                                 : preg_match('/^[0-9a-f]{32}\z/', $v) === 1)));
+        if (!$gut) {
+            $mangel[] = sprintf(mt_t('EINST.SICH_WERT'), 'bridge_zugang.' . $f, mt_t('EINST.SICH_W_FORM'));
             continue;
         }
-        $mt_aw = mt_ansage_wert($k, $w);     // Sprachansagen: eigene Pruefung; Token und Vermerk bleiben die geltenden
-        if ($mt_aw !== null) {
-            if ($mt_aw) { $neu[$k] = $w; $anzahl++; } else { $mangel[] = mt_t('ANSAGEPLUGIN.M_FEHL'); $namen[] = (string) $k; }
-            continue;
+        $z[$f] = $v;
+    }
+    return $mangel ? array(null, $mangel) : array($z, array());
+}
+
+/** Die Teile der Sicherung: die Bridge-Dateien nur, wenn es sie (oder ihre Zweitschrift) gibt; bridge.json ohne den
+ *  Merker namen_setzen (er gehoert zur Knotenablage dieser Anlage, siehe mt_sicherung_bridge()). */
+function mt_sicherung_teile()
+{
+    $f = mt_br_pfade();
+    $t = array();
+    if (is_file($f['cfg']) || is_file($f['cfg_bk'])) {
+        $t['bridge'] = mt_br_cfg();
+        unset($t['bridge']['namen_setzen']);
+    }
+    if (is_file($f['zugang']) || is_file($f['zugang_bk'])) { $t['bridge_zugang'] = mt_sicherung_zugang_jetzt(); }
+    return $t;
+}
+
+/** Der Inhalt der Datei "Einstellungen sichern" - an EINER Stelle (Kopf und Inhalt baut das Modul). */
+function mt_sicherung_daten()
+{
+    return sicherung_bauen(mt_sicherung_beschreibung(), mt_config(), mt_sicherung_teile());
+}
+
+/**
+ * Welche gespeicherten Werte bestuenden das eigene Zurueckspielen nicht? Dieselbe Pruefung des Moduls
+ * (sicherung_selbstpruefung()) an genau der Datei, die "Einstellungen sichern" liefert. Rueckgabe: Liste der NAMEN,
+ * nie der Werte; leer = die Sicherung liesse sich zurueckspielen.
+ */
+function mt_sicherung_altwerte()
+{
+    return sicherung_selbstpruefung(mt_sicherung_beschreibung(), mt_sicherung_daten(), mt_config());
+}
+
+/**
+ * Vor dem Speichern (Rueckruf 'vorbereiten'): der Block tts wird vervollstaendigt wie bis 0.9.53, und die geltenden
+ * Sprechtoken bleiben (die Sicherung traegt keine); kam er nicht aus der Datei, steht dort schon der geltende.
+ * ansage_aus_datei = 1 wie bis 0.9.53: nach dem Zurueckspielen gilt die Sprachausgabe der Sicherung, eine
+ * liegengebliebene ansage.json wird nicht mehr uebernommen. Den Herkunftsvermerk haelt das Modul ('nie_aus_datei').
+ */
+function mt_sicherung_vorbereiten($neu, $jetzt, $r)
+{
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        list($tv) = ansage_vervollstaendigen($neu['tts'], 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+    }
+    $neu['ansage_aus_datei'] = 1;
+    return $neu;
+}
+
+/** Was beim Speichern der zurueckgespielten Sicherung misslang ('' | 'halb'), fuer die Meldung der Seite. */
+function mt_sicherung_schreiblage($setzen = null)
+{
+    static $l = '';
+    if (is_string($setzen)) { $l = $setzen; }
+    return $l;
+}
+
+/**
+ * Speichern (Rueckruf 'speichern'): genau den Stand, den das Modul liefert. Zuerst die Bridge-Dateien (nur die Teile,
+ * die die Datei traegt; jede mit ihrer Zweitschrift, mt_br_cfg_speichern(), mt_br_zugang_speichern()), dann die
+ * Konfiguration samt Zweitschrift (mt_config_speichern()). Scheitert die Konfiguration nach einer Bridge-Datei, sagt
+ * es die Meldung (EINST.SICH_HALB). Aendert sich Benutzer oder Kennwort der Bridge, bekommt der Zugang einen neuen
+ * Zeitstempel: dann gilt eine fruehere Testanmeldung nicht mehr (mt_br_anmeldung_gilt()), wie nach dem Formular.
+ */
+function mt_sicherung_speichern($neu, $jetzt, $r)
+{
+    mt_sicherung_schreiblage('');
+    $bridge = false;
+    if (isset($r['teile']['bridge']) && is_array($r['teile']['bridge'])) {
+        if (!mt_br_cfg_speichern($r['teile']['bridge'])) { return false; }
+        $bridge = true;
+    }
+    if (isset($r['teile']['bridge_zugang']) && is_array($r['teile']['bridge_zugang'])) {
+        $alt = mt_br_zugang();
+        $z = $r['teile']['bridge_zugang'];
+        $z['geaendert'] = ($z['benutzer'] !== $alt['benutzer'] || $z['kennwort'] !== $alt['kennwort'])
+            ? time() : (int) $alt['geaendert'];
+        if (!mt_br_zugang_speichern($z)) {
+            mt_sicherung_schreiblage($bridge ? 'halb' : '');
+            return false;
         }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(mt_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            continue;
-        }
-        /* Jeder WERT wird geprueft, nicht nur der Schluessel - gegen dieselbe
-         * Positivliste wie im Formular. Bis 0.9.16 ging hier alles durch:
-         * ein Feld als aktionstoken machte aus dem Vergleich im Endpunkt die
-         * Zeichenkette "Array", und damit war der Endpunkt mit ?token=Array
-         * bedienbar; eine Zeichenkette als server_port liess den Dienst bei
-         * jedem Start mit ValueError sterben. */
-        $grund = mt_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            $mangel[] = sprintf(mt_t('EINST.SICH_WERT'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), $grund);
-            continue;
-        }
-        /* C9 (Durchgang 30.09.2026): Haken und Zahlen als Zahl uebernehmen.
-         * Bis 0.9.30 blieb der Typ der Datei stehen: "schloss_ein": "0" kam
-         * als Zeichenkette in die Konfiguration, die Oberflaeche las "aus",
-         * der Dienst "ein" (gemessen, Bericht oberflaeche Nr. 3). */
-        if (in_array($k, mt_haken(), true) || isset($grenzen[$k])) {
-            $w = (int) $w;
-        }
-        $neu[$k] = $w;
-        $anzahl++;
+        $bridge = true;
     }
-    /* Ein FEHLENDER Schluessel ist ebenfalls ein Mangel. Bis 0.9.16 wurde er
-     * lautlos durch die Werkseinstellung ersetzt: eine Datei mit einem
-     * einzigen bekannten Schluessel wurde angenommen ("1 Wert uebernommen")
-     * und setzte dabei Aktionstoken, WLAN-Passwort, Thread-Dataset und beide
-     * Freigaben zurueck. Beim naechsten Seitenaufruf wurde die Werkseinstellung
-     * dann auch noch ueber die Zweitschrift geschrieben. Der Kommentar oben
-     * verspricht "eine halb gueltige Datei ueberschreibt GAR NICHTS" - das
-     * gilt jetzt auch fuer die unvollstaendige. */
-    /* Tuer-1 (Verbesserungsbau 30.09.2026): ein Schluessel, den eine
-     * spaetere Fassung dazugebracht hat, darf in einer aelteren Sicherung
-     * fehlen - er behaelt seine Vorgabe (ab Werk aus), und der Hinweis sagt
-     * es. Sonst waere jede Sicherung bis 0.9.32 abgewiesen worden. Fuer alle
-     * anderen gilt weiter: ein fehlender Schluessel ist ein Mangel. */
-    $neu_fehlt = array_values(array_intersect(mt_sicherung_neue_schluessel(),
-                                              array_diff($bekannt, array_keys($daten))));
-    $fehlend = array_diff($bekannt, array_keys($daten), mt_sicherung_neue_schluessel());
-    if ($fehlend) {
-        $mangel[] = sprintf(mt_t('EINST.SICH_FEHLT'),
-                             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+    if (!mt_config_speichern($neu)) {
+        mt_sicherung_schreiblage($bridge ? 'halb' : '');
+        return false;
     }
-    if ($anzahl === 0) {
-        $mangel[] = mt_t('EINST.SICH_LEER');
+    return true;
+}
+
+/**
+ * Die Paare (Datei, Zweitschrift), die das Modul nach dem Speichern misst (Liste von Paaren, Modul 1.2.7): die
+ * Konfiguration immer, die Bridge-Dateien, soweit es sie gibt.
+ */
+function mt_sicherung_zweitschriften()
+{
+    $p = mt_paths();
+    $f = mt_br_pfade();
+    $paare = array(array($p['config'], $p['sicherung']));
+    if (is_file($f['cfg'])) { $paare[] = array($f['cfg'], $f['cfg_bk']); }
+    if (is_file($f['zugang'])) { $paare[] = array($f['zugang'], $f['zugang_bk']); }
+    return $paare;
+}
+
+/**
+ * Nach dem Zurueckspielen (Rueckruf 'nachziehen'): sagen, was mit Dienst, Befehlsbruecke, Container und Bridge
+ * geschah. Der Dienst liest die Konfiguration im Sekundentakt selbst (matter_dienst.py, C4) und wird nicht neu
+ * gestartet; die Befehlsbruecke wird gestartet bzw. angehalten wie nach dem Speichern im Reiter MQTT; Container-
+ * Einstellungen wirken erst nach dem Neuanlegen, die der Bridge beim naechsten Start der Bridge. Rueckgabe: Saetze.
+ */
+function mt_sicherung_nachziehen($neu, $jetzt, $r, $befehl_vorher = null)
+{
+    $s = array();
+    $s[] = mt_t(mt_dienst_pid() > 0 ? 'EINST.SICH_DIENST_LAEUFT' : 'EINST.SICH_DIENST_STEHT');
+    $bb = mt_bruecke_satz(mt_bruecke_schalten(mt_mqtt_praefix($neu) !== mt_mqtt_praefix($jetzt)));
+    if ($bb !== '') { $s[] = $bb; }
+    if ((string) $neu['eigener_container'] === '1' && $befehl_vorher !== null && mt_container_befehl($neu) !== $befehl_vorher) {
+        $s[] = mt_t('EINST.CONTAINER_NEU_NOETIG');
     }
-    /* C5 (Durchgang 30.09.2026): ein LEERES Aktionstoken in der Datei loescht
-     * das laufende nicht. Bis 0.9.30 wurde es angenommen - danach antwortete
-     * jeder virtuelle Eingang mit 403 und dem falschen Satz "die Oberflaeche
-     * wurde noch nie geoeffnet" (gemessen, Bericht code C5). Das laufende
-     * Token bleibt, und der vierte Rueckgabewert sagt es. Ein Token leeren
-     * laesst sich nur bewusst, nicht nebenbei ueber eine Datei. */
-    $hinweise = array();
-    /* Gruppe 8 (0.9.44, Entwurf 3.7): eine Sicherung ohne endpunkt_ein stammt aus einer Fassung mit offenem
-     * HTTP-Endpunkt - er bleibt an (1), wie beim Update (postinstall.sh). Fehlen die Haken der Befehlsbruecke,
-     * gilt der laufende Wert. */
-    if (!$mangel && !array_key_exists('endpunkt_ein', $daten)) {
-        $neu['endpunkt_ein'] = 1;
-        $neu_fehlt = array_values(array_diff($neu_fehlt, array('endpunkt_ein')));
-        $hinweise[] = mt_t('EINST.SICH_ENDPUNKT_AN');
+    if (!empty($r['teile'])) {
+        $s[] = mt_t('EINST.SICH_BRIDGE_NEU');
     }
-    foreach (array('befehle_mqtt_ein', 'befehle_mqtt_entsperren') as $mt_bk) {
-        if (!$mangel && !array_key_exists($mt_bk, $daten)) {
-            $mt_jetzt = mt_config(false);
-            $neu[$mt_bk] = !empty($mt_jetzt[$mt_bk]) ? 1 : 0;
-            $neu_fehlt = array_values(array_diff($neu_fehlt, array($mt_bk)));
-        }
-    }
-    if (!$mangel && $neu_fehlt) {
-        $hinweise[] = sprintf(mt_t('EINST.SICH_NEU_VORGABE'), implode(', ', $neu_fehlt));
-    }
-    if (!$mangel && trim((string) $neu['aktionstoken']) === '') {
-        $jetzt = mt_config(false);
-        $neu['aktionstoken'] = is_scalar($jetzt['aktionstoken']) ? (string) $jetzt['aktionstoken'] : '';
-        $hinweise[] = mt_t($neu['aktionstoken'] !== '' ? 'EINST.SICH_TOKEN_BEHALTEN'
-                                                          : 'EINST.SICH_TOKEN_KEINS');
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweise);
+    return $s;
 }
 
 /**
