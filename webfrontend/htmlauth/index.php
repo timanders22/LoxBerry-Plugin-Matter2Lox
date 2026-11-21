@@ -1608,7 +1608,8 @@ $mt_rahmen = class_exists('LBWeb', false);
 if ($mt_rahmen) {
     /* 0.9.35 (Nr. 10): der Hilfelink fuehrt auf die Seite dieses Plugins,
      * nicht auf die Startseite des LoxBerry-Wikis. */
-    LBWeb::lbheader('Matter to Loxone', 'https://github.com/timanders22/LoxBerry-Plugin-Matter2Lox#readme', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Matter to Loxone', __DIR__), 'https://github.com/timanders22/LoxBerry-Plugin-Matter2Lox#readme', 'help.html');
 }
 
 ?>
