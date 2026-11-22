@@ -3881,8 +3881,12 @@ $mt_leben = isset($mt_zustand['herzschlag']) && (int) $mt_zustand['herzschlag'] 
 
 </div><!-- /sm-wrap -->
 
-<?php /* 0.9.50 (PR #2): QR-Leser im Reiter Geraete anlernen, siehe mt_qr.php. */ ?>
-<script src="qr-scanner.js?v=0.9.50" defer></script>
+<?php /* 0.9.50 (PR #2): QR-Leser im Reiter Geraete anlernen, siehe mt_qr.php.
+ * 0.9.57 (Entscheidung des Hausherrn 22.11.2026, keine fest eingetragene Zahl): der Cache-Schluessel ist die installierte
+ * Fassung aus dem gemeinsamen Stueck fassung.php; bis 0.9.56 stand hier die Nummer der Aufnahme. Ohne Fassung
+ * bleibt ?v= leer. Geladen wird die Abschrift hier selbst, weil die Kopfzeile sie nur mit Rahmen laedt. */
+require_once __DIR__ . '/fassung.php'; ?>
+<script src="qr-scanner.js?v=<?= rawurlencode(plugin_fassung(__DIR__)) ?>" defer></script>
 
 <?php /* 0.9.42: auch fuer das Kopplungsfenster der Bridge (Reiter Bridge). */
 if ($mt_fenster || $mt_brcodes) { ?>

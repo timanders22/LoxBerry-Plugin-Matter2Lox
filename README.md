@@ -11,6 +11,10 @@ nimmt umgekehrt Schaltbefehle von Loxone entgegen.
 > Deshalb 0.9.x und nicht 1.0.0. Was sich nur an einer echten Anlage messen
 > lässt, steht am Ende dieser Datei unter *Was nicht geprüft ist*.
 
+## Neu in 0.9.57
+
+- **Geändert – keine fest eingetragene Fassungsnummer mehr (Entscheidung des Hausherrn 22.11.2026):** Der Cache-Schlüssel des QR-Lesers (`qr-scanner.js?v=…`) ist jetzt die installierte Fassung aus demselben gemeinsamen Stück wie die Kopfzeile (`fassung.php`). Bis 0.9.56 stand dort fest die Nummer 0.9.50, unter der der QR-Leser aufgenommen wurde; ein Browser konnte deshalb nach einem Update eine alte Fassung des Skripts aus seinem Zwischenspeicher nehmen. Gemessen auf dem Arbeitsrechner (PHP 7.4 und 8.4, nachgebildete Installation); am Gerät nicht gemessen.
+
 ## Neu in 0.9.56
 
 - Die Kopfzeile zeigt jetzt die installierte Fassung, einheitlich in allen Plugins.
