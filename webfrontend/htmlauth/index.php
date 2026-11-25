@@ -152,6 +152,12 @@ $mt_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
 /* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+/* 0.9.59: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($mt_post && isset($_POST['meld_test'])) {
+    list($mt_at, $mt_ag) = mt_meld_test();
+    if ($mt_at) { $mt_meldungen[] = mt_e(mt_t('SIGNALMELDUNG.T_OK')); } else { $mt_fehler[] = mt_e($mt_ag); }
+    $mt_tab = 'tab-settings';
+}
 if ($mt_post && isset($_POST['ansage_test'])) {
     list($mt_at, $mt_ag) = mt_ansage_test();
     if ($mt_at) { $mt_meldungen[] = mt_e(mt_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $mt_fehler[] = mt_e(mt_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $mt_ag); }
@@ -576,6 +582,14 @@ if ($mt_post && isset($_POST['save_mqtt'])) {
     if ($mt_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $mt_mtopic)
         || trim($mt_mtopic, '/') === '') {
         $mt_fehler[] = mt_t('EINST.FEHLER_TOPIC');
+        $mt_bean[] = 'mqtt_topic';
+    } elseif (mt_praefix_hausbereich($mt_mtopic) !== ''
+              && trim($mt_mtopic, '/') !== trim((string) $mt_mcfg['mqtt_topic'], '/')) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 0.9.59: ein Praefix auf einem gemeinsamen Bereich (Regeln/07) - abgewiesen und mit Namen gemeldet, nicht
+         * zurechtgebogen; dieselbe Regel steht in mt_wert_pruefen() (Zurueckspielen). Praefix und Bereich haben hier
+         * schon das Muster bestanden und tragen kein Zeichen, das maskiert werden muesste. */
+        $mt_fehler[] = sprintf(mt_t('HAUSBEREICH.FEHLER'), trim($mt_mtopic, '/'), mt_praefix_hausbereich($mt_mtopic));
         $mt_bean[] = 'mqtt_topic';
     } else {
         $mt_mcfg['mqtt_topic'] = trim($mt_mtopic, '/');

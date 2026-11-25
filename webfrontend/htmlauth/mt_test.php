@@ -640,6 +640,127 @@ function mt_pruef_tuer_konflikt($cfg)
 }
 
 /**
+ * 0.9.59 (Regeln/07, Namensregel): reservierte Namen unter haus/tuer/.
+ *
+ * Auf der Ebene der Geraetenamen stehen unter haus/tuer/ auch das
+ * Lebenszeichen der Anbieter und ihre Kennung; diese Namen traegt kein
+ * Geraet. Der Dienst sendet ein Geraet, dessen Thema darauf fiele, nicht und
+ * schreibt es in zustand.json als "haus_abgewiesen", dazu seine Liste
+ * "haus_reserviert"; gemerkte Themen einer frueheren Fassung darunter raeumt
+ * er ab. Rueckgabe array(stand, html): rot bei abgewiesenen Geraeten, noch
+ * gemerkten Themen unter einem solchen Namen oder einer abweichenden Liste;
+ * grau, wenn ausgeschaltet oder der Dienst noch keine Auskunft gab.
+ */
+function mt_pruef_tuer_reserviert($cfg)
+{
+    if (empty($cfg['tuer_haus']) || empty($cfg['mqtt_ein'])) {
+        return array(-1, mt_t('TEST.A_TUERRESERVIERT_AUS'));
+    }
+    $soll = mt_haus_reserviert();
+    $z = mt_zustand();
+    $abgew = mt_tuer_abgewiesen($z);
+    $rest = mt_tuer_reserviert_rest($soll);
+    $liste_anders = isset($z['haus_reserviert']) && $z['haus_reserviert'] !== $soll;
+    $teile = array();
+    foreach ($abgew as $a) {
+        $teile[] = sprintf(mt_t('TEST.A_TUERRESERVIERT'), (int) $a['nr'], mt_e($a['name']),
+            '<span class="sm-mono">' . mt_e(implode(', ', $a['themen'])) . '</span>');
+    }
+    if ($rest) {
+        $teile[] = sprintf(mt_t('TEST.A_TUERRESERVIERT_REST'),
+            '<span class="sm-mono">' . mt_e(implode(', ', $rest)) . '</span>');
+    }
+    if ($liste_anders) {
+        $ist = is_array($z['haus_reserviert']) ? implode(', ', array_map('strval', $z['haus_reserviert'])) : '?';
+        $teile[] = sprintf(mt_t('TEST.A_TUERRESERVIERT_LISTE'), mt_e(implode(', ', $soll)), mt_e($ist));
+    }
+    if ($teile) {
+        return array(0, implode(' ', $teile));
+    }
+    if (!isset($z['haus_reserviert'])) {
+        return array(-1, sprintf(mt_t('TEST.A_TUERRESERVIERT_UNBEKANNT'), mt_e(implode(', ', $soll))));
+    }
+    return array(1, sprintf(mt_t('TEST.A_TUERRESERVIERT_KEINER'), mt_e(implode(', ', $soll))));
+}
+
+/** 0.9.59: die Namen, die unter haus/tuer/ kein Geraet tragen darf - wie HAUS_RESERVIERT im Dienst. */
+function mt_haus_reserviert()
+{
+    return array('zaehler', 'anbieter');
+}
+
+/** 0.9.59: die abgewiesenen Geraete aus zustand.json, geprueft. */
+function mt_tuer_abgewiesen($z)
+{
+    $aus = array();
+    foreach ((isset($z['haus_abgewiesen']) && is_array($z['haus_abgewiesen']) ? $z['haus_abgewiesen'] : array()) as $a) {
+        if (!is_array($a) || !isset($a['themen']) || !is_array($a['themen'])) {
+            continue;
+        }
+        $themen = array();
+        foreach ($a['themen'] as $t) {
+            if (is_string($t) && preg_match('#^haus/tuer/[a-z0-9_\-]{1,60}/(offen|verriegelt)$#', $t)) {
+                $themen[] = $t;
+            }
+        }
+        if ($themen) {
+            $aus[] = array('nr' => isset($a['nr']) && is_numeric($a['nr']) ? (int) $a['nr'] : 0,
+                           'name' => isset($a['name']) && is_scalar($a['name']) ? (string) $a['name'] : '?',
+                           'themen' => $themen);
+        }
+    }
+    return $aus;
+}
+
+/** 0.9.59: gemerkte Themen unter haus/tuer/, deren Name reserviert ist (Aktualisierungsfall). */
+function mt_tuer_reserviert_rest($soll)
+{
+    $aus = array();
+    foreach (array_keys(mt_haus_gemerkt()) as $t) {
+        $teil = explode('/', $t);
+        if (isset($teil[2]) && in_array($teil[2], $soll, true)) {
+            $aus[] = $t;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * 0.9.59 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): faellt das Themen-Praefix auf
+ * einen gemeinsamen Bereich unter haus/? Ein solches Praefix weisen Speichern und Zurueckspielen ab; ein schon
+ * gespeichertes (Aktualisierungsfall) bleibt in Betrieb - der Dienst sendet weiter und meldet es im Protokoll, diese
+ * Zeile ist rot (grau bei ausgeschalteter MQTT-Veroeffentlichung). Dazu der Vergleich der Liste mit der, die der
+ * Dienst in zustand.json schreibt ("haus_bereiche"); ohne sie grau, nicht gruen. Rueckgabe array(stand, html).
+ */
+function mt_pruef_praefix_haus($cfg)
+{
+    $p = mt_mqtt_praefix($cfg);
+    $bereich = mt_praefix_hausbereich($p);
+    $soll = mt_haus_bereiche();
+    $z = mt_zustand();
+    $stand = 1;
+    $teile = array();
+    if ($bereich !== '') {
+        $stand = empty($cfg['mqtt_ein']) ? -1 : 0;
+        $teile[] = sprintf(mt_t($stand === -1 ? 'HAUSBEREICH.A_AUS' : 'HAUSBEREICH.A_NEIN'), '<span class="sm-mono">'
+            . mt_e($p) . '</span>', mt_e($bereich));
+    }
+    $liste_anders = isset($z['haus_bereiche']) && $z['haus_bereiche'] !== $soll;
+    if ($liste_anders) {
+        $stand = 0;
+        $ist = is_array($z['haus_bereiche']) ? implode(', ', array_map('strval', $z['haus_bereiche'])) : '?';
+        $teile[] = sprintf(mt_t('HAUSBEREICH.A_LISTE'), mt_e(implode(', ', $soll)), mt_e($ist));
+    }
+    if ($teile) {
+        return array($stand, implode(' ', $teile));
+    }
+    if (!isset($z['haus_bereiche'])) {
+        return array(-1, sprintf(mt_t('HAUSBEREICH.A_UNBEKANNT'), '<span class="sm-mono">' . mt_e($p) . '</span>'));
+    }
+    return array(1, sprintf(mt_t('HAUSBEREICH.A_JA'), '<span class="sm-mono">' . mt_e($p) . '</span>'));
+}
+
+/**
  * 0.9.35 (Nr. E5): Welcher Matter-Server laeuft? SDK- und Schemafassung aus
  * loxone.json (server), dazu das Abbild der Container. Laufen ein
  * python-matter-server und ein matterjs-server auf derselben Fabric
@@ -1307,6 +1428,12 @@ function mt_pruefungen()
     // 0.9.35 (Nr. D2): Konflikte mit anderen Anbietern und die festen Namen.
     $tk = mt_pruef_tuer_konflikt($cfg);
     $zeilen[] = mt_pruefzeile($tk[0], mt_t('TEST.F_TUERKONFLIKT'), $tk[1]);
+    // 0.9.59: reservierte Namen unter haus/tuer/ (Regeln/07).
+    $tr = mt_pruef_tuer_reserviert($cfg);
+    $zeilen[] = mt_pruefzeile($tr[0], mt_t('TEST.F_TUERRESERVIERT'), $tr[1]);
+    // 0.9.59: faellt das Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $tp = mt_pruef_praefix_haus($cfg);
+    $zeilen[] = mt_pruefzeile($tp[0], mt_t('HAUSBEREICH.F_TEST'), $tp[1]);
 
     $md = mt_pruef_mqtt_dateien($cfg);
     $zeilen[] = mt_pruefzeile($md[0], mt_t('TEST.F_MQTTDATEI'), $md[1]);

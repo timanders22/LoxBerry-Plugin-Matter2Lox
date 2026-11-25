@@ -717,6 +717,33 @@ def mqtt_praefix(cfg: dict) -> str:
     return p if re.match(r"^[A-Za-z0-9_/\-]{1,64}$", p) else "matter"
 
 
+# 0.9.59 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche"; Regeln/07, Abschnitt "Haus-Themen
+# fuer das Zusammenspiel der Linien", Absatz "Praefix einer Linie im gemeinsamen Bereich"): die gemeinsamen
+# Bereiche unter haus/ - dort liefern die Linien einander Zustaende ohne eigenes Praefix. Ein Praefix, das
+# haus/<bereich> ist oder damit beginnt, weisen Formular und Zurueckspielen ab; ein schon gespeichertes sendet
+# der Dienst weiter wie bisher und meldet es nur. haus allein und andere Praefixe unter haus/ bleiben erlaubt.
+# Verglichen wird genau (MQTT unterscheidet Gross und Klein). Liste und Pruefung kommen seit der Praefix-Welle
+# aus dem gemeinsamen Modul haus_bereiche.py (Stammfassung Werkzeuge/gemeinsam/); der Reiter Test vergleicht
+# die Liste mit der, die der Dienst in zustand.json schreibt. Ein neuer Bereich kommt zuerst nach Regeln/07,
+# dann ins Modul.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))     # haus_bereiche.py liegt neben dem Dienst
+from haus_bereiche import HB_BEREICHE as HAUS_BEREICHE, hb_bereich, hb_melden_faellig, hb_logtext  # noqa: E402
+
+
+def praefix_im_hausbereich(p) -> str:
+    """Der gemeinsame Bereich, auf den das Praefix faellt, sonst "" (gemeinsames Modul haus_bereiche.py)."""
+    return hb_bereich(p)
+
+
+def praefix_hausbereich_melden(praefix: str) -> str:
+    """Einmal je Aenderung eine WARNING, solange das Praefix auf einen gemeinsamen Bereich faellt; der Versand
+    bleibt, wie er ist. Rueckgabe der gemeldete Bereich oder "" (hb_melden_faellig() im laufenden Prozess)."""
+    bereich = hb_melden_faellig(praefix)
+    if bereich:
+        _LOG.warning("%s", hb_logtext(praefix, bereich))
+    return bereich
+
+
 # Themen, die einen ZUSTAND tragen und deshalb retained gesendet werden:
 # Loxone hat damit nach einem Neustart des Brokers, des Gateways oder des
 # Miniservers sofort wieder den Stand. Alles Uebrige - Messwerte mit
@@ -2867,6 +2894,7 @@ def abbild_schreiben(v: MatterVerbindung, cfg: dict, tab: dict, ok: int,
 
     if cfg.get("mqtt_ein"):
         praefix = mqtt_praefix(cfg)
+        praefix_hausbereich_melden(praefix)
         paare = paare_bilden(geraete, cfg, ok, tab)
         # Nur senden, was sich geaendert hat. Bis 0.9.9 ging bei JEDEM einzelnen
         # attribute_updated der vollstaendige Bestand aller Geraete erneut
@@ -3505,7 +3533,7 @@ async def dienst(einmal: bool = False) -> int:
         try:
             await v.verbinden()
             fehler_folge = 0
-            zustand_schreiben(ok=1, fehler="", server=v.server_info)
+            zustand_schreiben(ok=1, fehler="", server=v.server_info, haus_bereiche=list(HAUS_BEREICHE))
 
             def schreiben() -> None:
                 # Nur vormerken. Geschrieben und gesendet wird im Takt unten -
@@ -3970,6 +3998,30 @@ _HAUS: dict = {"letzte": {}, "versucht": 0.0, "konflikte": [], "konflikt_gefragt
 _HAUS_THEMA = re.compile(r"^haus/tuer/[a-z0-9_\-]{1,60}/(offen|verriegelt)$")
 _UMLAUTE = (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"),
             ("Ä", "ae"), ("Ö", "oe"), ("Ü", "ue"))
+# 0.9.59 (Regeln/07, Namensregel; Entscheidung des Hausherrn 23.11.2026):
+# Namen, die unter haus/tuer/ kein Geraet tragen darf. Auf derselben Ebene
+# stehen das Lebenszeichen der Anbieter (haus/tuer/zaehler/<anbieter>) und
+# ihre Kennung (haus/tuer/<name>/anbieter); ein Geraet "Zaehler" ergab bis
+# 0.9.58 haus/tuer/zaehler/offen. Ein solcher Name wird abgewiesen und
+# gemeldet, nicht umbenannt. mt_test.php fuehrt dieselbe Liste
+# (mt_haus_reserviert()) und vergleicht sie mit der in zustand.json.
+HAUS_RESERVIERT = ("zaehler", "anbieter")
+
+
+def haus_reserviert(name) -> bool:
+    return str(name) in HAUS_RESERVIERT
+
+
+def _haus_abgewiesen(name: str, kontakte: list, schloesser: list) -> list:
+    """0.9.59: die Themen, die unter diesem Namen auf einen reservierten
+    fielen - wie in haus_paare() mit _<endpunkt> bei mehreren Endpunkten."""
+    aus = []
+    for art, eps in (("offen", kontakte), ("verriegelt", schloesser)):
+        for ep in eps:
+            n = name if len(eps) == 1 else f"{name}_{ep}"
+            if haus_reserviert(n):
+                aus.append(f"{HAUS_WURZEL}/{n}/{art}")
+    return sorted(aus)
 
 
 def haus_name(text) -> str:
@@ -3980,7 +4032,7 @@ def haus_name(text) -> str:
     return t[:40].strip("_")
 
 
-def haus_paare(geraete: dict, feste_namen=None) -> tuple:
+def haus_paare(geraete: dict, feste_namen=None, abgewiesen=None) -> tuple:
     """Rueckgabe (paare, herkunft): paare relativ zu haus/tuer
     ("<name>/offen": 0|1|"-"), herkunft je Schluessel die Geraetenummer.
 
@@ -3990,11 +4042,19 @@ def haus_paare(geraete: dict, feste_namen=None) -> tuple:
     bekam ein Geraet einen schon vergebenen Namen, rutschte das mit der
     hoeheren Nummer still auf <name>_<nr>. Funkwacht und Beschattungswaechter
     verloren die Tuer dann ohne Hinweis. Neu vergeben wird ein Name erst nach
-    "Themen dieses Geraets abraeumen" (geraet_leeren())."""
+    "Themen dieses Geraets abraeumen" (geraet_leeren()).
+
+    abgewiesen (0.9.59): eine Liste; jedes Geraet, von dessen Themen unter
+    haus/tuer/ eines auf einen reservierten Namen fiele (HAUS_RESERVIERT),
+    kommt als {nr, name, themen} hinein und geht nicht hinaus. Sein Name wird
+    nicht als fester Name gemerkt; ein fester Name aus einer frueheren
+    Fassung, der darauf faellt, gilt nicht mehr - nach dem Umbenennen gilt
+    der neue Name."""
     paare: dict = {}
     herkunft: dict = {}
     namen: dict = {}
     fest = feste_namen if isinstance(feste_namen, dict) else {}
+    abgew = abgewiesen if isinstance(abgewiesen, list) else []
     for nr in sorted(geraete, key=lambda n: int(n) if str(n).isdigit() else 0):
         if str(nr) in fest:
             namen[fest[str(nr)]] = nr
@@ -4008,15 +4068,26 @@ def haus_paare(geraete: dict, feste_namen=None) -> tuple:
         if not kontakte and not schloesser:
             # Kein Tuergeraet: es belegt keinen Namen unter haus/tuer/.
             continue
-        if str(nr) in fest:
-            name = fest[str(nr)]
-        else:
+        name = fest.get(str(nr))
+        if name is not None and _haus_abgewiesen(name, kontakte, schloesser):
+            # 0.9.59: ein fester Name aus einer frueheren Fassung, der auf
+            # einen reservierten faellt, gilt nicht mehr.
+            fest.pop(str(nr), None)
+            name = None
+        weg: list = []
+        if name is None:
             name = haus_name(g.get("name")) or f"geraet{nr}"
             if namen.get(name, nr) != nr:
                 name = f"{name}_{nr}"
             namen[name] = nr
-            if feste_namen is not None:
+            weg = _haus_abgewiesen(name, kontakte, schloesser)
+            if not weg and feste_namen is not None:
                 feste_namen[str(nr)] = name
+        if weg:
+            # 0.9.59: abgewiesen und gemeldet, nicht umbenannt (Regeln/07).
+            abgew.append({"nr": int(nr) if str(nr).isdigit() else 0,
+                          "name": str(g.get("name") or ""), "themen": weg})
+            continue
         for art, eps, feld in (("offen", kontakte, "kontakt"), ("verriegelt", schloesser, "schloss")):
             for ep in eps:
                 roh = endpunkte[ep].get(feld)
@@ -4099,7 +4170,10 @@ def haus_senden(geraete: dict, cfg: dict, voll: bool = False) -> None:
         return
     namen = haus_namen_lesen()
     vorher = dict(namen)
-    paare, herkunft = haus_paare(geraete, namen)
+    abgewiesen: list = []
+    paare, herkunft = haus_paare(geraete, namen, abgewiesen)
+    haus_abgewiesen_melden(abgewiesen)
+    haus_reserviert_pflegen()
     if namen != vorher and not haus_namen_schreiben(namen):
         melde_gebremst("haus_namen", f"MQTT: die festen Namen unter {HAUS_WURZEL}/ liessen sich "
                        f"nicht in {DATEI_HAUS_NAMEN} merken - nach einer Umbenennung kann das "
@@ -4173,6 +4247,59 @@ def haus_senden(geraete: dict, cfg: dict, voll: bool = False) -> None:
             letzte.pop(k, None)
 
 
+def haus_abgewiesen_melden(abgewiesen: list) -> None:
+    """0.9.59: Geraete, deren Name unter haus/tuer/ auf einen reservierten
+    faellt, einmal je Aenderung als WARNING ins Protokoll und nach
+    zustand.json ("haus_abgewiesen", dazu "haus_reserviert" fuer den
+    Vergleich im Reiter Test). Auch eine LEERE Liste wird geschrieben - sonst
+    zeigte der Reiter Test ein umbenanntes Geraet weiter rot."""
+    stand = sorted(t for a in abgewiesen for t in a.get("themen", []))
+    if stand == _HAUS.get("abgewiesen"):
+        return
+    _HAUS["abgewiesen"] = stand
+    for a in abgewiesen:
+        _LOG.warning("MQTT: Geraet %s (%s) geht unter %s/ nicht hinaus: %s faellt auf einen "
+                     "reservierten Namen (%s - dort stehen Lebenszeichen und Kennung der "
+                     "Anbieter). Abhilfe: das Geraet umbenennen (Reiter Geraete anlernen).",
+                     a.get("nr"), a.get("name"), HAUS_WURZEL, ", ".join(a.get("themen", [])),
+                     ", ".join(HAUS_RESERVIERT))
+    zustand_schreiben(haus_abgewiesen=list(abgewiesen), haus_reserviert=list(HAUS_RESERVIERT))
+
+
+def haus_reserviert_pflegen() -> None:
+    """0.9.59, Aktualisierungsfall: Themen, die eine Fassung bis 0.9.58 unter
+    einem jetzt reservierten Namen zurueckbehalten gesendet hat (gemerkt in
+    DATEI_HAUS), raeumt der Dienst ab - hoechstens alle HAUS_FRAGE_S Sekunden
+    ein Versuch, bis der Broker bestaetigt (Regeln/07: wer die Namensregel
+    aendert, raeumt unter dem alten Namen ab). Andere Themen bleiben."""
+    rest = sorted(t for t in haus_gemerkt() if haus_reserviert(t.split("/")[2]))
+    if not rest:
+        return
+    jetzt = time.time()
+    if 0 <= jetzt - _HAUS.get("reserviert_versucht", 0.0) < HAUS_FRAGE_S:
+        return
+    _HAUS["reserviert_versucht"] = jetzt
+    melde_gebremst("haus_reserviert", f"MQTT: unter {HAUS_WURZEL}/ stehen aus einer frueheren "
+                   f"Fassung Themen unter einem reservierten Namen ({', '.join(rest)}) - sie "
+                   "werden abgeraeumt.")
+    haus_leeren(melden=lambda t: _LOG.info("%s", t), nur_reserviert=True)
+
+
+def haus_selbstpruefung() -> tuple:
+    """0.9.59: traegt die Abweisung der reservierten Namen? Ein Kontakt
+    "Zaehler" und ein Schloss "Anbieter" duerfen unter haus/tuer/ nichts
+    ergeben, eine "Haustür" muss als haustuer hinausgehen. Rueckgabe
+    (ok, text)."""
+    probe = {"1": {"name": "Zaehler", "endpunkte": {"1": {"kontakt": 1}}, "typen": {"1": [21]}},
+             "2": {"name": "Anbieter", "endpunkte": {"1": {"schloss": 1}}, "typen": {"1": [10]}},
+             "3": {"name": "Haustür", "endpunkte": {"1": {"kontakt": 0}}, "typen": {"1": [21]}}}
+    abgewiesen: list = []
+    paare, _herkunft = haus_paare(probe, {}, abgewiesen)
+    ok = sorted(paare) == ["haustuer/offen"] and sorted(a["nr"] for a in abgewiesen) == [1, 2]
+    return ok, (f"unter {HAUS_WURZEL}/ gesendet: {', '.join(sorted(paare)) or 'nichts'}; abgewiesen: "
+                f"{', '.join(t for a in abgewiesen for t in a['themen']) or 'nichts'}")
+
+
 def haus_aus_pflegen() -> None:
     """tuer_haus ist aus: frueher gesendete Themen abraeumen, hoechstens alle
     HAUS_FRAGE_S Sekunden ein Versuch, solange der Broker nicht bestaetigt."""
@@ -4187,12 +4314,15 @@ def haus_aus_pflegen() -> None:
 
 
 def haus_leeren(nur_geraet=None, runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S,
-                melden=print) -> int:
+                melden=print, nur_reserviert: bool = False) -> int:
     """Die gemerkten Themen unter haus/tuer/ abraeumen - alle oder die eines
     Geraets. Vergessen wird, was der Broker als leer bestaetigt. Ohne
-    gemerkte Themen still, Rueckgabe 0. Rueckgabe sonst wie praefix_leeren()."""
+    gemerkte Themen still, Rueckgabe 0. Rueckgabe sonst wie praefix_leeren().
+    nur_reserviert (0.9.59): nur die Themen unter einem reservierten Namen
+    (haus_reserviert_pflegen())."""
     gemerkt = haus_gemerkt()
-    ziel = sorted(t for t, nr in gemerkt.items() if nur_geraet is None or nr == nur_geraet)
+    ziel = sorted(t for t, nr in gemerkt.items() if (nur_geraet is None or nr == nur_geraet)
+                  and (not nur_reserviert or haus_reserviert(t.split("/")[2])))
     if not ziel:
         return 0
     menge = set(ziel)
@@ -4337,6 +4467,15 @@ def selbsttest() -> int:
         zeilen.append("[FEHL] Der Protokollschutz laesst einen Kopplungscode durch")
     else:
         zeilen.append("[OK]   Protokollschutz maskiert Kopplungscodes (QR-Text und Ziffern-Code)")
+
+    ok_h, text_h = haus_selbstpruefung()
+    if ok_h:
+        zeilen.append(f"[OK]   Reservierte Namen unter {HAUS_WURZEL}/ ({', '.join(HAUS_RESERVIERT)}) "
+                      f"werden abgewiesen - {text_h}")
+    else:
+        fehler += 1
+        zeilen.append(f"[FEHL] Reservierte Namen unter {HAUS_WURZEL}/ ({', '.join(HAUS_RESERVIERT)}) "
+                      f"werden NICHT abgewiesen - {text_h}")
 
     zeilen.append("")
     zeilen.append("Nicht geprueft, weil dafuer ein laufender Matter-Server und echte")
