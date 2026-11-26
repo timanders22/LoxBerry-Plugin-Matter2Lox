@@ -20,6 +20,15 @@
 # nur -d, und preinstall wies den Ordnernamen "." nicht ab (Pruefbericht M3: mit "." trafen chown -R und chmod
 # ganz data/plugins).
 # mt_wurzel setzt PFOLDER und BASE; Rueckgabe 0 = erkannt, 1 = Ordnername unzulaessig, 2 = keine LoxBerry-Wurzel.
+# [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): vor allem anderen den Datenordner
+# [upgrade_daten] aus der Sicherung von preupgrade.sh zurueckspielen, ohne eine Datei der neuen Installation zu
+# [upgrade_daten] ueberschreiben. Ohne Sicherung (Neuinstallation) geschieht still nichts.
+if [ -f "$(dirname "$0")/upgrade_daten.sh" ] && . "$(dirname "$0")/upgrade_daten.sh"; then
+    upgrade_daten_zurueck "$3" "$5" "$(dirname "$0")" || :
+else
+    echo "<WARNING> Der Baustein upgrade_daten.sh fehlt neben $(basename "$0") - der Datenordner wurde nicht zurueckgespielt."
+fi
+
 mt_ist_wurzel() {
     [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] && [ -f "$1/config/system/general.json" ]
 }

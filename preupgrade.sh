@@ -26,6 +26,10 @@
 # nur -d, und preinstall wies den Ordnernamen "." nicht ab (Pruefbericht M3: mit "." trafen chown -R und chmod
 # ganz data/plugins).
 # mt_wurzel setzt PFOLDER und BASE; Rueckgabe 0 = erkannt, 1 = Ordnername unzulaessig, 2 = keine LoxBerry-Wurzel.
+# [upgrade_daten] Argumente des Installers festhalten - unten sichert der gemeinsame Baustein
+# [upgrade_daten] upgrade_daten.sh (neben diesem Skript) den ganzen Datenordner.
+UPGD_ORDNER="$3"; UPGD_WURZEL="$5"
+
 mt_ist_wurzel() {
     [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] && [ -f "$1/config/system/general.json" ]
 }
@@ -359,36 +363,67 @@ fi
 # ------------------------------------------------------------- Schluss
 # Die Erfolgsmeldung haengt an dem, was wirklich geschehen ist. Bis 0.9.16
 # stand hier ein unbedingtes "<OK> preupgrade abgeschlossen".
-if [ "$FEHLER" -eq 0 ]; then
-    echo "<OK> preupgrade abgeschlossen. Fabric, Geraetenummern und"
-    echo "<OK> Konfiguration liegen neben dem Plugin-Ordner und ueberstehen"
-    echo "<OK> das Abraeumen durch den Installer."
-    exit 0
-fi
-# I4 (Durchgang 30.09.2026): Abbruch mit 2, nicht 1. plugininstall.pl
-# (:855-874) schreibt bei 1 nur eine Fehlerzeile und ruft danach
-# purge_installation - data/plugins/<ordner>/ samt einer nicht umgezogenen
-# Fabric war fort, obwohl die Meldung "Update abbrechen" verlangte (Bericht
-# installer I4, Fall X3). Ab 2 ruft es &fail VOR dem Abraeumen. Weil danach
-# die alte Fassung stehen bleibt, raeumt dieses Skript seine eigenen Spuren:
-# die Marke faellt (sonst blieb der Dienststart eine Stunde gesperrt), und
-# ein Dienst, der vorher lief, wird wieder gestartet.
-echo "<FAIL> preupgrade mit Beanstandungen beendet - siehe oben."
-echo "<FAIL> Das Update wird ABGEBROCHEN (Rueckgabe 2): der Installer bricht vor dem"
-echo "<FAIL> Abraeumen ab, es wurde nichts geloescht. Die bisherige Fassung bleibt."
-# 0.9.35 (Nr. C): die Plugin-Datenbank des LoxBerry traegt die NEUE Fassung
-# schon vor diesem Skript (plugininstall.pl). Die Oberflaeche zeigt sie also,
-# und die automatische Aktualisierung versucht es nicht noch einmal.
-echo "<FAIL> ACHTUNG: Die Plugin-Verwaltung zeigt danach trotzdem die neue Fassungsnummer."
-echo "<FAIL> Nach dem Beheben das Update von Hand erneut einspielen (Plugin-Verwaltung,"
-echo "<FAIL> ZIP-Datei oder Adresse) - von selbst wird es nicht wiederholt."
-rm -f "$MARKE" 2>/dev/null
-rm -f "$BASE/data/plugins/$PFOLDER.lief" 2>/dev/null
-if [ "$LIEF" -eq 1 ] && [ -x "$PBIN/dienst.sh" ]; then
-    if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
-        echo "<INFO> Der Dienst lief vorher und wurde wieder gestartet."
-    else
-        echo "<WARNING> Der Dienst lief vorher, liess sich aber nicht wieder starten. Reiter Einstellungen, Knopf 'Dienst starten'."
+# 25.11.2026: zuerst der Fehlerweg, der Erfolg am Ende - der gemeinsame Baustein sichert vor dem
+# letzten "exit 0" den Datenordner.
+if [ "$FEHLER" -ne 0 ]; then
+    # I4 (Durchgang 30.09.2026): Abbruch mit 2, nicht 1. plugininstall.pl
+    # (:855-874) schreibt bei 1 nur eine Fehlerzeile und ruft danach
+    # purge_installation - data/plugins/<ordner>/ samt einer nicht umgezogenen
+    # Fabric war fort, obwohl die Meldung "Update abbrechen" verlangte (Bericht
+    # installer I4, Fall X3). Ab 2 ruft es &fail VOR dem Abraeumen. Weil danach
+    # die alte Fassung stehen bleibt, raeumt dieses Skript seine eigenen Spuren:
+    # die Marke faellt (sonst blieb der Dienststart eine Stunde gesperrt), und
+    # ein Dienst, der vorher lief, wird wieder gestartet.
+    echo "<FAIL> preupgrade mit Beanstandungen beendet - siehe oben."
+    echo "<FAIL> Das Update wird ABGEBROCHEN (Rueckgabe 2): der Installer bricht vor dem"
+    echo "<FAIL> Abraeumen ab, es wurde nichts geloescht. Die bisherige Fassung bleibt."
+    # 0.9.35 (Nr. C): die Plugin-Datenbank des LoxBerry traegt die NEUE Fassung
+    # schon vor diesem Skript (plugininstall.pl). Die Oberflaeche zeigt sie also,
+    # und die automatische Aktualisierung versucht es nicht noch einmal.
+    echo "<FAIL> ACHTUNG: Die Plugin-Verwaltung zeigt danach trotzdem die neue Fassungsnummer."
+    echo "<FAIL> Nach dem Beheben das Update von Hand erneut einspielen (Plugin-Verwaltung,"
+    echo "<FAIL> ZIP-Datei oder Adresse) - von selbst wird es nicht wiederholt."
+    rm -f "$MARKE" 2>/dev/null
+    rm -f "$BASE/data/plugins/$PFOLDER.lief" 2>/dev/null
+    if [ "$LIEF" -eq 1 ] && [ -x "$PBIN/dienst.sh" ]; then
+        if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+            echo "<INFO> Der Dienst lief vorher und wurde wieder gestartet."
+        else
+            echo "<WARNING> Der Dienst lief vorher, liess sich aber nicht wieder starten. Reiter Einstellungen, Knopf 'Dienst starten'."
+        fi
     fi
+    exit 2
 fi
-exit 2
+
+echo "<OK> preupgrade abgeschlossen. Fabric, Geraetenummern und"
+echo "<OK> Konfiguration liegen neben dem Plugin-Ordner und ueberstehen"
+echo "<OK> das Abraeumen durch den Installer."
+# Fehlerweg fuer den gemeinsamen Baustein (unten): misslingt das Sichern des Datenordners, bricht das Update
+# mit Rueckgabe 2 ab und die bisherige Fassung bleibt. Wie im eigenen Fehlerweg oben faellt der Merker .lief,
+# und ein Dienst, der vorher lief, wird wieder gestartet. Die Marke entfernt der Baustein selbst.
+upgd_bei_fehler() {
+    rm -f "$BASE/data/plugins/$PFOLDER.lief" 2>/dev/null
+    if [ "$LIEF" -eq 1 ] && [ -x "$PBIN/dienst.sh" ]; then
+        if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+            echo "<INFO> Der Dienst lief vorher und wurde wieder gestartet."
+        else
+            echo "<WARNING> Der Dienst lief vorher, liess sich aber nicht wieder starten. Reiter Einstellungen, Knopf 'Dienst starten'."
+            return 1
+        fi
+    fi
+    return 0
+}
+# befehle/ und antworten/ ueberleben das Update bewusst nicht: die Befehlsbruecke legt befehle/ samt
+# Optionsdatei beim Start neu an, postinstall.sh beide Ordner leer (Regeln/06, Entscheidung des Hausherrn
+# 15.11.2026). Alles andere im Datenordner traegt der Baustein unten ueber das Update.
+UPGD_OHNE="befehle antworten"
+# [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): den ganzen Datenordner
+# [upgrade_daten] neben den Ordner sichern; misslingt das, bricht die Aktualisierung mit Rueckgabe 2 ab.
+if [ -f "$(dirname "$0")/upgrade_daten.sh" ] && . "$(dirname "$0")/upgrade_daten.sh"; then
+    upgrade_daten_sichern "$UPGD_ORDNER" "$UPGD_WURZEL" || exit 2
+else
+    echo "<FAIL> Der Baustein upgrade_daten.sh fehlt neben $(basename "$0") - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt installiert."
+    exit 2
+fi
+exit 0
